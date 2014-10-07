@@ -552,6 +552,7 @@ data PDecl' t
    | PNamespace String [PDecl' t] -- ^ New namespace
    | PRecord  (Docstring (Either Err PTerm)) SyntaxInfo FC Name t DataOpts (Docstring (Either Err PTerm)) Name t  -- ^ Record declaration
    | PClass   (Docstring (Either Err PTerm)) SyntaxInfo FC
+   | PCorecord (Docstring (Maybe PTerm)) [(Name, (Docstring (Maybe PTerm))] SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
               [t] -- constraints
               Name
               [(Name, t)] -- parameters
@@ -616,6 +617,14 @@ data PData' t  = PDatadecl { d_name :: Name, -- ^ The name of the datatype
 deriving instance Binary PData'
 deriving instance NFData PData'
 !-}
+
+-- | Corecord declaration
+data PCorecord' t = PCorecorddecl { r_name :: Name, -- ^ The name of the datatype
+                                    r_tcon :: t, -- ^ Type constructor
+                                    r_proj :: [(Docstring, [(Name, Docstring)], Name, t, FC, [Name])], -- ^ Projections
+                                    r_cons :: Maybe (Docstring, [(Name, Docstring)], FC, Name, [Name]) -- ^ Constructor
+                                  }
+    deriving Functor
 
 -- Handy to get a free function for applying PTerm -> PTerm functions
 -- across a program, by deriving Functor
