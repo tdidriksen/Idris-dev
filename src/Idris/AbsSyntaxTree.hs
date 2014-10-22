@@ -551,8 +551,8 @@ data PDecl' t
    | PParams  FC [(Name, t)] [PDecl' t] -- ^ Params block
    | PNamespace String [PDecl' t] -- ^ New namespace
    | PRecord  (Docstring (Either Err PTerm)) SyntaxInfo FC Name t DataOpts (Docstring (Either Err PTerm)) Name t  -- ^ Record declaration
+   | PCorecord (Docstring (Either Err PTerm)) [(Name, (Docstring (Either Err PTerm)))] SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
    | PClass   (Docstring (Either Err PTerm)) SyntaxInfo FC
-   | PCorecord (Docstring (Maybe PTerm)) [(Name, (Docstring (Maybe PTerm))] SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
               [t] -- constraints
               Name
               [(Name, t)] -- parameters
@@ -621,8 +621,8 @@ deriving instance NFData PData'
 -- | Corecord declaration
 data PCorecord' t = PCorecorddecl { r_name :: Name, -- ^ The name of the datatype
                                     r_tcon :: t, -- ^ Type constructor
-                                    r_proj :: [((Docstring (Maybe PTerm)), [(Name, (Docstring (Maybe PTerm)))], Name, t, FC, [Name])], -- ^ Projections
-                                    r_cons :: Maybe ((Docstring (Maybe PTerm)), [(Name, (Docstring (Maybe PTerm)))], FC, Name, [Name], [Plicity]) -- ^ Constructor
+                                    r_proj :: [((Docstring (Either Err PTerm)), [(Name, (Docstring (Either Err PTerm)))], Name, t, FC, [Name])], -- ^ Projections
+                                    r_cons :: Maybe ((Docstring (Either Err PTerm)), [(Name, (Docstring (Either Err PTerm)))], FC, Name, [Name], [Plicity]) -- ^ Constructor
                                   }
     deriving Functor
 

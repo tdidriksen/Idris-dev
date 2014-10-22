@@ -50,7 +50,7 @@ import Data.List.Split (splitOn)
 
 --import Util.Pretty(pretty, text)
 
-elabCorecord :: ElabInfo -> SyntaxInfo -> Docstring (Maybe PTerm) -> [(Name, (Docstring (Maybe PTerm)))] -> FC -> DataOpts -> (PCorecord' PTerm) -> Idris ()
+elabCorecord :: ElabInfo -> SyntaxInfo -> Docstring (Either Err PTerm) -> [(Name, (Docstring (Either Err PTerm)))] -> FC -> DataOpts -> (PCorecord' PTerm) -> Idris ()
 elabCorecord info syn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
     = do let (pNas, pTys) = unzip (map (\ (_, _, n, t, _, _) -> (n, t)) projs)
          -- Save state before building data for elaboration.

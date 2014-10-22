@@ -237,7 +237,7 @@ simpleConstructor syn
 {- | Parses a corecord constructor
 
 -}
-corecordConstructor :: SyntaxInfo -> SyntaxInfo -> IdrisParser (Docstring (Maybe PTerm), [(Name, Docstring (Maybe PTerm))], FC, Name, [Name], [Plicity])
+corecordConstructor :: SyntaxInfo -> SyntaxInfo -> IdrisParser (Docstring (Either Err PTerm), [(Name, Docstring (Either Err PTerm))], FC, Name, [Name], [Plicity])
 corecordConstructor s r = do (doc, argDocs) <- option noDocs docComment
                              reserved "constructor"
                              cn_in <- fnName                             
@@ -264,28 +264,6 @@ corecordConstructorArg = (do lchar '{'
                      <|> (do res <- fnName
                              return (res, (Exp [] Dynamic False)))
                              
-
-type Projection = (Docstring (Maybe PTerm), [(Name, Docstring (Maybe PTerm))], Name, PTerm, FC, [Name], Plicity)
-
-
-corecordProjection :: SyntaxInfo -> IdrisParser Projection
-corecordProjection syn = expCorecProj syn
-                     <|> try (impCorecProj syn)
-                     <?> "projection"
-                     
-impCorecProj :: SyntaxInfo -> IdrisParser Projection
-impCorecProj syn = do (doc, argDocs, n, pterm, fc, args) <- do lchar '{'
-                                                               res <- constructor syn 
-                                                               lchar '}'
-                                                               return res
-                      return (doc, argDocs, n, pterm, fc, args, (Imp [] Dynamic False))
-                   <?> "implicit projection"
-
-expCorecProj :: SyntaxInfo -> IdrisParser Projection
-expCorecProj syn = do (doc, argDocs, n, pterm, fc, args) <- constructor syn
-                      return (doc, argDocs, n, pterm, fc, args, (Exp [] Dynamic False))
-                   <?> "explicit proejction" 
-
 {- | Parses a dsl block declaration
 
 DSL ::= 'dsl' FnName OpenBlock Overload'+ CloseBlock;
