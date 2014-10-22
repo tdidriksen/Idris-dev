@@ -37,25 +37,6 @@ import qualified Data.ByteString.UTF8 as UTF8
 
 import Debug.Trace
 
---record' :: SyntaxInfo -> IdrisParser PDecl
-record' syn = do (doc, acc, opts) <- try (do doc <- option noDocs docComment
-                                             acc <- optional accessibility
-                                             opts <- dataOpts []
-                                             reserved "record"
-                                             return (doc, acc, opts))
-                 fc <- getFC
-                 tyn_in <- fnName
-                 lchar ':'
-                 ty <- typeExpr (allowImp syn)
-                 let tyn = expandNS syn tyn_in
-                 reserved "where"
-                 let rsyn = syn { syn_namespace = show (nsroot tyn) : syn_namespace syn }
-                 (proj, cons) <- indentedBlockS (do proj <- many (constructor rsyn)
-                                                    cons <- optional (corecordConstructor syn)
-                                                    return (proj, cons))
-                 
-                 return $ PRecord (fst doc) rsyn fc tyn ty opts 
-
 {- |Parses a record type declaration
 Record ::=
     DocComment Accessibility? 'record' FnName TypeSig 'where' OpenBlock Constructor KeepTerminator CloseBlock;
@@ -115,28 +96,31 @@ dataOpts opts
 
 corecord :: SyntaxInfo -> IdrisParser PDecl
 corecord syn = do (doc, argDocs, acc, opts) <- try (do (doc, argDocs) <- option noDocs docComment
-                                                       pushIndent
                                                        acc <- optional accessibility
                                                        opts <- dataOpts []
+                                                       ist <- get
                                                        reserved "corecord"
-                                                       return (doc, argDocs, acc, opts))
+                                                       let doc' = annotCode (tryFullExpr syn ist) doc
+                                                           argDocs' = [ (n, annotCode (tryFullExpr syn ist) d)
+                                                                      | (n, d) <- argDocs ]
+                                                       return (doc', argDocs', acc, opts))
                   fc <- getFC
                   tyn_in <- fnName
                   lchar ':'
-                  popIndent
                   ty <- typeExpr (allowImp syn)
                   let tyn = expandNS syn tyn_in
                   reserved "where"
-                  (proj, cons) <- (do openBlock
-                                      pushIndent
-                                      proj <- some (constructor syn)
-                                      cons <- optional (corecordConstructor syn)
-                                      popIndent
-                                      closeBlock
-                                      return (proj, cons))
-                  accData acc tyn (map (\ (_, _, n, _, _, _) -> n) proj)
-                  -- accData acc tyn (map (\ (_, _, _, n, _, _) -> n) cons)
-                  return $ PCorecord doc argDocs syn fc opts (PCorecorddecl tyn ty proj cons)
+                  let rsyn = syn { syn_namespace = show (nsroot tyn) :
+                                                    syn_namespace syn }
+                  openBlock
+                  pushIndent
+                  proj <- some $ indented (constructor rsyn)
+                  cons <- optional $ indented (corecordConstructor syn rsyn)                  
+                  popIndent
+                  closeBlock
+--                  accData acc tyn (map (\ (_, _, n, _, _, _, _) -> n) proj)
+--                  accData acc tyn ((Just (\ (_, _, _, n, _) -> n)) <*> cons)
+                  return $ PCorecord doc argDocs rsyn fc opts (PCorecorddecl tyn ty proj cons)
                <?> "corecord type declaration"
 
 {- | Parses a data type declaration
@@ -162,6 +146,7 @@ data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
                     elim <- dataOpts []
                     co <- dataI
                     ist <- get
+
                     let dataOpts = combineDataOpts (elim ++ co)
                         doc' = annotCode (tryFullExpr syn ist) doc
                         argDocs' = [ (n, annotCode (tryFullExpr syn ist) d)
@@ -254,18 +239,54 @@ simpleConstructor syn
 {- | Parses a corecord constructor
 
 -}
-corecordConstructor :: SyntaxInfo -> IdrisParser (Docstring, [(Name, Docstring)], FC, Name, [Name])
-corecordConstructor syn = do (doc, argDocs) <- option noDocs docComment
+corecordConstructor :: SyntaxInfo -> SyntaxInfo -> IdrisParser (Docstring (Maybe PTerm), [(Name, Docstring (Maybe PTerm))], FC, Name, [Name], [Plicity])
+corecordConstructor s r = do (doc, argDocs) <- option noDocs docComment
                              reserved "constructor"
-                             lchar '('
-                             cn_in <- fnName
-                             let cn = expandNS syn cn_in
+                             cn_in <- fnName                             
+                             ist <- get
+                             let cn = expandNS s cn_in
                              fc <- getFC
-                             args_in <- many fnName
-                             lchar ')'
-                             let args = map (expandNS syn) args_in
-                             return (doc, argDocs, fc, cn, args)
+                             res <- option ([]) (do lchar '('
+                                                    args_in <- many corecordConstructorArg
+                                                    lchar ')'
+                                                    return args_in)
+                             let (args_in, args_pli) = unzip res
+                             let args = map (expandNS r) args_in
+                             let doc' = annotCode (tryFullExpr s ist) doc
+                                 argDocs' = [ (n, annotCode (tryFullExpr r ist) d)
+                                            | (n, d) <- argDocs ]
+                             return (doc', argDocs', fc, cn, args, args_pli)
                           <?> "constructor"
+
+corecordConstructorArg :: IdrisParser (Name, Plicity)
+corecordConstructorArg = (do lchar '{'
+                             res <- fnName
+                             lchar '}'
+                             return (res, (Imp [] Dynamic False)))
+                     <|> (do res <- fnName
+                             return (res, (Exp [] Dynamic False)))
+                             
+
+type Projection = (Docstring (Maybe PTerm), [(Name, Docstring (Maybe PTerm))], Name, PTerm, FC, [Name], Plicity)
+
+
+corecordProjection :: SyntaxInfo -> IdrisParser Projection
+corecordProjection syn = expCorecProj syn
+                     <|> try (impCorecProj syn)
+                     <?> "projection"
+                     
+impCorecProj :: SyntaxInfo -> IdrisParser Projection
+impCorecProj syn = do (doc, argDocs, n, pterm, fc, args) <- do lchar '{'
+                                                               res <- constructor syn 
+                                                               lchar '}'
+                                                               return res
+                      return (doc, argDocs, n, pterm, fc, args, (Imp [] Dynamic False))
+                   <?> "implicit projection"
+
+expCorecProj :: SyntaxInfo -> IdrisParser Projection
+expCorecProj syn = do (doc, argDocs, n, pterm, fc, args) <- constructor syn
+                      return (doc, argDocs, n, pterm, fc, args, (Exp [] Dynamic False))
+                   <?> "explicit proejction" 
 
 {- | Parses a dsl block declaration
 DSL ::= 'dsl' FnName OpenBlock Overload'+ CloseBlock;

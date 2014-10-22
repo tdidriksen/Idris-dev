@@ -615,7 +615,7 @@ deriving instance NFData PData'
 data PCorecord' t = PCorecorddecl { r_name :: Name, -- ^ The name of the datatype
                                     r_tcon :: t, -- ^ Type constructor
                                     r_proj :: [((Docstring (Maybe PTerm)), [(Name, (Docstring (Maybe PTerm)))], Name, t, FC, [Name])], -- ^ Projections
-                                    r_cons :: Maybe ((Docstring (Maybe PTerm)), [(Name, (Docstring (Maybe PTerm)))], FC, Name, [Name]) -- ^ Constructor
+                                    r_cons :: Maybe ((Docstring (Maybe PTerm)), [(Name, (Docstring (Maybe PTerm)))], FC, Name, [Name], [Plicity]) -- ^ Constructor
                                   }
     deriving Functor
 
