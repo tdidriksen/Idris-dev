@@ -67,14 +67,14 @@ record syn = do (doc, argDocs, acc, opts) <- try (do
                 return $ PRecord doc rsyn fc tyn ty opts cdoc cn cty
              <?> "record type declaration"
   where
-    getRecNames :: SyntaxInfo -> PTerm -> [Name]
-    getRecNames syn (PPi _ n _ sc) = [expandNS syn n, expandNS syn (mkType n)]
-                                       ++ getRecNames syn sc
-    getRecNames _ _ = []
-
     toFreeze :: Maybe Accessibility -> Maybe Accessibility
     toFreeze (Just Frozen) = Just Hidden
     toFreeze x = x
+
+    getRecNames :: SyntaxInfo -> PTerm -> [Name]
+    getRecNames syn (PPi _ n _ sc) = [expandNS syn n, expandNS syn (mkType n)]
+                                     ++ getRecNames syn sc
+    getRecNames _ _ = []
 
 {- | Parses data declaration type (normal or codata)
 DataI ::= 'data' | 'codata';
@@ -118,10 +118,18 @@ corecord syn = do (doc, argDocs, acc, opts) <- try (do (doc, argDocs) <- option 
                   cons <- optional $ indented (corecordConstructor syn rsyn)                  
                   popIndent
                   closeBlock
---                  accData acc tyn (map (\ (_, _, n, _, _, _, _) -> n) proj)
---                  accData acc tyn ((Just (\ (_, _, _, n, _) -> n)) <*> cons)
-                  return $ PCorecord doc argDocs rsyn fc opts (PCorecorddecl tyn ty proj cons)
+                  let fns = getRecNames rsyn (map (\ (_,_,n,_,_,_) -> n) proj)
+                  mapM_ (\n -> addAcc n acc) fns
+                  case cons of
+                    Just (_,_,_,n,_,_) -> accData acc tyn [n]
+                    Nothing -> return ()
+                  return $ PCorecord doc argDocs syn rsyn fc opts (PCorecorddecl tyn ty proj cons)
                <?> "corecord type declaration"
+  where
+    getRecNames :: SyntaxInfo -> [Name] -> [Name]
+    getRecNames syn (n : ns) = [expandNS syn n, expandNS syn (mkType n)]
+                                     ++ getRecNames syn ns
+    getRecNames _ _ = []
 
 {- | Parses a data type declaration
 Data ::= DocComment? Accessibility? DataI DefaultEliminator FnName TypeSig ExplicitTypeDataRest?

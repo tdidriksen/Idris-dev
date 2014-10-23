@@ -50,19 +50,19 @@ import Data.List.Split (splitOn)
 
 --import Util.Pretty(pretty, text)
 
-elabCorecord :: ElabInfo -> SyntaxInfo -> Docstring (Either Err PTerm) -> [(Name, (Docstring (Either Err PTerm)))] -> FC -> DataOpts -> (PCorecord' PTerm) -> Idris ()
-elabCorecord info syn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
+elabCorecord :: ElabInfo -> SyntaxInfo -> SyntaxInfo -> Docstring (Either Err PTerm) -> [(Name, (Docstring (Either Err PTerm)))] -> FC -> DataOpts -> (PCorecord' PTerm) -> Idris ()
+elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
     = do let (pNas, pTys) = unzip (map (\ (_, _, n, t, _, _) -> (n, t)) projs)
          -- Save state before building data for elaboration.
          -- As this is only desugaring, any effect on the state should be reverted before further elaboration.
          preState <- getIState 
          -- Add temp type to env for recursive refs
          undef <- isUndefined fc tyn
-         (cty, _, _, _) <- buildType info syn fc [] tyn tyc
+         (cty, _, _, _) <- buildType info rsyn fc [] tyn tyc
          when undef $ updateContext (addTyDecl tyn (TCon 0 0) cty)
          -- Split all projections into their first explicit argument (the type which the projection is one)
          -- and the rest. I.e. Foo : Bar -> Baz -> Qux splits to (Bar , (Baz -> Qux))
-         let (cs, pTys') = unzip (map splitProj pTys)
+         let (cs, pTys') = unzip $ map splitProj pTys
          -- Are all projections applications where the first argument is of the same family as the type being defined?
          mapM checkProj (zip pNas cs)
          -- Uniform the type parameters in projections
@@ -75,12 +75,12 @@ elabCorecord info syn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
                          (do orderedCons <- orderConsArgs args pNaTys tyn
                              let consType = cType orderedCons pPli ty
                              return [(doc, argDocs, name, consType, fc, args)])
-                       Nothing -> (do let consType = cType pNaTys (repeat (Exp [] Dynamic True)) ty 
-                                      return [(emptyDocstring, [], (sUN ("Mk" ++ (show $ nsroot tyn))), consType, fc, [])])
+                       Nothing -> (do let consType = cType pNaTys [] ty 
+                                      return [(emptyDocstring, [], (expandNS syn $ sUN ("Mk" ++ (show $ nsroot tyn))), consType, fc, [])])
          -- Revert to old state from before building data for elaboration.
          putIState preState
          -- Elaborate constructed data.
-         elabData info syn doc argDocs fc (Codata : opts) (PDatadecl tyn tyc dataCons)
+         elabData info rsyn doc argDocs fc (Codata : opts) (PDatadecl tyn tyc dataCons)
          -- Get constructor name and type.
          let (cn, cty_in) = (\ (_, _, n, t, _, _) -> (n, t)) (head dataCons) -- Only one constructor exists.
        
@@ -88,9 +88,9 @@ elabCorecord info syn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
          cty <- case lookupTy cn (tt_ctxt i) of
                     [t] -> return t
          -- Are the all the first arguments to the projections alpha equiv?
-         mapM (\x -> (checkAlphaEq x cty)) (zip pNas cs) -- FIXME
+         mapM (\x -> (checkAlphaEq x cty)) (zip pNas cs) -- FIXME: Should be conv eq?
          --- Make projection and update functions.
-         mkProjAndUpdate info syn fc tyn cn cty_in
+         mkProjAndUpdate info rsyn fc tyn cn cty_in
   where        
     -- Checks the first non-type parameter to be of the same name
     tyIs :: Name -> Type -> Idris ()
@@ -112,23 +112,33 @@ elabCorecord info syn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
     uniformProjs _ = id
     -- Splits a term at the first explicit
     splitProj :: PTerm -> (PTerm, PTerm)
-    splitProj (PPi (Exp _ _ _) _ t t') = (t, t')
-    splitProj (PPi p@(Imp _ _ _) n t t') = let (rt, t'') = splitProj t' in
-                                               (rt, (PPi p n t t''))
+    splitProj (PPi (Exp _ _ _) n t t') = (t, mapPT (rmRefs n) t')
+      where
+        -- Removes applications of a refs to the name in the term
+        rmRefs :: Name -> PTerm -> PTerm
+        rmRefs n (PApp fc t' args) = 
+          let args' = filter (\x -> getTm x /= (PRef fc n)) args
+          in PApp fc (mapPT (rmRefs n) t') args'
+        rmRefs n t = t
+        
+    splitProj (PPi p@(Imp _ _ _) n t t') = let (rt, t'') = splitProj t'
+                                             in (rt, (PPi p n t t''))
+      
     -- Orders second argument accordingly to first argument
     orderConsArgs :: [Name] -> [(Name, PTerm)] -> Name -> Idris [(Name, PTerm)]
     orderConsArgs [] ys _ = return ys
     orderConsArgs xs ys t = orderConsArgs' xs ys t
-    -- Helper function
-    orderConsArgs' :: [Name] -> [(Name, PTerm)] -> Name -> Idris [(Name, PTerm)]
-    orderConsArgs' (x : xs) ys tyn = case lookup x ys of
-                                         Just(t) -> (return ((x, t) :)) <*> (orderConsArgs' xs (delete (x, t) ys) tyn)
-                                         Nothing -> tclift $ tfail (At fc (Elaborating "record constructor " tyn (Msg (show x ++ " is not in " ++ show tyn ++ "\n" ++ (show ys)))))
-    orderConsArgs' [] [] _  = return []
-    orderConsArgs' _ _ tyn = tclift $ tfail (At fc (Elaborating "record constructor " tyn (Msg ("Arguments do not match projections in " ++ show tyn)))) -- FIXME: Better error msg
+      where 
+        orderConsArgs' :: [Name] -> [(Name, PTerm)] -> Name -> Idris [(Name, PTerm)]
+        orderConsArgs' (x : xs) ys tyn = case lookup x ys of
+                                               Just(t) -> (return ((x, t) :)) <*> (orderConsArgs' xs (delete (x, t) ys) tyn)
+                                               Nothing -> tclift $ tfail (At fc (Elaborating "record constructor " tyn (Msg (show x ++ " is not in " ++ show tyn))))
+        orderConsArgs' [] [] _  = return []
+        orderConsArgs' _ _ tyn = tclift $ tfail (At fc (Elaborating "record constructor " tyn (Msg ("Arguments do not match projections in " ++ show tyn)))) -- FIXME: Better error msg
     -- Constructs a constructorr type from a list of projections
     cType :: [(Name, PTerm)] -> [Plicity] -> PTerm -> PTerm
-    cType (x : xs) (p : ps) t = PPi p (fst x) (snd x) (cType xs ps t) 
+    cType (x : xs) (p : ps) t = PPi p (nsroot (fst x)) (snd x) (cType xs ps t)
+    cType (x : xs) [] t = PPi (Exp [] Dynamic False) (nsroot (fst x)) (snd x) (cType xs [] t)
     cType [] _ t = t
 
 elabRecord :: ElabInfo -> SyntaxInfo -> Docstring (Either Err PTerm) -> FC -> Name ->
@@ -226,10 +236,10 @@ mkProjAndUpdate info syn fc tyn cn cty_in
         = do i <- getIState
              idrisCatch (do rec_elabDecl info EAll info ty
                             rec_elabDecl info EAll info val)
-                        (\v -> do iputStrLn $ show fc ++
-                                      ":Warning - can't generate setter for " ++
-                                      show fn ++ " (" ++ show ty ++ ")"
-                                     --  ++ "\n" ++ pshow i v
+                        (\v -> --do iputStrLn $ show fc ++
+                               --       ":Warning - can't generate setter for " ++
+                               --       show fn ++ " (" ++ show ty ++ ")"
+                               --      --  ++ "\n" ++ pshow i v
                                   putIState i)
 
     getImplB k (PPi (Imp l s _) n Placeholder sc)

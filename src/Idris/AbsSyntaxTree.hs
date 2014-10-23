@@ -551,7 +551,7 @@ data PDecl' t
    | PParams  FC [(Name, t)] [PDecl' t] -- ^ Params block
    | PNamespace String [PDecl' t] -- ^ New namespace
    | PRecord  (Docstring (Either Err PTerm)) SyntaxInfo FC Name t DataOpts (Docstring (Either Err PTerm)) Name t  -- ^ Record declaration
-   | PCorecord (Docstring (Either Err PTerm)) [(Name, (Docstring (Either Err PTerm)))] SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
+   | PCorecord (Docstring (Either Err PTerm)) [(Name, (Docstring (Either Err PTerm)))] SyntaxInfo SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
    | PClass   (Docstring (Either Err PTerm)) SyntaxInfo FC
               [t] -- constraints
               Name
@@ -755,7 +755,6 @@ data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level langua
            | PQuasiquote PTerm (Maybe PTerm) -- ^ `(Term [: Term])
            | PUnquote PTerm -- ^ ,Term
        deriving Eq
-
 
 {-!
 deriving instance Binary PTerm
