@@ -212,7 +212,8 @@ data IState = IState {
     idris_postulates :: S.Set Name,
     idris_whocalls :: Maybe (M.Map Name [Name]),
     idris_callswho :: Maybe (M.Map Name [Name]),
-    idris_repl_defs :: [Name] -- ^ List of names that were defined in the repl, and can be re-/un-defined
+    idris_repl_defs :: [Name], -- ^ List of names that were defined in the repl, and can be re-/un-defined
+    lhs_projections :: Ctxt (PDecl, Name, Name, Name)
    }
 
 -- Required for parsers library, and therefore trifecta
@@ -293,7 +294,7 @@ idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
                    [] [] [] defaultOpts 6 [] [] [] [] [] [] [] [] [] [] [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
-                   AutomaticWidth S.empty Nothing Nothing []
+                   AutomaticWidth S.empty Nothing Nothing [] emptyContext
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).
@@ -745,6 +746,7 @@ data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level langua
            | PNoImplicits PTerm -- ^ never run implicit converions on the term
            | PQuasiquote PTerm (Maybe PTerm) -- ^ `(Term [: Term])
            | PUnquote PTerm -- ^ ,Term
+           | PLhsProj Name PTerm -- ^ A left-hand side projection on a term
        deriving Eq
 
 

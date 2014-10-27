@@ -881,14 +881,16 @@ clause syn
                    put (ist { lastParse = Just n })
                    return $ PWith fc n capp wargs wval withs)
        <|> do pushIndent
+              lhsProjs <- many lhsProj
               n_in <- fnName; let n = expandNS syn n_in
               cargs <- many (constraintArg syn)
               fc <- getFC
               args <- many (try (implicitArg (syn { inPattern = True } ))
                             <|> (fmap pexp (argExpr syn)))
               wargs <- many (wExpr syn)
-              let capp = PApp fc (PRef fc n)
-                           (cargs ++ args)
+              let cappInner = PApp fc (PRef fc n) (cargs ++ args)
+              let capp = let projs = foldr (.) id lhsProjs
+                         in projs cappInner
               (do r <- rhs syn n
                   ist <- get
                   let ctxt = tt_ctxt ist
@@ -949,6 +951,11 @@ whereBlock n syn
          let dns = concatMap (concatMap declared) ds
          return (concat ds, map (\x -> (x, decoration syn x)) dns)
       <?> "where block"
+
+lhsProj :: IdrisParser (PTerm -> PTerm)
+lhsProj = do lchar '&';
+             projName <- fnName
+             return $ PLhsProj projName
 
 {- |Parses a code generation target language name
 

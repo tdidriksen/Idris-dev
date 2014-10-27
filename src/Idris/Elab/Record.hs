@@ -99,6 +99,16 @@ elabRecord info syn doc fc tyn ty opts cdoc cn cty_in
          let nonImp = mapMaybe isNonImp (zip cimp ptys_u)
          let implBinds = getImplB id cty'
 
+         -- Register projections as available left-hand side projections
+         let projNames = map (expandNS syn) (map fst ptys_u)
+         logLvl 1 $ "projNames: " ++ intercalate ", " (map show projNames)
+         -- let projInfo = zip projNames [0..]
+         let projTypes = map head proj_decls
+         logLvl 1 $ "projTypes: " ++ intercalate ", " (map show projTypes)
+         let projInfo = zip4 projTypes projNames (repeat tyn) (repeat cn)
+         let insertProjsIn m = foldr (\(t,n,tyn,cn) -> \m' -> addDef n (t,n,tyn,cn) m') m projInfo
+         putIState (i { lhs_projections = insertProjsIn (lhs_projections i) })
+
          -- Generate update functions
          update_decls <- mapM (mkUpdate recty_u index_names_in extraImpls
                                    (getFieldNames cty')
