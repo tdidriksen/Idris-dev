@@ -78,7 +78,7 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
                              return [(doc, argDocs, name, consType, fc, args)])
                        Nothing -> (do let consType = cType pNaTys [] ty
                                       let name = expandNS syn $ sUN ("Mk" ++ (show $ nsroot tyn))
-                                      if isOp name then iputStrLn $ show fc ++ ":Warning - can't generate constructor for type "
+                                      if isOp name then iputStrLn $ show fc ++ ":Warning - can't generate constructor for type " ++ show tyn ++ " because it contains operator characters."
                                                    else return ()
                                       return [(emptyDocstring, [], name, consType, fc, [])])
          -- Revert to old state from before building data for elaboration.
