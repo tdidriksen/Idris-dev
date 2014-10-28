@@ -17,6 +17,7 @@ import Idris.PartialEval
 import Idris.DeepSeq
 import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
+import Idris.ParseHelpers (opChars)
 
 import Idris.Elab.Type
 import Idris.Elab.Data
@@ -45,7 +46,7 @@ import Debug.Trace
 import qualified Data.Map as Map
 import qualified Data.Set as S
 import qualified Data.Text as T
-import Data.Char(isLetter, toLower)
+import Data.Char(isLetter, toLower, isAlpha)
 import Data.List.Split (splitOn)
 
 --import Util.Pretty(pretty, text)
@@ -75,8 +76,11 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
                          (do orderedCons <- orderConsArgs args pNaTys tyn
                              let consType = cType orderedCons pPli ty
                              return [(doc, argDocs, name, consType, fc, args)])
-                       Nothing -> (do let consType = cType pNaTys [] ty 
-                                      return [(emptyDocstring, [], (expandNS syn $ sUN ("Mk" ++ (show $ nsroot tyn))), consType, fc, [])])
+                       Nothing -> (do let consType = cType pNaTys [] ty
+                                      let name = expandNS syn $ sUN ("Mk" ++ (show $ nsroot tyn))
+                                      if isOp name then iputStrLn $ show fc ++ ":Warning - can't generate constructor for type " ++ show tyn ++ " because it contains operator characters."
+                                                   else return ()
+                                      return [(emptyDocstring, [], name, consType, fc, [])])
          -- Revert to old state from before building data for elaboration.
          putIState preState
          -- Elaborate constructed data.
@@ -91,7 +95,11 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          mapM (\x -> (checkAlphaEq x cty)) (zip pNas cs) -- FIXME: Should be conv eq?
          --- Make projection and update functions.
          mkProjAndUpdate info rsyn fc tyn cn cty_in
-  where        
+  where
+    isOp :: Name -> Bool
+    isOp (UN t) = foldr (||) False (map (\x -> x `elem` opChars) (str t))
+    isOp (NS n _) = isOp n
+    isOp _ = True
     -- Checks the first non-type parameter to be of the same name
     tyIs :: Name -> Type -> Idris ()
     tyIs con (Bind _ _ b) = tyIs con b -- Unbind until we get the last parameter
@@ -117,7 +125,7 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
         -- Removes applications of a refs to the name in the term
         rmRefs :: Name -> PTerm -> PTerm
         rmRefs n (PApp fc t' args) = 
-          let args' = filter (\x -> getTm x /= (PRef fc n)) args
+          let args' = filter (\x -> getTm x /= (PRef emptyFC n)) args
           in PApp fc (mapPT (rmRefs n) t') args'
         rmRefs n t = t
         
