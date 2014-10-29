@@ -778,6 +778,7 @@ mapPT f t = f (mpt t) where
   mpt (PDisamb ns tm) = PDisamb ns (mapPT f tm)
   mpt (PNoImplicits tm) = PNoImplicits (mapPT f tm)
   mpt (PGoal fc r n sc) = PGoal fc (mapPT f r) n (mapPT f sc)
+  mpt (PLhsProj n t) = PLhsProj n (mapPT f t)
   mpt x = x
 
 
