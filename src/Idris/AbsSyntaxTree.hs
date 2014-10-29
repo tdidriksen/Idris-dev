@@ -552,6 +552,7 @@ data PDecl' t
    | PParams  FC [(Name, t)] [PDecl' t] -- ^ Params block
    | PNamespace String [PDecl' t] -- ^ New namespace
    | PRecord  (Docstring (Either Err PTerm)) SyntaxInfo FC Name t DataOpts (Docstring (Either Err PTerm)) Name t  -- ^ Record declaration
+   | PCorecord (Docstring (Either Err PTerm)) [(Name, (Docstring (Either Err PTerm)))] SyntaxInfo SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
    | PClass   (Docstring (Either Err PTerm)) SyntaxInfo FC
               [t] -- constraints
               Name
@@ -617,6 +618,14 @@ data PData' t  = PDatadecl { d_name :: Name, -- ^ The name of the datatype
 deriving instance Binary PData'
 deriving instance NFData PData'
 !-}
+
+-- | Corecord declaration
+data PCorecord' t = PCorecorddecl { r_name :: Name, -- ^ The name of the datatype
+                                    r_tcon :: t, -- ^ Type constructor
+                                    r_proj :: [((Docstring (Either Err PTerm)), [(Name, (Docstring (Either Err PTerm)))], Name, t, FC, [Name])], -- ^ Projections
+                                    r_cons :: Maybe ((Docstring (Either Err PTerm)), [(Name, (Docstring (Either Err PTerm)))], FC, Name, [Name], [Plicity]) -- ^ Constructor
+                                  }
+    deriving Functor
 
 -- Handy to get a free function for applying PTerm -> PTerm functions
 -- across a program, by deriving Functor
@@ -748,7 +757,6 @@ data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level langua
            | PUnquote PTerm -- ^ ,Term
            | PLhsProj Name PTerm -- ^ A left-hand side projection on a term
        deriving Eq
-
 
 {-!
 deriving instance Binary PTerm

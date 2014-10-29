@@ -67,14 +67,14 @@ record syn = do (doc, argDocs, acc, opts) <- try (do
                 return $ PRecord doc rsyn fc tyn ty opts cdoc cn cty
              <?> "record type declaration"
   where
-    getRecNames :: SyntaxInfo -> PTerm -> [Name]
-    getRecNames syn (PPi _ n _ sc) = [expandNS syn n, expandNS syn (mkType n)]
-                                       ++ getRecNames syn sc
-    getRecNames _ _ = []
-
     toFreeze :: Maybe Accessibility -> Maybe Accessibility
     toFreeze (Just Frozen) = Just Hidden
     toFreeze x = x
+
+    getRecNames :: SyntaxInfo -> PTerm -> [Name]
+    getRecNames syn (PPi _ n _ sc) = [expandNS syn n, expandNS syn (mkType n)]
+                                     ++ getRecNames syn sc
+    getRecNames _ _ = []
 
 {- | Parses data declaration type (normal or codata)
 DataI ::= 'data' | 'codata';
@@ -93,6 +93,43 @@ dataOpts opts
   <|> do reserved "%error_reverse"; dataOpts (DataErrRev : opts)
   <|> return opts
   <?> "data options"
+
+corecord :: SyntaxInfo -> IdrisParser PDecl
+corecord syn = do (doc, argDocs, acc, opts) <- try (do (doc, argDocs) <- option noDocs docComment
+                                                       acc <- optional accessibility
+                                                       opts <- dataOpts []
+                                                       ist <- get
+                                                       reserved "corecord"
+                                                       let doc' = annotCode (tryFullExpr syn ist) doc
+                                                           argDocs' = [ (n, annotCode (tryFullExpr syn ist) d)
+                                                                      | (n, d) <- argDocs ]
+                                                       return (doc', argDocs', acc, opts))
+                  fc <- getFC
+                  tyn_in <- fnName
+                  lchar ':'
+                  ty <- typeExpr (allowImp syn)
+                  let tyn = expandNS syn tyn_in
+                  reserved "where"
+                  let rsyn = syn { syn_namespace = show (nsroot tyn) :
+                                                    syn_namespace syn }
+                  openBlock
+                  pushIndent
+                  proj <- some $ indented (constructor rsyn)
+                  cons <- optional $ indented (corecordConstructor syn rsyn)                  
+                  popIndent
+                  closeBlock
+                  let fns = getRecNames rsyn (map (\ (_,_,n,_,_,_) -> n) proj)
+                  mapM_ (\n -> addAcc n acc) fns
+                  case cons of
+                    Just (_,_,_,n,_,_) -> accData acc tyn [n]
+                    Nothing -> return ()
+                  return $ PCorecord doc argDocs syn rsyn fc opts (PCorecorddecl tyn ty proj cons)
+               <?> "corecord type declaration"
+  where
+    getRecNames :: SyntaxInfo -> [Name] -> [Name]
+    getRecNames syn (n : ns) = [expandNS syn n, expandNS syn (mkType n)]
+                                     ++ getRecNames syn ns
+    getRecNames _ _ = []
 
 {- | Parses a data type declaration
 Data ::= DocComment? Accessibility? DataI DefaultEliminator FnName TypeSig ExplicitTypeDataRest?
@@ -117,6 +154,7 @@ data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
                     elim <- dataOpts []
                     co <- dataI
                     ist <- get
+
                     let dataOpts = combineDataOpts (elim ++ co)
                         doc' = annotCode (tryFullExpr syn ist) doc
                         argDocs' = [ (n, annotCode (tryFullExpr syn ist) d)
@@ -204,7 +242,38 @@ simpleConstructor syn
           return (doc', [], cn, args, fc, [])
        <?> "constructor"
 
-{- | Parses a dsl block declaration
+{- | Parses a corecord constructor
+
+-}
+corecordConstructor :: SyntaxInfo -> SyntaxInfo -> IdrisParser (Docstring (Either Err PTerm), [(Name, Docstring (Either Err PTerm))], FC, Name, [Name], [Plicity])
+corecordConstructor s r = do (doc, argDocs) <- option noDocs docComment
+                             reserved "constructor"
+                             cn_in <- fnName                             
+                             ist <- get
+                             let cn = expandNS s cn_in
+                             fc <- getFC
+                             res <- option ([]) (do lchar '('
+                                                    args_in <- many corecordConstructorArg
+                                                    lchar ')'
+                                                    return args_in)
+                             let (args_in, args_pli) = unzip res
+                             let args = map (expandNS r) args_in
+                             let doc' = annotCode (tryFullExpr s ist) doc
+                                 argDocs' = [ (n, annotCode (tryFullExpr r ist) d)
+                                            | (n, d) <- argDocs ]
+                             return (doc', argDocs', fc, cn, args, args_pli)
+                          <?> "constructor"
+
+corecordConstructorArg :: IdrisParser (Name, Plicity)
+corecordConstructorArg = (do lchar '{'
+                             res <- fnName
+                             lchar '}'
+                             return (res, (Imp [] Dynamic False)))
+                     <|> (do res <- fnName
+                             return (res, (Exp [] Dynamic False)))
+                             
+{- | Parses a dsl block declaration
+
 DSL ::= 'dsl' FnName OpenBlock Overload'+ CloseBlock;
  -}
 dsl :: SyntaxInfo -> IdrisParser PDecl

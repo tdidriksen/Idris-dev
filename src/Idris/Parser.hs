@@ -206,6 +206,7 @@ decl' syn =    fixity
            <|> fnDecl' syn
            <|> data_ syn
            <|> record syn
+           <|> corecord syn
            <?> "declaration"
 
 {- | Parses a syntax extension declaration (and adds the rule to parser state)
