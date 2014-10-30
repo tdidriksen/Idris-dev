@@ -17,12 +17,19 @@ import Control.Monad.State.Strict as State
 import Data.List
 import Data.Maybe
 
+-- | Tests whether the input clause has one or more left-hand side projections.
+-- In other words, 'hasLhsProjs' tests whether a clause involves copatterns.
 hasLhsProjs :: PClause -> Bool
 hasLhsProjs clause =
   case clauseApp clause of
     Just (PLhsProj _ _) -> True
     _                   -> False
 
+{- | Tests whether a collection of clauses
+     makes consistent use of left-hand side projections.
+     Consistent use means that either all or none of the
+     clauses in the input list have left-hand side projections.
+-}
 hasConsistentLhsProjs :: [PClause] -> Bool
 hasConsistentLhsProjs clauses =
   case partition hasLhsProjs clauses of
@@ -30,6 +37,19 @@ hasConsistentLhsProjs clauses =
     (_, []) -> True
     _       -> False
 
+{-| Desugars a list of clauses with left-hand side projections
+    to an equivalent list of clauses without left-hand side
+    projections. The desugared versions use constructors
+    on their right-hand sides.
+
+    For a standard Stream definition, a stream of zeros:
+     zeros : Stream Nat
+     &hd zeros = Z
+     &tl zeros = zeros
+    Desugars to:
+     zeros : Stream Nat
+     zeros = Z :: zeros
+-}
 desugarLhsProjs :: [PClause] -> Idris [PClause]
 desugarLhsProjs clauses =
   do expanded <- mapM expandClause clauses
@@ -43,23 +63,36 @@ desugarLhsProjs clauses =
           iLOG $ "RHS: " ++ show (clauseRhs m)
      return merged
 
+{-| Expands a clause with left-hand side projections into
+    a clause using constructors. For arguments where a
+    clause defines to term, a metavariable is inserted.
+
+    For a standard Stream definition, a stream of zeros,
+    the clauses:
+     &hd zeros = Z
+     &tl zeros = zeros
+    are expanded into:
+     zeros = Z :: ?zerostl
+     zeros = ?zeroshd :: zeros
+-}
 expandClause :: PClause -> Idris PClause
 expandClause (PClause fc n t@(PLhsProj projName app) wis rhs whs) =
   do iLOG $ "expanding clause " ++ show n
-     (reducedLhs, expandedRhs) <- expandRhs fc t rhs
+     (reducedLhs, expandedRhs) <- expandRhs fc n t rhs
      iLOG $ "expanded clause " ++ show n
      return $ PClause fc n reducedLhs wis expandedRhs whs
 expandClause (PWith fc n t@(PLhsProj projName app) wis rhs whs) =
   do iLOG $ "expanding clause " ++ show n
-     (reducedLhs, expandedRhs) <- expandRhs fc t rhs
+     (reducedLhs, expandedRhs) <- expandRhs fc n t rhs
      iLOG $ "expanded clause " ++ show n
      return $ PWith fc n reducedLhs wis expandedRhs whs
 expandClause c = return c
 
 -- Beware : Also performs reduction!
-expandRhs :: FC -> PTerm -> PTerm -> Idris (PTerm, PTerm)
-expandRhs fc (PLhsProj projName t) rhs =
+expandRhs :: FC -> Name -> PTerm -> PTerm -> Idris (PTerm, PTerm)
+expandRhs fc fnName (PLhsProj projName t) rhs =
   do i <- get
+     iLOG $ "Expanding projection: " ++ show projName
      (pn, cn) <- case lookupCtxtName (nsroot projName) (lhs_projections i) of
                    [] -> tclift $ tfail (At fc (NoTypeDecl projName))
                    [(n', (pty, pn, ptyn, cn))] -> return (pn, cn)
@@ -70,30 +103,40 @@ expandRhs fc (PLhsProj projName t) rhs =
               Just ty -> return $ delab i ty
               Nothing -> tclift $ tfail (At fc (NoTypeDecl cn))
      iLOG $ "Expanded " ++ show projName ++ " to " ++ show pn ++ " with constructor " ++ show cn
-     mk <- makeConstructorApp fc pn rhs cn cty
-     (reducedLhs, expandedRhs) <- expandRhs fc t mk
+     mk <- makeConstructorApp fc fnName pn rhs cn cty
+     (reducedLhs, expandedRhs) <- expandRhs fc fnName t mk
      return $ (reducedLhs, expandedRhs) --(reducedLhs, PApp fc (PRef fc projName) [pexp expandedRhs])
-expandRhs _ lhs rhs = return (lhs, rhs)
+expandRhs _ _ lhs rhs = return (lhs, rhs)
 
-makeConstructorApp :: FC -> Name -> PTerm -> Name -> PTerm -> Idris PTerm
-makeConstructorApp fc projName rhs cn cty =
+makeConstructorApp :: FC -> Name -> Name -> PTerm -> Name -> PTerm -> Idris PTerm
+makeConstructorApp fc fnName projName rhs cn cty =
   do i <- get
      delabArgs <- case lookupCtxtExact cn (idris_implicits i) of
                    Just args -> return args
                    Nothing -> ifail $ "No arguments for constructor " ++ show cn  
-     args <- makeArgList projName rhs cty delabArgs
+     args <- makeArgList fnName projName rhs cty delabArgs
      return $ PApp fc (PRef fc cn) args
 
-makeArgList :: Name -> PTerm -> PTerm -> [PArg] -> Idris [PArg]
-makeArgList projName t (PPi _ n _ b) (delabArg : das) =
-  do iLOG $ "Will put " ++ show t ++ " when " ++ show (nsroot projName) ++ " and " ++ show n ++ " are equal" 
-     let term = if (nsroot projName) == n then t else Placeholder
+makeArgList :: Name -> Name -> PTerm -> PTerm -> [PArg] -> Idris [PArg]
+makeArgList fnName projName t (PPi _ n _ b) (delabArg : das) =
+  do iLOG $ "Will put " ++ show t ++ " when " ++ show (nsroot projName) ++ " and " ++ show n ++ " are equal"
+     let metavarName = sUN $ show (nsroot fnName) ++ show (nsroot n)
+     let metavar = PMetavar metavarName
+     let term = if (nsroot projName) == n then t else metavar
      case makeArg term n delabArg of
-       Just arg -> do args <- makeArgList projName t b das
+       Just arg -> do args <- makeArgList fnName projName t b das
                       return $ arg : args 
-       Nothing  -> makeArgList projName t b das
-makeArgList _ _ _ _ = return []
+       Nothing  -> makeArgList fnName projName t b das
+makeArgList _ _ _ _ _ = return []
 
+nsOf :: Name -> [String]
+nsOf (NS _ ss) = map show ss
+nsOf _         = []
+
+{-| 'makeArg' creates a new 'PArg' with the first
+    argument as its term. Produces the same kind of
+    'PArg' as the one given as the third argument.
+-}
 makeArg :: PTerm -> Name -> PArg -> Maybe PArg
 makeArg t _ (PExp _ _ _ _) = Just $ pexp t
 makeArg t n (PImp _ False _ _ _) = Just $ pimp n t False
@@ -382,8 +425,8 @@ mergeArgs (PTacImplicit _ _ n s t)  (PTacImplicit _ _ n' s' t')
 mergeArgs x _ = return x
 
 mergeArgTerms :: PTerm -> PTerm -> Idris PTerm
-mergeArgTerms Placeholder t           = return t
-mergeArgTerms t           Placeholder = return t
+mergeArgTerms (PMetavar _) t            = return t
+mergeArgTerms t            (PMetavar _) = return t
 mergeArgTerms l@(PApp fc (PRef _ n) args) r@(PApp fc' (PRef _ n') args') =
   merge l r
 mergeArgTerms xs ys = return xs
