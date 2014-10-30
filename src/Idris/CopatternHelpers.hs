@@ -21,7 +21,7 @@ import Data.Maybe
 -- In other words, 'hasLhsProjs' tests whether a clause involves copatterns.
 hasLhsProjs :: PClause -> Bool
 hasLhsProjs clause =
-  case clauseApp clause of
+  case clauseLhs clause of
     Just (PLhsProj _ _) -> True
     _                   -> False
 
@@ -57,7 +57,7 @@ desugarLhsProjs clauses =
      merged <- mergeClauseList expanded
      iLOG $ "Returning " ++ show (length merged) ++ " merged clauses"
      forM_ merged $ \m ->
-       do case (clauseApp m) of
+       do case (clauseLhs m) of
            Just app -> iLOG $ "LHS: " ++ show app
            Nothing -> return ()
           iLOG $ "RHS: " ++ show (clauseRhs m)
@@ -129,9 +129,6 @@ makeArgList fnName projName t (PPi _ n _ b) (delabArg : das) =
        Nothing  -> makeArgList fnName projName t b das
 makeArgList _ _ _ _ _ = return []
 
-nsOf :: Name -> [String]
-nsOf (NS _ ss) = map show ss
-nsOf _         = []
 
 {-| 'makeArg' creates a new 'PArg' with the first
     argument as its term. Produces the same kind of
@@ -222,38 +219,27 @@ allM p (x:xs) = p x `andM` allM p xs
 andM :: (Monad m) => m Bool -> m Bool -> m Bool
 andM x y = do a <- x; b <- y; return $ a && b
 
+changeRhs :: PTerm -> PClause -> PClause
+changeRhs newrhs (PClause fc n lhs wis _ whs) = PClause fc n lhs wis newrhs whs
+changeRhs newrhs (PWith fc n lhs wis _ whs) = PWith fc n lhs wis newrhs whs
+changeRhs newrhs (PClauseR fc wis _ whs) = PClauseR fc wis newrhs whs
+changeRhs newrhs (PWithR fc wis _ whs) = PWithR fc wis newrhs whs
 
 mergeClauses :: PClause -> PClause -> Idris PClause
-mergeClauses l@(PClause fc n lhs wis rhs whs) (PClause fc' n' lhs' wis' rhs' whs') =
-  do compSet <- compatible lhs lhs'
-     case compSet of
-      Just cs -> do mergedRhs <- merge rhs (subst cs rhs')
-                    iLOG $ "Substitutions: " ++ intercalate ", " (map show cs) 
-                    return $ PClause fc n lhs wis mergedRhs whs
-      Nothing -> return l
-     -- if comp 
-     --  then do mergedRhs <- merge rhs rhs'
-     --          return $ PClause fc n lhs wis mergedRhs whs
-     --  else return l
-mergeClauses l@(PWith fc n lhs wis rhs whs) (PWith fc' n' lhs' wis' rhs' whs') =
-  do compSet <- compatible lhs lhs'
-     case compSet of
-      Just cs -> do mergedRhs <- merge rhs (subst cs rhs')
-                    return $ PWith fc n lhs wis mergedRhs whs
-      Nothing -> return l
-mergeClauses l@(PClause fc n lhs wis rhs whs) (PWith fc' n' lhs' wis' rhs' whs') =
-  do compSet <- compatible lhs lhs'
-     case compSet of
-      Just cs -> do mergedRhs <- merge rhs (subst cs rhs')
-                    return $ PClause fc n lhs wis mergedRhs whs
-      Nothing -> return l
-mergeClauses l@(PWith fc n lhs wis rhs whs) (PClause fc' n' lhs' wis' rhs' whs') =
-  do compSet <- compatible lhs lhs'
-     case compSet of
-      Just cs -> do mergedRhs <- merge rhs (subst cs rhs')
-                    return $ PWith fc n lhs wis mergedRhs whs
-      Nothing -> return l
-mergeClauses l r = return l
+mergeClauses l r =
+  do let lhs = clauseLhs l
+     let lhs' = clauseLhs r
+     let rhs = clauseRhs l
+     let rhs' = clauseRhs r
+     case (lhs, lhs') of
+      (Just lhsl, Just lhsr) ->
+        do compSet <- compatible lhsl lhsr
+           case compSet of
+            Just cs -> do mergedRhs <- merge rhs (subst cs rhs')
+                          iLOG $ "Substitutions: " ++ intercalate ", " (map show cs)
+                          return $ changeRhs mergedRhs l
+            Nothing -> return l
+      _ -> return l
 
 type Substitution = (Name, PTerm)
 
@@ -287,7 +273,7 @@ subst subs t = mapPT (subst' subs) t
 
 clauseCompatible :: PClause -> PClause -> Idris Bool
 clauseCompatible c c' =
-  case (clauseApp c, clauseApp c') of
+  case (clauseLhs c, clauseLhs c') of
     (Just t, Just t') -> do c <- compatible t t'
                             return $ isJust c
     _                 -> return False
@@ -436,10 +422,10 @@ clauseName (PClause _ n _ _ _ _) = Just n
 clauseName (PWith _ n _ _ _ _) = Just n
 clauseName _ = Nothing
 
-clauseApp :: PClause -> Maybe PTerm
-clauseApp (PClause _ _ app _ _ _) = Just app
-clauseApp (PWith _ _ app _ _ _) = Just app
-clauseApp _ = Nothing
+clauseLhs :: PClause -> Maybe PTerm
+clauseLhs (PClause _ _ app _ _ _) = Just app
+clauseLhs (PWith _ _ app _ _ _) = Just app
+clauseLhs _ = Nothing
 
 clauseRhs :: PClause -> PTerm
 clauseRhs (PClause _ _ _ _ rhs _) = rhs
