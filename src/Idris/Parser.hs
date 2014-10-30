@@ -957,6 +957,7 @@ lhsProj :: IdrisParser (PTerm -> PTerm)
 lhsProj = do lchar '&';
              projName <- fnName
              return $ PLhsProj projName
+          <?> "left-hand side projection (copattern)"
 
 {- |Parses a code generation target language name
 
