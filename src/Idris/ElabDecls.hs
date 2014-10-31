@@ -179,7 +179,7 @@ elabDecl' what info d@(PClauses f o n ps)
          i <- getIState -- get the type options too
          ps' <- case partition hasLhsProjs ps of
                  ([], clauses) -> return clauses
-                 (clauses, []) -> return $ desugarLhsProjs clauses
+                 (clauses, []) -> desugarLhsProjs clauses
                  _ -> tclift $ tfail (At f (Elaborating "clauses " n (Msg " have left-hand side projections on only some clauses."))) 
          let o' = case lookupCtxt n (idris_flags i) of
                     [fs] -> fs
