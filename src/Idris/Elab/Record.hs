@@ -63,7 +63,8 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          when undef $ updateContext (addTyDecl tyn (TCon 0 0) cty)
          -- Split all projections into their first explicit argument (the type which the projection is one)
          -- and the rest. I.e. Foo : Bar -> Baz -> Qux splits to (Bar , (Baz -> Qux))
-         let (cs, pTys') = unzip $ map splitProj pTys
+         pnt <- mapM splitProj (zip pNas pTys)
+         let (cs, pTys') = unzip pnt
          -- Are all projections applications where the first argument is of the same family as the type being defined?
          mapM checkProj (zip pNas cs)
          -- Uniform the type parameters in projections
@@ -71,18 +72,18 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          -- Get constructor result type FIXME: Do this right
          let ty = head cs
          -- Make constructor
+
          dataCons <- case cons of 
                        Just((doc, argDocs, fc, name, args, pPli)) ->
                          (do orderedCons <- orderConsArgs args pNaTys tyn
                              let consType = cType orderedCons pPli ty
                              return [(doc, argDocs, name, consType, fc, args)])
                        Nothing -> (do let consType = cType pNaTys [] ty
-                                      let name = expandNS syn $ sUN ("Mk" ++ (show $ nsroot tyn))
-                                      if isOp name then iputStrLn $ show fc ++ ":Warning - can't generate constructor for type " ++ show tyn ++ " because it contains operator characters."
-                                                   else return ()
-                                      return [(emptyDocstring, [], name, consType, fc, [])])
-         -- Revert to old state from before building data for elaboration.
-         putIState preState
+                                      name <- if isOp tyn then (do n <- generateConsName
+                                                                   iputStrLn $ show fc ++ ":Warning - generated constructor " ++ show n ++ " for type " ++ show tyn ++ "."
+                                                                   return n)
+                                                          else return (sUN ("Mk" ++ (show $ nsroot tyn)))
+                                      return [(emptyDocstring, [], (expandNS syn name), consType, fc, [])])
          -- Elaborate constructed data.
          elabData info rsyn doc argDocs fc (Codata : opts) (PDatadecl tyn tyc dataCons)
          -- Get constructor name and type.
@@ -96,6 +97,14 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          --- Make projection and update functions.
          mkProjAndUpdate info rsyn fc tyn cn cty_in
   where
+    generateConsName :: Idris Name
+    generateConsName = gen $ sUN ("Mk_Infix_Record0")
+      where
+        gen :: Name -> Idris Name
+        gen n = do i <- getIState
+                   case lookupTyNameExact (expandNS syn n) (tt_ctxt i) of
+                     Just _  -> gen (nextName n)
+                     Nothing -> return n
     isOp :: Name -> Bool
     isOp (UN t) = foldr (||) False (map (\x -> x `elem` opChars) (str t))
     isOp (NS n _) = isOp n
@@ -119,8 +128,8 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
     uniformProjs :: [Name] -> [PTerm] -> [PTerm]
     uniformProjs _ = id
     -- Splits a term at the first explicit
-    splitProj :: PTerm -> (PTerm, PTerm)
-    splitProj (PPi (Exp _ _ _) n t t') = (t, mapPT (rmRefs n) t')
+    splitProj :: (Name, PTerm) -> Idris (PTerm, PTerm)
+    splitProj (_, (PPi (Exp _ _ _) n t t')) = return (t, mapPT (rmRefs n) t')
       where
         -- Removes applications of a refs to the name in the term
         rmRefs :: Name -> PTerm -> PTerm
@@ -129,8 +138,9 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
           in PApp fc (mapPT (rmRefs n) t') args'
         rmRefs n t = t
         
-    splitProj (PPi p@(Imp _ _ _) n t t') = let (rt, t'') = splitProj t'
-                                             in (rt, (PPi p n t t''))
+    splitProj (n, (PPi p@(Imp _ _ _) n' t t')) = do (rt, t'') <- splitProj (n, t')
+                                                    return (rt, (PPi p n' t t''))
+    splitProj (n, _) = tclift $ tfail (At fc (Elaborating "corecord projection " tyn (Msg ("Projection " ++ show n ++ " is not a valid projection."))))
       
     -- Orders second argument accordingly to first argument
     orderConsArgs :: [Name] -> [(Name, PTerm)] -> Name -> Idris [(Name, PTerm)]
@@ -254,9 +264,9 @@ mkProjAndUpdate info syn fc tyn cn cty_in
         = do i <- getIState
              idrisCatch (do rec_elabDecl info EAll info ty
                             rec_elabDecl info EAll info val)
-                        (\v -> --do iputStrLn $ show fc ++
-                               --       ":Warning - can't generate setter for " ++
-                               --       show fn ++ " (" ++ show ty ++ ")"
+                        (\v -> do iputStrLn $ show fc ++
+                                      ":Warning - can't generate setter for " ++
+                                      show fn ++ " (" ++ show ty ++ ")"
                                --      --  ++ "\n" ++ pshow i v
                                   putIState i)
 
