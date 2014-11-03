@@ -14,6 +14,7 @@ import Idris.Core.Evaluate
 
 import Control.Monad
 import Control.Monad.State.Strict as State
+import Control.Applicative
 import Data.List
 import Data.Maybe
 
@@ -65,7 +66,7 @@ desugarLhsProjs clauses =
 
 {-| Expands a clause with left-hand side projections into
     a clause using constructors. For arguments where a
-    clause defines to term, a metavariable is inserted.
+    clause defines no term, a metavariable is inserted.
 
     For a standard Stream definition, a stream of zeros,
     the clauses:
@@ -88,11 +89,35 @@ expandClause (PWith fc n t@(PLhsProj projName app) wis rhs whs) =
      return $ PWith fc n reducedLhs wis expandedRhs whs
 expandClause c = return c
 
--- Beware : Also performs reduction!
-expandRhs :: FC -> Name -> PTerm -> PTerm -> Idris (PTerm, PTerm)
+
+{-| Expands the right-hand side (fourth argument) and
+    reduces the left-hand side (third argument)
+    of a clause with copatterns.
+    The left-hand side is reduced by removing any left-hand side
+    projections, while the right-hand side is expanded into
+    a constructor. Metavariables are inserted in the
+    right-hand side for constructor arguments where a
+    clause defines no term.
+
+    The following program:
+     cycle : Nat -> Nat -> Stream Nat
+     &hd cycle y _ = y
+     &tl cycle Z n = cycle n n
+     &tl cycle (S m) n = cycle m n
+    expands into:
+     cycle : Nat -> Nat -> Stream Nat
+     cycle y _ = y :: ?cycletl
+     cycle Z n = ?cyclehd :: cycle n n
+     cycle (S m) n = ?cyclehd :: cycle m n
+-}
+expandRhs :: FC -- ^ The source information for the clause
+             -> Name -- ^ The name of the clause
+             -> PTerm -- ^ The left-hand side of the clause
+             -> PTerm -- ^ The right-hand side of the clause
+             -> Idris (PTerm, PTerm) -- ^ (reduced left-hand side, expanded right-hand side)
 expandRhs fc fnName (PLhsProj projName t) rhs =
   do i <- get
-     iLOG $ "Expanding projection: " ++ show projName
+     iLOG $ "Expanding projection: " ++ show projName              
      (pn, cn) <- case lookupCtxtName (nsroot projName) (lhs_projections i) of
                    [] -> tclift $ tfail (At fc (NoTypeDecl projName))
                    [(n', (pty, pn, ptyn, cn))] -> return (pn, cn)
@@ -108,7 +133,31 @@ expandRhs fc fnName (PLhsProj projName t) rhs =
      return $ (reducedLhs, expandedRhs) --(reducedLhs, PApp fc (PRef fc projName) [pexp expandedRhs])
 expandRhs _ _ lhs rhs = return (lhs, rhs)
 
-makeConstructorApp :: FC -> Name -> Name -> PTerm -> Name -> PTerm -> Idris PTerm
+{-| Creates a constructor for an expanded right-hand side for a
+    clause with copatterns.
+    Based on a constructor name and a type for the constructor,
+    'makeConstructorApp' creates a new right-hand side for a clause
+    with copatterns by embedding the given right-hand side in
+    a constructor application. For constructor arguments
+    where the clause defines no term, a metavariable is inserted.
+
+    For the following program:
+     cycle : Nat -> Nat -> Stream Nat
+     &hd cycle y _ = y
+     &tl cycle Z n = cycle n n
+     &tl cycle (S m) n = cycle m n
+    the following constructor applications would be created:
+     y :: ?cycletl
+     ?cyclehd :: cycle n n
+     ?cyclehd :: cycle m n
+-}
+makeConstructorApp :: FC -- ^ The source information for the clause
+                      -> Name -- ^ The name of the clause
+                      -> Name -- ^ The name of the projection for which we make a constructor
+                      -> PTerm -- ^ The right-hand side which should be embedded into the created constructor.
+                      -> Name -- ^ The name of the created constructor
+                      -> PTerm -- ^ The type of the created constructor
+                      -> Idris PTerm -- ^ A constructor with the fourth argument embedded.
 makeConstructorApp fc fnName projName rhs cn cty =
   do i <- get
      delabArgs <- case lookupCtxtExact cn (idris_implicits i) of
@@ -117,7 +166,23 @@ makeConstructorApp fc fnName projName rhs cn cty =
      args <- makeArgList fnName projName rhs cty delabArgs
      return $ PApp fc (PRef fc cn) args
 
-makeArgList :: Name -> Name -> PTerm -> PTerm -> [PArg] -> Idris [PArg]
+{-| Creates a list of 'PArg' where a term is inserted
+    in the position described by the left-hand side projection.
+    Metavariables are inserted for the remaining arguments.
+
+    If the constructor type is:
+     (x : A) -> (y : B) -> C
+    then
+     &y foo = b
+    will lead to the following arguments:
+     [?foox, b]
+-}
+makeArgList :: Name -- ^ The name of the clause for which the argument list is created
+               -> Name -- ^ The name of the projection for which the term should be inserted
+               -> PTerm -- ^ The term to insert
+               -> PTerm -- ^ The constructor type
+               -> [PArg] -- ^ The delaborated args for the constructor
+               -> Idris [PArg] -- ^ A list of arguments where the third argument is inserted in the position given by the second argument
 makeArgList fnName projName t (PPi _ n _ b) (delabArg : das) =
   do iLOG $ "Will put " ++ show t ++ " when " ++ show (nsroot projName) ++ " and " ++ show n ++ " are equal"
      let metavarName = sUN $ show (nsroot fnName) ++ show (nsroot n)
@@ -166,38 +231,56 @@ makeArg _ _ _ = Nothing
 --     foldAll' f []       _  = []
 --     foldAll' f (x : xs) ys = foldr f x (xs ++ ys) : foldAll' f xs (x : ys)
 
+{-| Merges two lists of clauses with copatterns together,
+    removing clauses with equivalent left-hand sides.
+    Also, clauses which are fully contained by other
+    clauses (subsumed) are removed.
+
+    The following clauses:
+     cycle : Nat -> Nat -> Stream Nat
+     &hd cycle y _ = y
+     &tl cycle Z n = cycle n n
+     &tl cycle (S m) n = cycle m n
+    will after expansion look like:
+     cycle : Nat -> Nat -> Stream Nat
+     cycle y _ = y :: ?cycletl
+     cycle Z n = ?cyclehd :: cycle n n
+     cycle (S m) n = ?cyclehd :: cycle m n
+    and will then be merged to result in:
+     cycle : Nat -> Nat -> Stream Nat
+     cycle Z n = Z :: cycle n n
+     cycle (S m) n = (S m) :: cycle m n
+-}
 mergeClauseList :: [PClause] -> Idris [PClause]
 mergeClauseList clauses =
   do iLOG "Merging"
-     -- Get a list of pairs, pairing each clause with the rest of the clauses
+     i <- get
+     let ctxt = tt_ctxt i
+     -- 1. Get a list of pairs, pairing each clause with the rest of the clauses
      let singledOut = singleOut clauses
-     -- Find the clauses which will be subsubmed by other clauses
-     (subsumed, keepers) <- partitionM (\(c,other) -> allM (\c' -> clauseCompatible c' c) other) singledOut
-     iLOG $ "Subsumed clauses: " ++ intercalate ", " (map show (mapMaybe clauseName (map fst subsumed)))
-     iLOG $ "Kept clauses: " ++ intercalate ", " (map show (mapMaybe clauseName (map fst keepers)))         
-     -- Check if any keepers are left (when all clauses are intercompatible, all clauses are subsumed by each other)
-     case (subsumed, keepers) of
-      ([], []) -> return []
-      ([], ks) ->
-        -- No clauses are subsumed, merge each clause with all other clauses
-        do withOther <- forM ks $ \(k,other) ->
-                          foldM (\keeper -> \o -> mergeClauses keeper o) k other
-           return withOther
-      ((s, _) : subs, []) -> -- No keepers, fold up subsumed
-        do folded <- foldM mergeClauses s (map fst subs)
-           return [folded]
-      (subs, ks) ->
-        -- Some clauses are subsumed; First merge the subsumed clauses with the kept clauses (keepers)
-        do let ks' = singleOut (map fst ks)
-           withSubsumed <- forM ks' $ \(k,other) ->
-                             do folded <- foldM (\keeper -> \s -> mergeClauses keeper s) k (map fst subs)
-                                return (folded, other)
-           -- Then merge each of the kept clauses with all the other clauses
-           withOther <- forM withSubsumed $ \(k,other) ->
-                          foldM (\keeper -> \o -> mergeClauses keeper o) k other
-           return withOther
+     -- 2. Remove equivalent clauses from the output
+     iLOG $ "Before removing duplicates: " ++ intercalate ", "  (map show (mapMaybe clauseLhs (map fst singledOut)))
+     let noDuplicates = nubBy (\(c,_) (c',_) -> clauseEq ctxt c c') singledOut
+     iLOG $ "After removing duplicates: " ++ intercalate ", "  (map show (mapMaybe clauseLhs (map fst noDuplicates)))
+     -- 3. Remove subsumed clauses
+     resultingClauses <- removeSubsumed noDuplicates -- Move some logging in here
+     iLOG $ "After removing subsumed: " ++ intercalate ", "  (map show (mapMaybe clauseLhs (map fst resultingClauses)))
+     foldedClauses <- forM resultingClauses $ \(clause, other) -> foldM (\c o -> mergeClauses c o) clause other
+     return foldedClauses
+  where
+    removeSubsumed :: [(PClause, [PClause])] -> Idris [(PClause, [PClause])]
+    removeSubsumed [] = return []
+    removeSubsumed [c] = return [c]
+    removeSubsumed cs = filterM (\(c,other) -> (liftM not) $ isSubsumed c other) cs
+
+    isSubsumed :: PClause -> [PClause] -> Idris Bool
+    isSubsumed c other = allM (\c' -> clauseCompatible c' c) other
 
 
+{-| 'singleOut' pairs each elements of a list
+    with all the remaining elements of the list.
+    > singleOut [1,2,3] == [(1,[2,3]),(2,[1,3]),(3,[1,2])]
+-}
 singleOut :: [a] -> [(a, [a])]
 singleOut xs = singleOut' xs []
   where
@@ -205,20 +288,20 @@ singleOut xs = singleOut' xs []
     singleOut' []       _  = []
     singleOut' (x : xs) ys = (x, xs ++ ys) : singleOut' xs (x : ys)
 
-partitionM :: Monad m => (a -> m Bool) -> [a] -> m ([a], [a])
-partitionM p [] = return ([], [])
-partitionM p (x:xs) =
-  do (ts, fs) <- partitionM p xs
-     p' <- p x
-     return $ if p' then (x:ts, fs) else (ts, x:fs)
+-- partitionM :: Monad m => (a -> m Bool) -> [a] -> m ([a], [a])
+-- partitionM p [] = return ([], [])
+-- partitionM p (x:xs) =
+--   do (ts, fs) <- partitionM p xs
+--      p' <- p x
+--      return $ if p' then (x:ts, fs) else (ts, x:fs)
 
 allM :: Monad m => (a -> m Bool) -> [a] -> m Bool
 allM p [] = return True
-allM p (x:xs) = p x `andM` allM p xs
+allM p (x:xs) = let andM = liftM2 (&&) in p x `andM` allM p xs
 
-andM :: (Monad m) => m Bool -> m Bool -> m Bool
-andM x y = do a <- x; b <- y; return $ a && b
-
+{-| Replaces the right-hand side of the second argument with
+    the first argument.
+-}
 changeRhs :: PTerm -> PClause -> PClause
 changeRhs newrhs (PClause fc n lhs wis _ whs) = PClause fc n lhs wis newrhs whs
 changeRhs newrhs (PWith fc n lhs wis _ whs) = PWith fc n lhs wis newrhs whs
@@ -226,20 +309,18 @@ changeRhs newrhs (PClauseR fc wis _ whs) = PClauseR fc wis newrhs whs
 changeRhs newrhs (PWithR fc wis _ whs) = PWithR fc wis newrhs whs
 
 mergeClauses :: PClause -> PClause -> Idris PClause
-mergeClauses l r =
-  do let lhs = clauseLhs l
-     let lhs' = clauseLhs r
-     let rhs = clauseRhs l
-     let rhs' = clauseRhs r
-     case (lhs, lhs') of
-      (Just lhsl, Just lhsr) ->
-        do compSet <- compatible lhsl lhsr
-           case compSet of
-            Just cs -> do mergedRhs <- merge rhs (subst cs rhs')
-                          iLOG $ "Substitutions: " ++ intercalate ", " (map show cs)
-                          return $ changeRhs mergedRhs l
-            Nothing -> return l
-      _ -> return l
+mergeClauses l r
+ | Just lhsl <- clauseLhs l,
+   Just lhsr <- clauseLhs r
+ = do let rhsl = clauseRhs l
+      let rhsr = clauseRhs r
+      compSet <- icompatible lhsl lhsr
+      case compSet of
+       Just cs -> do iLOG $ "Substitutions (" ++ show lhsl ++ ", " ++ show lhsr ++ ") : " ++ intercalate ", " (map show cs)
+                     mergedRhs <- merge rhsl (subst cs rhsr)
+                     return $ changeRhs mergedRhs l
+       Nothing -> return l
+ | otherwise = return l
 
 type Substitution = (Name, PTerm)
 
@@ -250,13 +331,13 @@ subst subs t = mapPT (subst' subs) t
       | Just t' <- lookup n subs = t'
       | otherwise = t
     subst' subs t@(PLam x ty body)
-      | Just _ <- lookup x subs = t
+      | isJust $ lookup x subs = t
       | otherwise = PLam x (subst' subs ty) (subst' subs body)
     subst' subs t@(PPi pl n a b)
-      | Just _ <- lookup n subs = t
+      | isJust $ lookup n subs = t
       | otherwise = PPi pl n (subst' subs a) (subst' subs b)
     subst' subs t@(PLet x ty e b)
-      | Just _ <- lookup x subs = t
+      | isJust $ lookup x subs = t
       | otherwise = PLet x (subst' subs ty) (subst' subs e) (subst' subs b)
     subst' _ t = t 
 
@@ -271,13 +352,25 @@ subst subs t = mapPT (subst' subs) t
 --                                then ((x : xs'), ys')
 --                                else (xs', (x : ys'))
 
+
 clauseCompatible :: PClause -> PClause -> Idris Bool
 clauseCompatible c c' =
   case (clauseLhs c, clauseLhs c') of
-    (Just t, Just t') -> do c <- compatible t t'
-                            return $ isJust c
+    (Just t, Just t') -> liftM isJust $ icompatible t t'
     _                 -> return False
 
+{-| Antisymmetry for clauses
+-}
+clauseEq :: Context -> PClause -> PClause -> Bool
+clauseEq ctxt clause clause'
+  | Just c  <- clauseLhs clause,
+    Just c' <- clauseLhs clause' = isJust (compatible ctxt c c') && isJust (compatible ctxt c' c)
+  | otherwise                    = False
+
+
+icompatible :: PTerm -> PTerm -> Idris (Maybe [Substitution])
+icompatible x y = do i <- get
+                     return $ compatible' (tt_ctxt i) x y []
 
 {- |
  Tests whether two terms are compatible.
@@ -285,30 +378,32 @@ clauseCompatible c c' =
  is more general than the first argument (i.e. the first
  argument has more specific patterns)
 -}
-compatible :: PTerm -> PTerm -> Idris (Maybe [Substitution])
-compatible x y = do i <- get
-                    return $ fmap reverse (compatible' i x y [])
+compatible :: Context -> PTerm -> PTerm -> Maybe [Substitution]
+compatible ctxt x y = fmap reverse (compatible' ctxt x y [])
 
-compatible' :: IState -> PTerm -> PTerm -> [Substitution] -> Maybe [Substitution]
-compatible' ist t@(PRef _ n) (PRef _ n') subs =
+compatible' :: Context -> PTerm -> PTerm -> [Substitution] -> Maybe [Substitution]
+compatible' ctxt t@(PRef _ n) (PRef _ n') subs =
   let sub = (n', t)
-  in case (isConName n (tt_ctxt ist), isConName n' (tt_ctxt ist)) of
+  in case (isConName n ctxt, isConName n' ctxt) of
        (True,  True)  -> if n == n' then return subs else Nothing
        (True,  False) -> return $ sub : subs
        (False, True)  -> Nothing
-       (False, False) -> return $ sub : subs
+       (False, False) -> return $ if n == n' then subs else sub : subs
 compatible' _ (PRef _ _) Placeholder subs = return subs
-compatible' _ (PRef _ n) (PApp _ _ _) _ = Nothing
-compatible' ist Placeholder (PRef _ n) subs =
-  if isConName n (tt_ctxt ist) then Nothing else return subs
+compatible' _ (PRef _ _) (PApp _ _ _) _ = Nothing
+compatible' ctxt Placeholder (PRef _ n) subs
+ | isConName n ctxt = Nothing
+ | otherwise        = return subs
 compatible' _ Placeholder Placeholder subs = return subs
 compatible' _ Placeholder (PApp _ _ _) _ = Nothing
-compatible' ist t@(PApp _ _ _) (PRef _ n) subs =
-  if isConName n (tt_ctxt ist) then Nothing else return $ (n, t) : subs
+compatible' ctxt t@(PApp _ _ _) (PRef _ n) subs
+ | isConName n ctxt = Nothing
+ | otherwise        = return $ (n, t) : subs
 compatible' _ (PApp _ _ _) Placeholder subs = return subs
-compatible' ist (PApp _ (PRef _ n) args) (PApp _ (PRef _ n') args') subs
- | n == n'   = compatibleArgLists ist args args' subs
+compatible' ctxt (PApp _ (PRef _ n) args) (PApp _ (PRef _ n') args') subs
+ | n == n'   = compatibleArgLists ctxt args args' subs
  | otherwise = Nothing
+compatible' _ _ _ _ = Nothing
 
 -- compatible (PRef _ n) (PRef _ n') =
 --   do i <- get
@@ -358,19 +453,19 @@ compatible' ist (PApp _ (PRef _ n) args) (PApp _ (PRef _ n') args') subs
 --   | otherwise = return False
 -- compatible _ _ = return False
 
-compatibleArgLists :: IState -> [PArg] -> [PArg] -> [Substitution] -> Maybe [Substitution]
-compatibleArgLists ist (a : args) (a' : args') subs = 
-  do subs' <- compatibleArgs ist a a' subs
-     compatibleArgLists ist args args' subs'
+compatibleArgLists :: Context -> [PArg] -> [PArg] -> [Substitution] -> Maybe [Substitution]
+compatibleArgLists ctxt (a : args) (a' : args') subs = 
+  do subs' <- compatibleArgs ctxt a a' subs
+     compatibleArgLists ctxt args args' subs'
 compatibleArgLists _ [] [] subs = return subs
 compatibleArgLists _ [] (_:_) _ = Nothing
 compatibleArgLists _ (_:_) [] _ = Nothing  
 
-compatibleArgs :: IState -> PArg -> PArg -> [Substitution] -> Maybe [Substitution]
-compatibleArgs ist (PExp _ _ _ t) (PExp _ _ _ t') subs = compatible' ist t t' subs
-compatibleArgs ist (PImp _ _ _ _ t) (PImp _ _ _ _ t') subs = compatible' ist t t' subs
-compatibleArgs ist (PConstraint _ _ _ t) (PConstraint _ _ _ t') subs = compatible' ist t t' subs
-compatibleArgs ist (PTacImplicit _ _ _ _ t) (PTacImplicit _ _ _ _ t') subs = compatible' ist t t' subs
+compatibleArgs :: Context -> PArg -> PArg -> [Substitution] -> Maybe [Substitution]
+compatibleArgs ctxt (PExp _ _ _ t) (PExp _ _ _ t') subs = compatible' ctxt t t' subs
+compatibleArgs ctxt (PImp _ _ _ _ t) (PImp _ _ _ _ t') subs = compatible' ctxt t t' subs
+compatibleArgs ctxt (PConstraint _ _ _ t) (PConstraint _ _ _ t') subs = compatible' ctxt t t' subs
+compatibleArgs ctxt (PTacImplicit _ _ _ _ t) (PTacImplicit _ _ _ _ t') subs = compatible' ctxt t t' subs
 compatibleArgs _ _ _ _ = Nothing
 
 
