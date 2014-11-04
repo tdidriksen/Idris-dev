@@ -39,6 +39,7 @@ import Control.Applicative hiding (Const)
 import Control.DeepSeq
 import Control.Monad
 import Control.Monad.State.Strict as State
+import Control.Monad.State.Lazy (evalStateT) as LState
 import Data.List
 import Data.Maybe
 import Debug.Trace
@@ -59,20 +60,22 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          preState <- getIState 
          -- Add temp type to env for recursive refs
          undef <- isUndefined fc tyn
-         (cty, _, _, _) <- buildType info rsyn fc [] tyn tyc
+         (cty, _, _, _) <- buildType info syn fc [] tyn tyc
          when undef $ updateContext (addTyDecl tyn (TCon 0 0) cty)
-         -- Split all projections into their first explicit argument (the type which the projection is one)
-         -- and the rest. I.e. Foo : Bar -> Baz -> Qux splits to (Bar , (Baz -> Qux))
+         -- Split all projections into their first explicit argument (the type which the projection is on)
+         -- and the rest. E.g. Foo : Bar -> Baz -> Qux splits to (Bar , (Baz -> Qux))
          pnt <- mapM splitProj (zip pNas pTys)
          let (cs, pTys') = unzip pnt
+         let pNaTys = zip pNas pTys'            
          -- Are all projections applications where the first argument is of the same family as the type being defined?
          mapM checkProj (zip pNas cs)
+         -- Conv Eq
+         let x = (zip pNas cs)
+         (_, ty) <- foldM pConvEq (head x) (tail x)
          -- Uniform the type parameters in projections
-         let pNaTys = zip pNas (uniformProjs [] pTys') -- FIXME
          -- Get constructor result type FIXME: Do this right
-         let ty = head cs
+         -- let ty = head cs
          -- Make constructor
-
          dataCons <- case cons of 
                        Just((doc, argDocs, fc, name, args, pPli)) ->
                          (do orderedCons <- orderConsArgs args pNaTys tyn
@@ -88,15 +91,24 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          elabData info rsyn doc argDocs fc (Codata : opts) (PDatadecl tyn tyc dataCons)
          -- Get constructor name and type.
          let (cn, cty_in) = (\ (_, _, n, t, _, _) -> (n, t)) (head dataCons) -- Only one constructor exists.
-       
-         i <- getIState
-         cty <- case lookupTy cn (tt_ctxt i) of
-                    [t] -> return t
-         -- Are the all the first arguments to the projections alpha equiv?
-         mapM (\x -> (checkAlphaEq x cty)) (zip pNas cs) -- FIXME: Should be conv eq?
          --- Make projection and update functions.
          mkProjAndUpdate info rsyn fc tyn cn cty_in
   where
+    pConvEq :: (Name, PTerm) -> (Name, PTerm) -> Idris (Name, PTerm)
+    pConvEq (n, t) (n', t') = do (ty , _, _, _) <- buildType info rsyn fc [] n  t
+                                 (ty', _, _, _) <- buildType info rsyn fc [] n' t'
+                                 i <- getIState
+                                 let ctxt = tt_ctxt i
+                                 let ucs  = map fst (idris_constraints i)
+                                 logLvl 0 $ "pConvEq on " ++ show ty ++ " which is build from " ++ show t  ++ " with name " ++ show n ++ "\n" ++
+                                                   "and " ++ show ty' ++ " which is build from " ++ show t' ++ " with name " ++ show n'
+                                 case LState.evalStateT (convEq ctxt [] ty ty') (0, ucs) of
+                                   (OK True) -> case LState.evalStateT (convEq ctxt [] (finalise (normalise ctxt [] ty)) (finalise (normalise ctxt [] ty'))) (0, ucs) of
+                                                 (OK True) -> return (n, t)
+                                                 _ -> tclift $ tfail (At fc (Elaborating "corecord projection " n (Msg "foo")))
+                                   _ -> tclift $ tfail (At fc (Elaborating "corecord projection " n (Msg "foo")))
+
+      
     generateConsName :: Idris Name
     generateConsName = gen $ sUN ("Mk_Infix_Record0")
       where
@@ -105,6 +117,7 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
                    case lookupTyNameExact (expandNS syn n) (tt_ctxt i) of
                      Just _  -> gen (nextName n)
                      Nothing -> return n
+    -- 
     isOp :: Name -> Bool
     isOp (UN t) = foldr (||) False (map (\x -> x `elem` opChars) (str t))
     isOp (NS n _) = isOp n
@@ -121,9 +134,6 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
     checkProj :: (Name, PTerm) -> Idris ()
     checkProj (n, t) = (do (cty, _, _, _) <- buildType info syn fc [] n t
                            tyIs n cty)
-    -- Checks alpha euivalence between two terms
-    checkAlphaEq :: (Name, PTerm) -> Type -> Idris ()
-    checkAlphaEq (n, t) ct = return ()
     -- Uniforms projection type variables
     uniformProjs :: [Name] -> [PTerm] -> [PTerm]
     uniformProjs _ = id
@@ -227,8 +237,6 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                                    implBinds (length nonImp)) (zip nonImp [0..])
          mapM_ (rec_elabDecl info EAll info) (concat proj_decls)
          logLvl 3 $ show update_decls
---         logLvl 0 $ "update_decls: "
---         mapM_ (logLvl 0) (map show update_decls)
          mapM_ (tryElabSetter info) (update_decls)
   where
     getBoundImpls (PPi (Imp _ _ _) n ty sc) = (n, ty) : getBoundImpls sc
