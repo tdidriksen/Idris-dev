@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Generation of HTML documentation for Idris code
-module Idris.IdrisDoc (generateDocs) where
+module Idris.IdrisDoc (generateDocs, extract) where
 
 import Idris.Core.TT (Name (..), sUN, SpecialName (..), OutputAnnotation (..),
                       TextFormatting (..), txt, str, nsroot, constIsType)

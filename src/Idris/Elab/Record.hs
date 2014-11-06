@@ -18,6 +18,7 @@ import Idris.DeepSeq
 import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
 import Idris.ParseHelpers (opChars)
+import Idris.IdrisDoc (extract)
 
 import Idris.Elab.Type
 import Idris.Elab.Data
@@ -39,7 +40,7 @@ import Control.Applicative hiding (Const)
 import Control.DeepSeq
 import Control.Monad
 import Control.Monad.State.Strict as State
-import Control.Monad.State.Lazy (evalStateT) as LState
+import Control.Monad.State.Lazy as LState (evalStateT)
 import Data.List
 import Data.Maybe
 import Debug.Trace
@@ -56,8 +57,7 @@ elabCorecord :: ElabInfo -> SyntaxInfo -> SyntaxInfo -> Docstring (Either Err PT
 elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
     = do let (pNas, pTys) = unzip (map (\ (_, _, n, t, _, _) -> (n, t)) projs)
          -- Save state before building data for elaboration.
-         -- As this is only desugaring, any effect on the state should be reverted before further elaboration.
-         preState <- getIState 
+         i <- getIState 
          -- Add temp type to env for recursive refs
          undef <- isUndefined fc tyn
          (cty, _, _, _) <- buildType info syn fc [] tyn tyc
@@ -66,15 +66,18 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          -- and the rest. E.g. Foo : Bar -> Baz -> Qux splits to (Bar , (Baz -> Qux))
          pnt <- mapM splitProj (zip pNas pTys)
          let (cs, pTys') = unzip pnt
-         let pNaTys = zip pNas pTys'            
          -- Are all projections applications where the first argument is of the same family as the type being defined?
          mapM checkProj (zip pNas cs)
-         -- Conv Eq
+         -- Are all projections applications on types that are conv equivalent
          let x = (zip pNas cs)
          (_, ty) <- foldM pConvEq (head x) (tail x)
          -- Uniform the type parameters in projections
-         -- Get constructor result type FIXME: Do this right
-         -- let ty = head cs
+         names <- namesIn ty
+         tnames <- mapM namesIn (tail cs)
+         let rnames = map (((nub names) \\) . nub) tnames
+         let pTys'' = zipWith ($) (map replaceNames rnames) (tail pTys')
+         let uTys = zipWith ($) (map (uniform ty) (tail cs)) pTys''
+         let pNaTys = zip pNas (head pTys' : uTys)
          -- Make constructor
          dataCons <- case cons of 
                        Just((doc, argDocs, fc, name, args, pPli)) ->
@@ -94,19 +97,48 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          --- Make projection and update functions.
          mkProjAndUpdate info rsyn fc tyn cn cty_in
   where
+    namesIn :: PTerm -> Idris [Name]
+    namesIn t = filterM f (extract t)
+      where
+        f :: Name -> Idris Bool
+        f n = do i <- getIState
+                 case lookupNames n (tt_ctxt i) of
+                   [] -> return True
+                   _ -> return False
+                   
+      
+    
+    replaceNames :: [Name] -> PTerm -> PTerm
+    replaceNames ns t = mapPT (rn ns) t
+      where
+        rn :: [Name] -> PTerm -> PTerm
+        rn ns (PRef fc n)
+          | True <- (n `elem` ns) = rn ns (PRef fc (nextName n))
+          | otherwise = PRef fc n
+        rn _ t = t
+    -- Replace old with new in target
+    uniform :: PTerm -> PTerm -> PTerm -> PTerm
+    uniform new old target = mapPT (replace new old) target
+      where
+        -- Replace i with r if i is m
+        replace :: PTerm -> PTerm -> PTerm -> PTerm
+        replace r m i
+          | m == i = r
+          | otherwise = i
+    
     pConvEq :: (Name, PTerm) -> (Name, PTerm) -> Idris (Name, PTerm)
     pConvEq (n, t) (n', t') = do (ty , _, _, _) <- buildType info rsyn fc [] n  t
                                  (ty', _, _, _) <- buildType info rsyn fc [] n' t'
                                  i <- getIState
                                  let ctxt = tt_ctxt i
                                  let ucs  = map fst (idris_constraints i)
-                                 logLvl 0 $ "pConvEq on " ++ show ty ++ " which is build from " ++ show t  ++ " with name " ++ show n ++ "\n" ++
-                                                   "and " ++ show ty' ++ " which is build from " ++ show t' ++ " with name " ++ show n'
                                  case LState.evalStateT (convEq ctxt [] ty ty') (0, ucs) of
-                                   (OK True) -> case LState.evalStateT (convEq ctxt [] (finalise (normalise ctxt [] ty)) (finalise (normalise ctxt [] ty'))) (0, ucs) of
+                                   (OK True) -> return (n, t)
+                                   _ -> case LState.evalStateT (convEq ctxt [] (finalise (normalise ctxt [] ty)) (finalise (normalise ctxt [] ty'))) (0, ucs) of
                                                  (OK True) -> return (n, t)
-                                                 _ -> tclift $ tfail (At fc (Elaborating "corecord projection " n (Msg "foo")))
-                                   _ -> tclift $ tfail (At fc (Elaborating "corecord projection " n (Msg "foo")))
+                                                 _ -> tclift $ tfail (At fc (Elaborating "corecord projection " n' (CantConvert
+                                                                                                                     (finalise (normalise ctxt [] ty ))
+                                                                                                                     (finalise (normalise ctxt [] ty')) (errEnv []))))
 
       
     generateConsName :: Idris Name
@@ -133,7 +165,8 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
     -- Checks that's a projection is of the right type
     checkProj :: (Name, PTerm) -> Idris ()
     checkProj (n, t) = (do (cty, _, _, _) <- buildType info syn fc [] n t
-                           tyIs n cty)
+                           i <- getIState
+                           tyIs n (normalise (tt_ctxt i) [] cty))
     -- Uniforms projection type variables
     uniformProjs :: [Name] -> [PTerm] -> [PTerm]
     uniformProjs _ = id
@@ -275,7 +308,7 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                         (\v -> do iputStrLn $ show fc ++
                                       ":Warning - can't generate setter for " ++
                                       show fn ++ " (" ++ show ty ++ ")"
-                               --      --  ++ "\n" ++ pshow i v
+                                     --  ++ "\n" ++ pshow i v
                                   putIState i)
 
     getImplB k (PPi (Imp l s _) n Placeholder sc)
@@ -384,4 +417,3 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                if n `elem` allNamesIn t 
                   then PPi impl n' ty (implBindUp ns is t)
                   else implBindUp ns is t
-
