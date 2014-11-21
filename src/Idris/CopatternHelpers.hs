@@ -18,6 +18,101 @@ import Control.Applicative
 import Data.List
 import Data.Maybe
 
+-- constructorForType :: Name -- ^ The name of the clause
+--                       -> Idris PTerm
+-- constructorForType clauseName =
+--   do i <- get
+--      ty <- case lookupTyNameExact (nsroot clauseName) (tt_ctxt i) of
+--             Just ty' -> return $ delab i ty'
+
+-- argType :: PTerm -> (PTerm -> PTerm)
+-- argType (PPi p n a b) = \result -> PPi p n a (argType b
+
+-- splitType :: PTerm -> (PTerm, PTerm)
+-- splitType (PPi _ n a b@(PPi _ _ _)) = ()
+-- splitType _
+
+type Path = [Name]
+
+path :: PClause -> (PClause, Path)
+path (PClause fc n (PLhsProj pn t) wis rhs whs) =
+  let (c, p) = path (PClause fc n t wis rhs whs)
+  in (c, reverse (pn:p))
+path (PWith fc n (PLhsProj pn t) wis rhs whs) =
+  let (c, p) = path (PWith fc n t wis rhs whs)
+  in (c, reverse (pn:p))
+path c = (c, [])
+
+-- splitType :: PTerm -> (PTerm -> PTerm, PTerm) 
+-- splitType (PPi pl n a b) =
+--   let (f, b') = splitType b
+--   in (PPi pl n a . f, b')
+-- splitType t = (id, t)
+
+-- 1. Nat -> MkB Nat
+-- 2. Split type: (Nat, B Nat)
+-- 3. Unapply result type: B [Nat]
+-- 4. Find constructor for B: MkB : a -> MkB a
+-- 5. Instantiate constructor: Nat -> MkB Nat
+-- 6. Delaborate with implicit arguments
+
+normalisedType :: Name -> Idris Type
+normalisedType n =
+  do i <- get
+     (nty, ty) <- case lookupTyNameExact n (tt_ctxt i) of
+                   Just (_, ty') -> return $ (normalise (tt_ctxt i) [] ty', ty')
+                   Nothing -> undefined
+     iLOG $ "Written type: " ++ show ty
+     iLOG $ "Normalized type: " ++ show nty
+     return nty
+
+splitType :: Type -> ([(Name, Type)], Type)
+splitType ty = (getArgTys ty, getRetTy ty)
+
+constructorFor :: Name -> Idris PTerm
+constructorFor n =
+  do i <- get
+     normTy <- normalisedType n
+     let (argTys, retTy) = splitType normTy
+     let (ty, tyArgs) = unApply retTy
+     tyName <- typeName ty
+     constrName <- constructorName tyName
+     constrType <- normalisedType constrName
+     let (constrArgTys, constrRetTy) = splitType constrType
+     let (constrRetName, constrRetArgs) = unApply constrRetTy
+     let instantiatedConstrType = substTerms (zip constrRetArgs tyArgs) constrType
+     iLOG $ "Instantiated type: " ++ show instantiatedConstrType
+     return $ delab i instantiatedConstrType
+
+substTerms :: Eq n => [(TT n, TT n)] -> TT n -> TT n
+substTerms subs t = foldr (\(old,new) -> \t' -> substTerm old new t') t subs
+     
+typeName :: Type -> Idris Name
+typeName ty = case freeNames ty of
+               [] -> undefined
+               [tyName] -> return tyName
+               _ -> undefined
+
+-- FIXME : Fail properly
+constructorName :: Name -> Idris Name
+constructorName n =
+  do i <- get
+     typeInfo <- case lookupCtxtExact n (idris_datatypes i) of
+                  Just ti -> return ti
+                  Nothing -> undefined
+     case con_names typeInfo of
+      [] -> undefined
+      [conName] -> return conName
+      _ -> undefined
+
+constructorType :: Name -> Idris Type
+constructorType n =
+  do i <- get
+     ty <- case lookupTyNameExact n (tt_ctxt i) of
+             Just (_, ty') -> return ty'
+             Nothing -> undefined
+     return ty
+
 -- | Tests whether the input clause has one or more left-hand side projections.
 -- In other words, 'hasLhsProjs' tests whether a clause involves copatterns.
 hasLhsProjs :: PClause -> Bool
@@ -51,18 +146,30 @@ hasConsistentLhsProjs clauses =
      zeros : Stream Nat
      zeros = Z :: zeros
 -}
-desugarLhsProjs :: [PClause] -> Idris [PClause]
-desugarLhsProjs clauses =
-  do expanded <- mapM expandClause clauses
-     iLOG $ "Expanded " ++ show (length expanded) ++ " clauses"
-     merged <- mergeClauseList expanded
-     iLOG $ "Returning " ++ show (length merged) ++ " merged clauses"
-     forM_ merged $ \m ->
-       do case (clauseLhs m) of
-           Just app -> iLOG $ "LHS: " ++ show app
-           Nothing -> return ()
-          iLOG $ "RHS: " ++ show (clauseRhs m)
-     return merged
+desugarLhsProjs :: Name -> [PClause] -> Idris [PClause]
+desugarLhsProjs name clauses =
+  if True
+  then mergedCopatterns
+  else do _ <- constructorFor name
+          return []
+  where
+    splitCopatterns :: [PClause] -> Idris [PClause]
+    splitCopatterns = undefined
+
+    mergedCopatterns =
+      do expanded <- mapM expandClause clauses
+         iLOG $ "Expanded " ++ show (length expanded) ++ " clauses"
+         merged <- mergeClauseList expanded
+         iLOG $ "Returning " ++ show (length merged) ++ " merged clauses"
+         forM_ merged $ \m ->
+           do case (clauseLhs m, clauseName m) of
+               (Just app, Just n) ->
+                 do iLOG $ "LHS: " ++ show app
+                    _ <- constructorFor n
+                    return ()
+               _ -> return ()
+              iLOG $ "RHS: " ++ show (clauseRhs m)
+         return merged
 
 {-| Expands a clause with left-hand side projections into
     a clause using constructors. For arguments where a
@@ -259,12 +366,12 @@ mergeClauseList clauses =
      -- 1. Get a list of pairs, pairing each clause with the rest of the clauses
      let singledOut = singleOut clauses
      -- 2. Remove equivalent clauses from the output
-     iLOG $ "Before removing duplicates: " ++ intercalate ", "  (map show (mapMaybe clauseLhs (map fst singledOut)))
+     iLOG $ "Before removing duplicates: " ++ intercalate ", "  (map show (mapMaybe clauseName (map fst singledOut)))
      let noDuplicates = nubBy (\(c,_) (c',_) -> clauseEq ctxt c c') singledOut
-     iLOG $ "After removing duplicates: " ++ intercalate ", "  (map show (mapMaybe clauseLhs (map fst noDuplicates)))
+     iLOG $ "After removing duplicates: " ++ intercalate ", "  (map show (mapMaybe clauseName (map fst noDuplicates)))
      -- 3. Remove subsumed clauses
      resultingClauses <- removeSubsumed noDuplicates -- Move some logging in here
-     iLOG $ "After removing subsumed: " ++ intercalate ", "  (map show (mapMaybe clauseLhs (map fst resultingClauses)))
+     iLOG $ "After removing subsumed: " ++ intercalate ", "  (map show (mapMaybe clauseName (map fst resultingClauses)))
      foldedClauses <- forM resultingClauses $ \(clause, other) -> foldM (\c o -> mergeClauses c o) clause other
      return foldedClauses
   where
@@ -302,11 +409,27 @@ allM p (x:xs) = let andM = liftM2 (&&) in p x `andM` allM p xs
 {-| Replaces the right-hand side of the second argument with
     the first argument.
 -}
-changeRhs :: PTerm -> PClause -> PClause
-changeRhs newrhs (PClause fc n lhs wis _ whs) = PClause fc n lhs wis newrhs whs
-changeRhs newrhs (PWith fc n lhs wis _ whs) = PWith fc n lhs wis newrhs whs
-changeRhs newrhs (PClauseR fc wis _ whs) = PClauseR fc wis newrhs whs
-changeRhs newrhs (PWithR fc wis _ whs) = PWithR fc wis newrhs whs
+replaceRhs :: PTerm -> PClause -> PClause
+replaceRhs newrhs (PClause fc n lhs wis _ whs) = PClause fc n lhs wis newrhs whs
+replaceRhs newrhs (PWith fc n lhs wis _ whs) = PWith fc n lhs wis newrhs whs
+replaceRhs newrhs (PClauseR fc wis _ whs) = PClauseR fc wis newrhs whs
+replaceRhs newrhs (PWithR fc wis _ whs) = PWithR fc wis newrhs whs
+
+replaceWheres :: [PDecl] -> PClause -> PClause
+replaceWheres newwheres (PClause fc n lhs wis rhs _) = PClause fc n lhs wis rhs newwheres
+replaceWheres newwheres (PWith fc n lhs wis rhs _) = PWith fc n lhs wis rhs newwheres
+replaceWheres newwheres (PClauseR fc wis rhs _) = PClauseR fc wis rhs newwheres
+replaceWheres newwheres (PWithR fc wis rhs _) = PWithR fc wis rhs newwheres
+
+
+mergeWheres :: PClause -> PClause -> PClause
+mergeWheres l r =
+  case (clauseWheres l, clauseWheres r) of
+   ([], []) -> l
+   (_, []) -> l
+   ([], ys) -> replaceWheres ys l
+   (xs, ys) -> replaceWheres (xs ++ ys) l
+      
 
 mergeClauses :: PClause -> PClause -> Idris PClause
 mergeClauses l r
@@ -318,7 +441,7 @@ mergeClauses l r
       case compSet of
        Just cs -> do iLOG $ "Substitutions (" ++ show lhsl ++ ", " ++ show lhsr ++ ") : " ++ intercalate ", " (map show cs)
                      mergedRhs <- merge rhsl (subst cs rhsr)
-                     return $ changeRhs mergedRhs l
+                     return $ mergeWheres (replaceRhs mergedRhs l) r
        Nothing -> return l
  | otherwise = return l
 
@@ -373,9 +496,10 @@ icompatible x y = do i <- get
                      return $ compatible' (tt_ctxt i) x y []
 
 {- |
- Tests whether two terms are compatible.
- Two terms are compatible if the second argument
- is more general than the first argument (i.e. the first
+ Tests whether two terms are compatible, and returns
+ a list of necessary substitutions if they are.
+ Two terms are compatible if the third argument
+ is more general than the second argument (i.e. the second
  argument has more specific patterns)
 -}
 compatible :: Context -> PTerm -> PTerm -> Maybe [Substitution]
@@ -527,3 +651,9 @@ clauseRhs (PClause _ _ _ _ rhs _) = rhs
 clauseRhs (PWith _ _ _ _ rhs _) = rhs
 clauseRhs (PClauseR _ _ rhs _) = rhs
 clauseRhs (PWithR _ _ rhs _) = rhs
+
+clauseWheres :: PClause -> [PDecl]
+clauseWheres (PClause _ _ _ _ _ wheres) = wheres
+clauseWheres (PWith _ _ _ _ _ wheres) = wheres
+clauseWheres (PClauseR _ _ _ wheres) = wheres
+clauseWheres (PWithR _ _ _ wheres) = wheres
