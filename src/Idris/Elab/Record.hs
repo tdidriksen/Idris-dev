@@ -19,6 +19,7 @@ import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
 import Idris.ParseHelpers (opChars)
 import Idris.IdrisDoc (extract)
+import Idris.GuardedRecursionHelpers
 
 import Idris.Elab.Type
 import Idris.Elab.Data
@@ -53,7 +54,9 @@ import Data.List.Split (splitOn)
 
 --import Util.Pretty(pretty, text)
 
-elabCorecord :: ElabInfo -> SyntaxInfo -> SyntaxInfo -> Docstring (Either Err PTerm) -> [(Name, (Docstring (Either Err PTerm)))] -> FC -> DataOpts -> (PCorecord' PTerm) -> Idris ()
+type Cons = (Docstring (Either Err PTerm), [(Name, Docstring (Either Err PTerm))], Name, PTerm, FC, [Name])
+
+elabCorecord :: ElabInfo -> SyntaxInfo -> SyntaxInfo -> Docstring (Either Err PTerm) -> [(Name, Docstring (Either Err PTerm))] -> FC -> DataOpts -> PCorecord' PTerm -> Idris ()
 elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons)
     = do let (pNas, pTys) = unzip (map (\ (_, _, n, t, _, _) -> (n, t)) projs)
          -- Save state before building data for elaboration.
@@ -67,36 +70,79 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          pnt <- mapM splitProj (zip pNas pTys)
          let (cs, pTys') = unzip pnt
          -- Are all projections applications where the first argument is of the same family as the type being defined?
-         mapM checkProj (zip pNas cs)
+         mapM_ checkProj (zip pNas cs)
          -- Are all projections applications on types that are conv equivalent
          let x = (zip pNas cs)
          (_, ty) <- foldM pConvEq (head x) (tail x)
          -- Uniform the type parameters in projections
-         names <- namesIn ty
+         names <- namesIn (head cs)
          tnames <- mapM namesIn (tail cs)
          let rnames = map (((nub names) \\) . nub) tnames
          let pTys'' = zipWith ($) (map replaceNames rnames) (tail pTys')
-         let uTys = zipWith ($) (map (uniform ty) (tail cs)) pTys''
+         let uTys = zipWith ($) (map (uniform (head cs)) (tail cs)) pTys''
          let pNaTys = zip pNas (head pTys' : uTys)
          -- Make constructor
          dataCons <- case cons of 
-                       Just((doc, argDocs, fc, name, args, pPli)) ->
+                       Just (doc, argDocs, fc, name, args, pPli) ->
                          (do orderedCons <- orderConsArgs args pNaTys tyn
                              let consType = cType orderedCons pPli ty
-                             return [(doc, argDocs, name, consType, fc, args)])
+                             return [(doc, argDocs, name, consType, fc, [])])
                        Nothing -> (do let consType = cType pNaTys [] ty
                                       name <- if isOp tyn then (do n <- generateConsName
                                                                    iputStrLn $ show fc ++ ":Warning - generated constructor " ++ show n ++ " for type " ++ show tyn ++ "."
                                                                    return n)
                                                           else return (sUN ("Mk" ++ (show $ nsroot tyn)))
-                                      return [(emptyDocstring, [], (expandNS syn name), consType, fc, [])])
+                                      return [(emptyDocstring, [], expandNS syn name, consType, fc, [])])
          -- Elaborate constructed data.
          elabData info rsyn doc argDocs fc (Codata : opts) (PDatadecl tyn tyc dataCons)
-         -- Get constructor name and type.
-         let (cn, cty_in) = (\ (_, _, n, t, _, _) -> (n, t)) (head dataCons) -- Only one constructor exists.
-         --- Make projection and update functions.
+         -- Make projection and update functions.
+         let (cn, cty_in) = (\(_,_,n,t,_,_) -> (n, t)) (head dataCons)
          mkProjAndUpdate info rsyn fc tyn cn cty_in
+         -- Build guarded recursive projections.
+         -- As the guarded recursive definitions are never run we use postulates.
+         gn <- getGuardedName tyn
+         mapM_ guardedNameCtxt pNas
+         let gpTys = map (guardedTerm tyn) pTys'
+         gpTys' <- mapM (guardNamesIn tyn) gpTys
+         gty <- guardNamesIn tyn ty
+         let gtf = map (prePi gty) gpTys'
+         mapM_ elabGuardedPostulate (zip pNas gtf)
   where
+    prePi c t = PPi (Exp [] Dynamic False) (sMN 0 "__pi_arg") c t
+
+    {-
+    collectGuardedProjs :: PTerm -> PTerm -> [(Name, PTerm)]
+    collectGuardedProjs (PPi _ n ty sc) s = (n, (prePi s (mkGuarded ty tyn True))) : (collectGuardedProjs sc s)
+    collectGuardedProjs _ _ = []-}
+
+    {-
+    collectGuardedRenames :: PTerm -> [(Name, Name)]
+    collectGuardedRenames (PPi _ n _ sc)
+      = (n, guardedName n) : collectGuardedRenames sc
+    collectGuardedRenames _ = []
+          
+    guardedRecord :: Name -> SyntaxInfo -> Cons -> [(Name, Name)] -> Idris ()
+    guardedRecord gtyn gsyn dataCons gnames
+      = do iLOG $ "Guarded renames: " ++ (show gnames)
+           let gcons = guardedCons dataCons
+           elabData info gsyn emptyDocstring [] emptyFC opts (PDatadecl gtyn tyc [gcons])
+           let (gn, gty_in) = (\(_,_,n,t,_,_) -> (n, t)) gcons
+           mkProjAndUpdate info gsyn fc gtyn gn gty_in
+      where
+        mkGuarded (PPi pl n ty sc)
+          = let ty' = if getTyName ty
+                      then PApp fc laterRef
+                           [pexp (guardedRef ty)]
+                      else ty in
+                    PPi pl (guardedRename n) ty' (mkGuarded sc)
+    
+        guardedCons (_, _, name, consType, fc, _) = (emptyDocstring, [], (guardedRename name), mkGuarded consType, fc, [])
+
+        guardedRename :: Name -> Name
+        guardedRename n = case lookup n gnames of
+                            Just n' -> n'
+                            Nothing -> n
+-}
     namesIn :: PTerm -> Idris [Name]
     namesIn t = filterM f (extract t)
       where
@@ -109,16 +155,16 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
       
     
     replaceNames :: [Name] -> PTerm -> PTerm
-    replaceNames ns t = mapPT (rn ns) t
+    replaceNames ns = mapPT (rn ns)
       where
         rn :: [Name] -> PTerm -> PTerm
         rn ns (PRef fc n)
           | True <- (n `elem` ns) = rn ns (PRef fc (nextName n))
           | otherwise = PRef fc n
         rn _ t = t
-    -- Replace old with new in target
+    -- Replace old with new
     uniform :: PTerm -> PTerm -> PTerm -> PTerm
-    uniform new old target = mapPT (replace new old) target
+    uniform new old = mapPT (replace new old)
       where
         -- Replace i with r if i is m
         replace :: PTerm -> PTerm -> PTerm -> PTerm
@@ -142,7 +188,7 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
 
       
     generateConsName :: Idris Name
-    generateConsName = gen $ sUN ("Mk_Infix_Record0")
+    generateConsName = gen $ sUN "Mk_Infix_Record0"
       where
         gen :: Name -> Idris Name
         gen n = do i <- getIState
@@ -158,9 +204,8 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
     tyIs :: Name -> Type -> Idris ()
     tyIs con (Bind _ _ b) = tyIs con b -- Unbind until we get the last parameter
     tyIs con t | (P _ n' _, _) <- unApply t
-        = if n' /= tyn
-            then tclift $ tfail (At fc (Elaborating "corecord projection " con (Msg (show n' ++ " is not " ++ show tyn))))
-            else return ()
+        = do when (n' /= tyn) (tclift $ tfail (At fc (Elaborating "corecord projection " con (Msg (show n' ++ " is not " ++ show tyn)))))
+             return ()
     tyIs con t = tclift $ tfail (At fc (Elaborating "corecord projection " con (Msg (show t ++ " is not " ++ show tyn))))
     -- Checks that's a projection is of the right type
     checkProj :: (Name, PTerm) -> Idris ()
@@ -192,7 +237,7 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
       where 
         orderConsArgs' :: [Name] -> [(Name, PTerm)] -> Name -> Idris [(Name, PTerm)]
         orderConsArgs' (x : xs) ys tyn = case lookup x ys of
-                                               Just(t) -> (return ((x, t) :)) <*> (orderConsArgs' xs (delete (x, t) ys) tyn)
+                                               Just t -> (return ((x, t) :)) <*> (orderConsArgs' xs (delete (x, t) ys) tyn)
                                                Nothing -> tclift $ tfail (At fc (Elaborating "record constructor " tyn (Msg (show x ++ " is not in " ++ show tyn))))
         orderConsArgs' [] [] _  = return []
         orderConsArgs' _ _ tyn = tclift $ tfail (At fc (Elaborating "record constructor " tyn (Msg ("Arguments do not match projections in " ++ show tyn)))) -- FIXME: Better error msg
@@ -270,7 +315,7 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                                    implBinds (length nonImp)) (zip nonImp [0..])
          mapM_ (rec_elabDecl info EAll info) (concat proj_decls)
          logLvl 3 $ show update_decls
-         mapM_ (tryElabSetter info) (update_decls)
+         mapM_ (tryElabSetter info) update_decls
   where
     getBoundImpls (PPi (Imp _ _ _) n ty sc) = (n, ty) : getBoundImpls sc
     getBoundImpls _ = []
@@ -417,3 +462,4 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                if n `elem` allNamesIn t 
                   then PPi impl n' ty (implBindUp ns is t)
                   else implBindUp ns is t
+

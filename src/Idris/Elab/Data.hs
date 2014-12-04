@@ -17,6 +17,7 @@ import Idris.PartialEval
 import Idris.DeepSeq
 import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
+import Idris.GuardedRecursionHelpers
 
 import Idris.Elab.Type
 import Idris.Elab.Utils
@@ -74,7 +75,7 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
          let cnameinfo = cinfo info (map cname dcons)
          let unique = case getRetTy cty of
                            UType UniqueType -> True
-                           _ -> False
+                           _ -> False                           
          cons <- mapM (elabCon cnameinfo syn n codata (getRetTy cty)) dcons
          ttag <- getName
          i <- getIState
@@ -115,7 +116,39 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
          -- create a case function
          when (DefaultCaseFun `elem` opts) $
             evalStateT (elabCaseFun False params n t dcons info) Map.empty
+
+         -- Guarded Recursion
+         when codata 
+           (do let gsyn = withGuardedNS syn
+               let gopts = delete Codata opts
+               gn <- guardedNameCtxt n
+               let f = (\(_,_,cn,ct,_,_) -> (do gcn <- guardedNameCtxt cn
+                                                let gct = guardedConstructor n ct
+                                                i <- getIState
+                                                rgct <- guardNamesIn n gct
+                                                return (emptyDocstring, [], gcn, rgct, emptyFC, [])))
+               gcs <- mapM f dcons
+               elabData info gsyn emptyDocstring [] emptyFC gopts (PDatadecl gn t_in gcs)
+               tya <- tyArgs cty
+               iLOG $ show tya
+               boxingFunctions n gn tya)
+         --}         
+
   where
+        tyArgs :: Type -> Idris [PTerm]
+        tyArgs t = do i <- getIState
+                      let defs = map fst (ctxtAlist (tt_ctxt i))
+                      ta defs (sUN "a") t
+          where -- Totally a hack. FIX ME
+            ta ns n (TType _) = return $ []
+            ta ns n (Bind _ _ t) = do let nn = uniqueName n ns
+                                      rest <- ta (nn : ns) nn t
+                                      return $ (PRef emptyFC nn) : rest
+            ta _ _ _ = ifail "Guarded Recursion for this is not yet implemented."
+                                  
+
+
+    
         setDetaggable :: Name -> Idris ()
         setDetaggable n = do
             ist <- getIState

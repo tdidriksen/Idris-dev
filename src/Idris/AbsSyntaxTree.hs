@@ -213,7 +213,9 @@ data IState = IState {
     idris_whocalls :: Maybe (M.Map Name [Name]),
     idris_callswho :: Maybe (M.Map Name [Name]),
     idris_repl_defs :: [Name], -- ^ List of names that were defined in the repl, and can be re-/un-defined
-    lhs_projections :: Ctxt (PDecl, Name, Name, Name)
+    lhs_projections :: Ctxt (PDecl, Name, Name, Name),
+    guarded_renames :: [(Name, Name)], -- ^ Names of declarations that have a guarded counterpart
+    guarded_boxing :: [(Name, (Name, Name))] -- ^ (Type, (BoxingFun, UnboxingFun))
    }
 
 -- Required for parsers library, and therefore trifecta
@@ -294,7 +296,7 @@ idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
                    [] [] [] defaultOpts 6 [] [] [] [] [] [] [] [] [] [] [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
-                   AutomaticWidth S.empty Nothing Nothing [] emptyContext
+                   AutomaticWidth S.empty Nothing Nothing [] emptyContext [] []
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).

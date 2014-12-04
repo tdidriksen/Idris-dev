@@ -242,11 +242,13 @@ elabDecl' what info (PClass doc s f cs n ps pdocs ds)
 elabDecl' what info (PInstance s f cs n ps t expn ds)
     = do iLOG $ "Elaborating instance " ++ show n
          elabInstance info s what f cs n ps t expn ds
-elabDecl' what info (PCorecord doc argDocs syn rsyn fc opts decl@(PCorecorddecl tyn _ _ _))
+elabDecl' what info (PCorecord doc argDocs syn rsyn fc opts decl@(PCorecorddecl tyn tyc _ _))
   | what /= ETypes
     = do iLOG $ "Elaborating corecord " ++ show tyn
          elabCorecord info syn rsyn doc argDocs fc opts decl
-  | otherwise = return ()
+  | otherwise
+    = do iLOG $ "Elaborating corecord [type of] " ++ show tyn
+         elabData info rsyn doc [] fc [] (PLaterdecl tyn tyc)
 elabDecl' what info (PRecord doc s f tyn ty opts cdoc cn cty)
   | what /= ETypes
     = do iLOG $ "Elaborating record " ++ show tyn

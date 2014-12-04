@@ -138,3 +138,11 @@ believe_me x = prim__believe_me _ _ x
 public %assert_total
 really_believe_me : a -> b
 really_believe_me x = prim__believe_me _ _ x
+
+namespace GuardedRecursion
+  data Later : Type -> Type where
+    next : a -> Later a
+    
+  compose : Later (a -> b) -> Later a -> Later b
+  compose (next t) (next u) = next (t u)
+
