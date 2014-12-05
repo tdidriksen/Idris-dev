@@ -21,6 +21,7 @@ import System.IO
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Error
 
+import Data.Function (on)
 import Data.List hiding (group)
 import Data.Char
 import qualified Data.Map as M
@@ -45,16 +46,17 @@ data ElabWhat = ETypes | EDefns | EAll
 
 -- rec_elabDecl is used to pass the top level elaborator into other elaborators,
 -- so that we can have mutually recursive elaborators in separate modules without
--- having to much about with cyclic modules.
+-- having to muck about with cyclic modules.
 data ElabInfo = EInfo { params :: [(Name, PTerm)],
                         inblock :: Ctxt [Name], -- names in the block, and their params
                         liftname :: Name -> Name,
-                        namespace :: Maybe [String], 
+                        namespace :: Maybe [String],
+                        elabFC :: Maybe FC,
                         rec_elabDecl :: ElabWhat -> ElabInfo -> PDecl -> 
                                         Idris () }
 
 toplevel :: ElabInfo
-toplevel = EInfo [] emptyContext id Nothing (\_ _ _ -> fail "Not implemented")
+toplevel = EInfo [] emptyContext id Nothing Nothing (\_ _ _ -> fail "Not implemented")
 
 eInfoNames :: ElabInfo -> [Name]
 eInfoNames info = map fst (params info) ++ M.keys (inblock info)
@@ -177,7 +179,7 @@ data IState = IState {
     idris_metavars :: [(Name, (Maybe Name, Int, Bool))], -- ^ The currently defined but not proven metavariables
     idris_coercions :: [Name],
     idris_errRev :: [(Term, Term)],
-    syntax_rules :: [Syntax],
+    syntax_rules :: SyntaxRules,
     syntax_keywords :: [String],
     imported :: [FilePath], -- ^ The imported modules
     idris_scprims :: [(Name, (Int, PrimFn))],
@@ -293,7 +295,7 @@ idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
-                   [] [] [] defaultOpts 6 [] [] [] [] [] [] [] [] [] [] [] []
+                   [] [] [] defaultOpts 6 [] [] [] [] emptySyntaxRules [] [] [] [] [] [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
                    AutomaticWidth S.empty Nothing Nothing [] emptyContext [] []
@@ -347,7 +349,6 @@ data Command = Quit
              | DynamicLink FilePath
              | ListDynamic
              | Pattelab PTerm
-             | DebugInfo Name
              | Search PTerm
              | CaseSplitAt Bool Int Name
              | AddClauseFrom Bool Int Name
@@ -374,6 +375,9 @@ data Command = Quit
              | PrintDef Name
              | PPrint OutputFmt Int PTerm
              | TransformInfo Name
+             -- Debugging commands
+             | DebugInfo Name
+             | DebugUnify PTerm PTerm
 
 data OutputFmt = HTMLOutput | LaTeXOutput
 
@@ -819,6 +823,7 @@ data PTactic' t = Intro [Name] | Intros | Focus Name
                 | Skip
                 | TFail [ErrorReportPart]
                 | Qed | Abandon
+                | SourceFC
     deriving (Show, Eq, Functor, Foldable, Traversable)
 {-!
 deriving instance Binary PTactic'
@@ -849,6 +854,7 @@ instance Sized a => Sized (PTactic' a) where
   size Abandon = 1
   size Skip = 1
   size (TFail ts) = 1 + size ts
+  size SourceFC = 1
 
 type PTactic = PTactic' PTerm
 
@@ -998,6 +1004,9 @@ syntaxNames :: Syntax -> [Name]
 syntaxNames (Rule syms _ _) = mapMaybe ename syms
            where ename (Keyword n) = Just n
                  ename _           = Nothing
+
+syntaxSymbols :: Syntax -> [SSymbol]
+syntaxSymbols (Rule ss _ _) = ss
 {-!
 deriving instance Binary Syntax
 deriving instance NFData Syntax
@@ -1008,13 +1017,53 @@ data SSymbol = Keyword Name
              | Binding Name
              | Expr Name
              | SimpleExpr Name
-    deriving Show
+    deriving (Show, Eq)
     
 
 {-!
 deriving instance Binary SSymbol
 deriving instance NFData SSymbol
 !-}
+
+newtype SyntaxRules = SyntaxRules { syntaxRulesList :: [Syntax] }
+
+emptySyntaxRules :: SyntaxRules
+emptySyntaxRules = SyntaxRules []
+
+updateSyntaxRules :: [Syntax] -> SyntaxRules -> SyntaxRules
+updateSyntaxRules rules (SyntaxRules sr) = SyntaxRules newRules
+  where
+    newRules = sortBy (ruleSort `on` syntaxSymbols) (rules ++ sr)
+
+    ruleSort [] [] = EQ
+    ruleSort [] _ = LT
+    ruleSort _ [] = GT
+    ruleSort (s1:ss1) (s2:ss2) =
+      case symCompare s1 s2 of
+        EQ -> ruleSort ss1 ss2
+        r -> r
+
+    -- Better than creating Ord instance for SSymbol since
+    -- in general this ordering does not really make sense.
+    symCompare (Keyword n1) (Keyword n2) = compare n1 n2
+    symCompare (Keyword _) _ = LT
+    symCompare (Symbol _) (Keyword _) = GT
+    symCompare (Symbol s1) (Symbol s2) = compare s1 s2
+    symCompare (Symbol _) _ = LT
+    symCompare (Binding _) (Keyword _) = GT
+    symCompare (Binding _) (Symbol _) = GT
+    symCompare (Binding b1) (Binding b2) = compare b1 b2
+    symCompare (Binding _) _ = LT
+    symCompare (Expr _) (Keyword _) = GT
+    symCompare (Expr _) (Symbol _) = GT
+    symCompare (Expr _) (Binding _) = GT
+    symCompare (Expr e1) (Expr e2) = compare e1 e2
+    symCompare (Expr _) _ = LT
+    symCompare (SimpleExpr _) (Keyword _) = GT
+    symCompare (SimpleExpr _) (Symbol _) = GT
+    symCompare (SimpleExpr _) (Binding _) = GT
+    symCompare (SimpleExpr _) (Expr _) = GT
+    symCompare (SimpleExpr e1) (SimpleExpr e2) = compare e1 e2
 
 initDSL = DSL (PRef f (sUN ">>="))
               (PRef f (sUN "return"))
@@ -1328,12 +1377,28 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
             else if null args
                    then fp
                    else fp <+> align (vsep (map (prettyArgS bnd) args))
-    prettySe p bnd (PCase _ scr opts) =
-      kwd "case" <+> prettySe 10 bnd scr <+> kwd "of" <> prettyBody
+    prettySe p bnd (PCase _ scr cases) =
+      align $ kwd "case" <+> prettySe 10 bnd scr <+> kwd "of" <$>
+      indent 2 (vsep (map ppcase cases))
       where
-        prettyBody = foldr (<>) empty $ intersperse (text "|") $ map sc opts
+        ppcase (l, r) = nest nestingSize $
+                          prettySe 10 ([(n, False) | n <- vars l] ++ bnd) l <+>
+                          text "=>" <+>
+                          prettySe 10 ([(n, False) | n <- vars l] ++ bnd) r
+        -- Warning: this is a bit of a hack. At this stage, we don't have the
+        -- global context, so we can't determine which names are constructors,
+        -- which are types, and which are pattern variables on the LHS of the
+        -- case pattern. We use the heuristic that names without a namespace
+        -- are patvars, because right now case blocks in PTerms are always
+        -- delaborated from TT before being sent to the pretty-printer. If they
+        -- start getting printed directly, THIS WILL BREAK.
+        -- Potential solution: add a list of known patvars to the cases in
+        -- PCase, and have the delaborator fill it out, kind of like the pun
+        -- disambiguation on PDPair.
+        vars tm = filter noNS (allNamesIn tm)
+        noNS (NS _ _) = False
+        noNS _ = True
 
-        sc (l, r) = nest nestingSize $ prettySe 10 bnd l <+> text "=>" <+> prettySe 10 bnd r
     prettySe p bnd (PHidden tm) = text "." <> prettySe 0 bnd tm
     prettySe p bnd (PRefl _ _) = annName eqCon $ text "Refl"
     prettySe p bnd (PResolveTC _) = text "resolvetc"
@@ -1502,13 +1567,15 @@ prettyName
   -> [(Name, Bool)] -- ^^ the current bound variables and whether they are implicit
   -> Name -- ^^ the name to pprint
   -> Doc OutputAnnotation
-prettyName infixParen showNS bnd n 
+prettyName infixParen showNS bnd n
+    | (MN _ s) <- n, isPrefixOf "_" $ T.unpack s = text "_"
+    | (UN n') <- n, isPrefixOf "_" $ T.unpack n' = text "_"
     | Just imp <- lookup n bnd = annotate (AnnBoundName n imp) fullName
     | otherwise                = annotate (AnnName n Nothing Nothing Nothing) fullName
   where fullName = text nameSpace <> parenthesise (text (baseName n))
         baseName (UN n) = T.unpack n
         baseName (NS n ns) = baseName n
-        baseName (MN i s) = T.unpack s 
+        baseName (MN i s) = T.unpack s
         baseName other = show other
         nameSpace = case n of
           (NS n' ns) -> if showNS then (concatMap (++ ".") . map T.unpack . reverse) ns else ""

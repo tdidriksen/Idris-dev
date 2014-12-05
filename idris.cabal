@@ -313,6 +313,11 @@ Extra-source-files:
                        test/buffer001-disabled/run
                        test/buffer001-disabled/expected
 
+                       test/delab001/*.idr
+                       test/delab001/run
+                       test/delab001/expected
+                       test/delab001/input
+
                        test/dsl001/run
                        test/dsl001/*.idr
                        test/dsl001/expected
@@ -482,6 +487,10 @@ Extra-source-files:
                        test/records003/run
                        test/records003/*.idr
                        test/records003/expected
+
+                       test/sourceLocation001/run
+                       test/sourceLocation001/*.idr
+                       test/sourceLocation001/expected
 
                        test/sugar001/run
                        test/sugar001/*.idr
@@ -705,7 +714,7 @@ Library
                 , filepath < 1.4
                 , fingertree >= 0.1 && < 0.2
                 , haskeline >= 0.7 && < 0.8
-                , lens >= 4.1.1 && < 4.6
+                , lens >= 4.1.1 && < 4.7
                 , mtl < 2.3
                 , network < 2.7
                 , optparse-applicative >= 0.11 && < 0.12

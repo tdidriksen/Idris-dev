@@ -32,7 +32,7 @@ import Codec.Compression.Zlib (compress)
 import Util.Zlib (decompressEither)
 
 ibcVersion :: Word8
-ibcVersion = 84
+ibcVersion = 85
 
 data IBCFile = IBCFile { ver :: Word8,
                          sourcefile :: FilePath,
@@ -394,7 +394,7 @@ pOptimise cs = mapM_ (\ (n, c) ->
 
 pSyntax :: [Syntax] -> Idris ()
 pSyntax s = do i <- getIState
-               putIState (i { syntax_rules = s ++ syntax_rules i })
+               putIState (i { syntax_rules = updateSyntaxRules s (syntax_rules i) })
 
 pKeywords :: [String] -> Idris ()
 pKeywords k = do i <- getIState
@@ -1683,6 +1683,7 @@ instance (Binary t) => Binary (PTactic' t) where
                 DoUnify -> putWord8 22
                 CaseTac x1 -> do putWord8 23
                                  put x1
+                SourceFC -> putWord8 24
         get
           = do i <- getWord8
                case i of
@@ -1733,6 +1734,7 @@ instance (Binary t) => Binary (PTactic' t) where
                    22 -> return DoUnify
                    23 -> do x1 <- get
                             return (CaseTac x1)
+                   24 -> return SourceFC
                    _ -> error "Corrupted binary data for PTactic'"
 
 

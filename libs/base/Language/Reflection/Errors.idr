@@ -2,10 +2,6 @@ module Language.Reflection.Errors
 
 import Language.Reflection
 
-data SourceLocation : Type where
-  FileLoc : (filename : String) -> (start : (Int, Int)) -> (end : (Int, Int)) -> SourceLocation
-
-%name SourceLocation loc
 
 data Err = Msg String
          | InternalMsg String
@@ -23,6 +19,7 @@ data Err = Msg String
          | TooManyArguments TTName
          | CantIntroduce TT
          | NoSuchVariable TTName
+         | WithFnType TT
          | NoTypeDecl TTName
          | NotInjective TT TT TT
          | CantResolve TT

@@ -70,8 +70,13 @@ delabTy' ist imps tm fullname mvs = de [] imps tm
                 (de ((n,n):env) is sc)
     de env [] (Bind n (Pi ty _) sc)
           = PPi expl n (de env [] ty) (de ((n,n):env) [] sc)
-    de env _ (Bind n (Let ty val) sc)
-        = PLet n (de env [] ty) (de env [] val) (de ((n,n):env) [] sc)
+
+    de env imps (Bind n (Let ty val) sc)
+          | isCaseApp sc
+          , (P _ cOp _, args) <- unApply sc
+          , Just caseblock    <- delabCase env imps n val cOp args = caseblock
+          | otherwise    =
+              PLet n (de env [] ty) (de env [] val) (de ((n,n):env) [] sc)
     de env _ (Bind n (Hole ty) sc) = de ((n, sUN "[__]"):env) [] sc
     de env _ (Bind n (Guess ty val) sc) = de ((n, sUN "[__]"):env) [] sc
     de env plic (Bind n bb sc) = de ((n,n):env) [] sc
@@ -128,6 +133,29 @@ delabTy' ist imps tm fullname mvs = de [] imps tm
     imp (PConstraint p l n _) arg = PConstraint p l n arg
     imp (PTacImplicit p l n sc _) arg = PTacImplicit p l n sc arg
 
+    isCaseApp tm | P _ n _ <- fst (unApply tm) = isCN n
+                 | otherwise = False
+      where isCN (NS n _) = isCN n
+            isCN (SN (CaseN _)) = True
+            isCN _ = False
+
+    delabCase :: [(Name, Name)] -> [PArg] -> Name -> Term -> Name -> [Term] -> Maybe PTerm
+    delabCase env imps scvar scrutinee caseName caseArgs =
+      do cases <- case lookupCtxt caseName (idris_patdefs ist) of
+                    [(cases, _)] -> return cases
+                    _ -> Nothing
+         return $ PCase un (de env imps scrutinee)
+                    [ (de (env ++ map (\n -> (n, n)) vars) imps (splitArg lhs),
+                       de (env ++ map (\n -> (n, n)) vars) imps rhs)
+                    | (vars, lhs, rhs) <- cases
+                    ]
+      where splitArg tm | (_, args) <- unApply tm = nonVar (reverse args)
+                        | otherwise = tm
+            nonVar [] = error "Tried to delaborate empty case list"
+            nonVar [x] = x
+            nonVar (x@(App _ _) : _) = x
+            nonVar (x@(P (DCon _ _ _) _ _) : _) = x
+            nonVar (x:xs) = nonVar xs
 -- | How far to indent sub-errors
 errorIndent :: Int
 errorIndent = 8
@@ -177,6 +205,9 @@ pprintErr' i (CantUnify _ x_in y_in e sc s) =
                                         ++ zip nms (repeat False)) y)) <>
     case e of
       Msg "" -> empty
+        -- if the specific error is the same as the one we just printed,
+        -- there's no need to print it
+      CantUnify _ x_in' y_in' _ _ _ | x_in == x_in' && y_in == y_in' -> empty
       _ -> line <> line <> text "Specifically:" <>
            indented (pprintErr' i e) <>
            if (opt_errContext (idris_options i)) then showSc i sc else empty
@@ -229,6 +260,8 @@ pprintErr' i (CantResolveAlts as) = text "Can't disambiguate name:" <+>
                                     align (cat (punctuate (comma <> space) (map (fmap (fancifyAnnots i) . annName) as)))
 pprintErr' i (NoTypeDecl n) = text "No type declaration for" <+> annName n
 pprintErr' i (NoSuchVariable n) = text "No such variable" <+> annName n
+pprintErr' i (WithFnType ty) =
+  text "Can't match on a function: type is" <+> annTm ty (pprintTerm i (delab i ty))
 pprintErr' i (IncompleteTerm t) = text "Incomplete term" <+> annTm t (pprintTerm i (delab i t))
 pprintErr' i UniverseError = text "Universe inconsistency"
 pprintErr' i (UniqueError NullType n)

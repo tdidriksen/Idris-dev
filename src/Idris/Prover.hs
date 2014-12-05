@@ -114,10 +114,10 @@ elabStep st e = case runStateT eCheck st of
                          ((_,_,_,e,_,_):_) -> lift $ Error e
 
 dumpState :: IState -> ProofState -> Idris ()
-dumpState ist (PS nm [] _ _ tm _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =
+dumpState ist (PS nm [] _ _ tm _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =
   do rendered <- iRender $ prettyName True False [] nm <> colon <+> text "No more goals."
      iputGoal rendered
-dumpState ist ps@(PS nm (h:hs) _ _ tm _ _ _ _ _ _ problems i _ _ ctxy _ _ _ _) = do
+dumpState ist ps@(PS nm (h:hs) _ _ tm _ _ _ _ _ _ problems i _ _ _ ctxt _ _ _ _ _) = do
   let OK ty  = goalAtFocus ps
   let OK env = envAtFocus ps
   let state = prettyOtherGoals hs <> line <>
@@ -245,9 +245,10 @@ ploop fn d prompt prf e h
               Success (TEval t)  -> evalTerm t e
               Success (TDocStr x) -> docStr x
               Success (TSearch t) -> search t
-              Success tac -> do (_, e) <- elabStep e saveState
-                                (_, st) <- elabStep e (runTac autoSolve i fn tac)
-                                return (True, st, False, prf ++ [step], Right $ iPrintResult ""))
+              Success tac ->
+                do (_, e) <- elabStep e saveState
+                   (_, st) <- elabStep e (runTac autoSolve i (Just proverFC) fn tac)
+                   return (True, st, False, prf ++ [step], Right $ iPrintResult ""))
            (\err -> return (False, e, False, prf, Left err))
          ideslavePutSExp "write-proof-state" (prf', length prf')
          case res of
@@ -299,6 +300,8 @@ ploop fn d prompt prf e h
               putIState ist
               return (False, e, False, prf, Right action))
             (\err -> do putIState ist { tt_ctxt = ctxt } ; ierror err)
+
+        proverFC = FC "(prover shell)" (0, 0) (0, 0)
 
         evalTerm t e = withErrorReflection $
           do ctxt <- getContext

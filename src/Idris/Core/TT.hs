@@ -136,6 +136,7 @@ data Err' t
           | TooManyArguments Name
           | CantIntroduce t
           | NoSuchVariable Name
+          | WithFnType t
           | NoTypeDecl Name
           | NotInjective t t t
           | CantResolve t
@@ -486,7 +487,7 @@ intTyName (ITFixed sized) = "B" ++ show (nativeTyWidth sized)
 intTyName (ITChar) = "Char"
 intTyName (ITVec ity count) = "B" ++ show (nativeTyWidth ity) ++ "x" ++ show count
 
-data ArithTy = ATInt IntTy | ATFloat -- TODO: Float vectors
+data ArithTy = ATInt IntTy | ATFloat -- TODO: Float vectors https://github.com/idris-lang/Idris-dev/issues/1723
     deriving (Show, Eq, Ord)
 {-!
 deriving instance NFData IntTy
@@ -792,7 +793,7 @@ instance TermSize (TT Name) where
        | otherwise = 1
     termsize n (V _) = 1
     -- for `Bind` terms, we can erroneously declare a term
-    -- "recursive => really big" if the name of the bound 
+    -- "recursive => really big" if the name of the bound
     -- variable is the same as the name we're using
     -- So generate a different name in that case.
     termsize n (Bind n' (Let t v) sc)
@@ -971,19 +972,19 @@ subst n v tm = fst $ subst' 0 tm
     subst' i t@(Bind x b sc) | x /= n
          = let (b', ub) = substB' i b
                (sc', usc) = subst' (i+1) sc in
-               if ub || usc then (Bind x b' sc', True) else (t, False) 
-    subst' i t@(App f a) = let (f', uf) = subst' i f 
+               if ub || usc then (Bind x b' sc', True) else (t, False)
+    subst' i t@(App f a) = let (f', uf) = subst' i f
                                (a', ua) = subst' i a in
                                if uf || ua then (App f' a', True) else (t, False)
     subst' i t@(Proj x idx) = let (x', u) = subst' i x in
                                   if u then (Proj x' idx, u) else (t, False)
     subst' i t = (t, False)
 
-    substB' i b@(Let t v) = let (t', ut) = subst' i t 
+    substB' i b@(Let t v) = let (t', ut) = subst' i t
                                 (v', uv) = subst' i v in
                                 if ut || uv then (Let t' v', True)
                                             else (b, False)
-    substB' i b@(Guess t v) = let (t', ut) = subst' i t 
+    substB' i b@(Guess t v) = let (t', ut) = subst' i t
                                   (v', uv) = subst' i v in
                                   if ut || uv then (Guess t' v', True)
                                               else (b, False)
@@ -1090,7 +1091,7 @@ unList tm = case unApply tm of
 -- Bruijn indices.
 forget :: TT Name -> Raw
 forget tm = forgetEnv [] tm
-    
+
 forgetEnv :: [Name] -> TT Name -> Raw
 forgetEnv env (P _ n _) = Var n
 forgetEnv env (V i)     = Var (env !! i)
@@ -1119,6 +1120,8 @@ bindTyArgs b xs = bindAll (map (\ (n, ty) -> (n, b ty)) xs)
 -- | Return a list of pairs of the names of the outermost 'Pi'-bound
 -- variables in the given term, together with their types.
 getArgTys :: TT n -> [(n, TT n)]
+getArgTys (Bind n (PVar _) sc) = getArgTys sc
+getArgTys (Bind n (PVTy _) sc) = getArgTys sc
 getArgTys (Bind n (Pi t _) sc) = (n, t) : getArgTys sc
 getArgTys _ = []
 
@@ -1360,23 +1363,24 @@ orderPats tm = op [] tm
 
     sortP ps = pick [] (reverse ps)
 
-    namesIn (P _ n _) = [n]
-    namesIn (Bind n b t) = nub $ nb b ++ (namesIn t \\ [n])
-      where nb (Let   t v) = nub (namesIn t) ++ nub (namesIn v)
-            nb (Guess t v) = nub (namesIn t) ++ nub (namesIn v)
-            nb t = namesIn (binderTy t)
-    namesIn (App f a) = nub (namesIn f ++ namesIn a)
-    namesIn _ = []
-
     pick acc [] = reverse acc
     pick acc ((n, t) : ps) = pick (insert n t acc) ps
 
     insert n t [] = [(n, t)]
     insert n t ((n',t') : ps)
-        | n `elem` (namesIn (binderTy t') ++
-                      concatMap namesIn (map (binderTy . snd) ps))
+        | n `elem` (refsIn (binderTy t') ++
+                      concatMap refsIn (map (binderTy . snd) ps))
             = (n', t') : insert n t ps
         | otherwise = (n,t):(n',t'):ps
+
+refsIn :: TT Name -> [Name]
+refsIn (P _ n _) = [n]
+refsIn (Bind n b t) = nub $ nb b ++ (refsIn t \\ [n])
+  where nb (Let   t v) = nub (refsIn t) ++ nub (refsIn v)
+        nb (Guess t v) = nub (refsIn t) ++ nub (refsIn v)
+        nb t = refsIn (binderTy t)
+refsIn (App f a) = nub (refsIn f ++ refsIn a)
+refsIn _ = []
 
 -- Make sure all the pattern bindings are as far out as possible
 liftPats :: Term -> Term
@@ -1384,7 +1388,7 @@ liftPats tm = let (tm', ps) = runState (getPats tm) [] in
                   orderPats $ bindPats (reverse ps) tm'
   where
     bindPats []          tm = tm
-    bindPats ((n, t):ps) tm 
+    bindPats ((n, t):ps) tm
          | n `notElem` map fst ps = Bind n (PVar t) (bindPats ps tm)
          | otherwise = bindPats ps tm
 

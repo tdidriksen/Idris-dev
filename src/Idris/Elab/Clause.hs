@@ -56,8 +56,10 @@ import Numeric
 -- | Elaborate a collection of left-hand and right-hand pairs - that is, a
 -- top-level definition.
 elabClauses :: ElabInfo -> FC -> FnOpts -> Name -> [PClause] -> Idris ()
-elabClauses info fc opts n_in cs = let n = liftname info n_in in
-      do ctxt <- getContext
+elabClauses info' fc opts n_in cs =
+      do let n    = liftname info n_in
+             info = info' { elabFC = Just fc }
+         ctxt <- getContext
          ist  <- getIState
          optimise <- getOptimise
          let petrans = PETransform `elem` optimise
@@ -618,7 +620,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
         let uniqargs = findUnique (tt_ctxt ist) [] lhs_tm
         let newargs = filter (\(n,_) -> n `notElem` uniqargs) newargs_all
 
-        let winfo = pinfo info newargs defs windex
+        let winfo = (pinfo info newargs defs windex) { elabFC = Just fc }
         let wb = map (mkStatic static_names) $
                  map (expandParamsD False ist decorate newargs defs) whereblock
 
@@ -826,6 +828,13 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in withblock)
         let cwvaltyN = explicitNames (normalise ctxt [] cwvalty)
         let cwvalN = explicitNames (normalise ctxt [] cwval)
         logLvl 3 ("With type " ++ show cwvalty ++ "\nRet type " ++ show ret_ty)
+        -- We're going to assume the with type is not a function shortly,
+        -- so report an error if it is (you can't match on a function anyway
+        -- so this doesn't lose anything)
+        case getArgTys cwvaltyN of
+             [] -> return ()
+             (_:_) -> ierror $ At fc (WithFnType cwvalty)  
+
         let pvars = map fst (getPBtys cwvalty)
         -- we need the unelaborated term to get the names it depends on
         -- rather than a de Bruijn index.

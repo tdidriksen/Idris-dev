@@ -4,7 +4,7 @@ opts = "--nobasepkgs --total -i ../prelude"
 modules = System,
 
           Network.Cgi, Network.Socket,
-          Debug.Trace,
+          Debug.Error, Debug.Trace,
 
           System.Info,
           System.Concurrency.Raw, System.Concurrency.Process,
@@ -24,7 +24,7 @@ modules = System,
           Data.Vect, Data.HVect, Data.Vect.Quantifiers,
           Data.Floats, Data.Complex, Data.Heap, Data.Fun,
           Data.Rel, Data.Buffer, Data.Erased,
-          Data.List, Data.Hash,
+          Data.List, Data.Hash, Data.Matrix,
 
           Control.Isomorphism, Control.Isomorphism.Primitives,
           Control.Monad.Identity,
