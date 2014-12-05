@@ -607,6 +607,8 @@ Library
                 , Idris.Elab.Transform
                 , Idris.Elab.Value
 
+                , Idris.GuardedRecursion.GR
+
                 , Idris.AbsSyntax
                 , Idris.AbsSyntaxTree
                 , Idris.Apropos

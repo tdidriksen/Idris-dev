@@ -67,6 +67,7 @@ sym Refl = Refl
 trans : {a:x} -> {b:y} -> {c:z} -> a = b -> b = c -> a = c
 trans Refl Refl = Refl
 
+
 ||| There are two types of laziness: that arising from lazy functions, and that
 ||| arising from codata. They differ in their totality condition.
 data LazyType = LazyCodata | LazyEval
@@ -115,6 +116,16 @@ par : Lazy a -> a -- Doesn't actually do anything yet. Maybe a 'Par a' type
                   -- is better in any case?
 par (Delay x) = x
 
+
+namespace GuardedRecursion
+  ||| A computation that is available later.
+  data Later : Type -> Type where
+    Next  : a -> Later a
+    
+  compose : Later (a -> b) -> Later a -> Later b
+  compose (Next t) (Next u) = Next (t u)  
+
+
 ||| Assert to the totality checker than y is always structurally smaller than
 ||| x (which is typically a pattern argument)
 ||| @ x the larger value (typically a pattern argument)
@@ -138,11 +149,4 @@ believe_me x = prim__believe_me _ _ x
 public %assert_total
 really_believe_me : a -> b
 really_believe_me x = prim__believe_me _ _ x
-
-namespace GuardedRecursion
-  data Later : Type -> Type where
-    next : a -> Later a
-    
-  compose : Later (a -> b) -> Later a -> Later b
-  compose (next t) (next u) = next (t u)
 

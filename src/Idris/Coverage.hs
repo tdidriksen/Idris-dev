@@ -11,6 +11,8 @@ import Idris.Delaborate
 import Idris.Error
 import Idris.Output (iWarn, iputStrLn)
 
+import Idris.GuardedRecursion.GR
+
 import Data.List
 import Data.Either
 import Data.Maybe
@@ -392,7 +394,10 @@ checkTotality path fc n
                         [CaseOp _ _ _ _ pats _] ->
                             do t' <- if AssertTotal `elem` opts
                                         then return $ Total []
-                                        else calcTotality fc n pats
+                                        else do when (Coinductive `elem` opts)
+                                                  (do _ <- checkGuardedRecursive n
+                                                      return ())
+                                                calcTotality fc n pats
                                setTotality n t'
                                addIBC (IBCTotal n t')
                                return t'
@@ -409,12 +414,19 @@ checkTotality path fc n
         case t' of
             Total _ -> return t'
             Productive -> return t'
-            e -> do w <- cmdOptType WarnPartial
-                    if TotalFn `elem` opts
-                       then do totalityError t'; return t'
-                       else do when (w && not (PartialFn `elem` opts)) $
-                                   warnPartial n t'
-                               return t'
+            e ->
+                 -- do gr <- do if Coinductive `elem` opts
+                 --                then checkGuardedRecursive n
+                 --                else return e
+                 --    case gr of
+                 --     Productive -> return Productive
+                 --     _ ->
+                          do w <- cmdOptType WarnPartial
+                             if TotalFn `elem` opts
+                                then do totalityError t'; return t'
+                                else do when (w && not (PartialFn `elem` opts)) $
+                                            warnPartial n t'
+                                        return t'
   where
     totalityError t = do i <- getIState
                          let msg = show n ++ " is " ++ show t
