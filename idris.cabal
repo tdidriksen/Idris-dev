@@ -640,7 +640,7 @@ Library
                 , Idris.Erasure
                 , Idris.Error
                 , Idris.ErrReverse
-                , Idris.GuardedRecursionHelpers
+                , Idris.GuardedRecursion.GuardedRecursionHelpers
                 , Idris.Help
                 , Idris.IBC
                 , Idris.IdeSlave

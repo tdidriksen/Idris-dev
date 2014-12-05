@@ -17,7 +17,7 @@ import Idris.PartialEval
 import Idris.DeepSeq
 import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
-import Idris.GuardedRecursionHelpers
+import Idris.GuardedRecursion.GuardedRecursionHelpers
 
 import Idris.Elab.Type
 import Idris.Elab.Utils
@@ -118,36 +118,49 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
             evalStateT (elabCaseFun False params n t dcons info) Map.empty
 
          -- Guarded Recursion
-         when codata 
+         ctxt <- getContext
+         let cty' = normalise ctxt [] cty
+         -- Only make a guarded recursive definition if:
+         --  This is codata
+         --  We can build a guarded recursive definition
+         when (codata && guardableTC cty')
+               -- Create a syntaxinfo with a guarded namespace
            (do let gsyn = withGuardedNS syn
+               -- Reuse the data options, but without codata.
+               -- We do not want the guarded recursive definition
+               -- to be elaborated as Codata.
                let gopts = delete Codata opts
+               -- Create a guarded name for the declaration
                gn <- guardedNameCtxt n
+               -- For all constructors:
+                                                -- Create a guarded name for the constructor
                let f = (\(_,_,cn,ct,_,_) -> (do gcn <- guardedNameCtxt cn
+                                                -- Guard the constructor type
                                                 let gct = guardedConstructor n ct
-                                                i <- getIState
                                                 rgct <- guardNamesIn n gct
                                                 return (emptyDocstring, [], gcn, rgct, emptyFC, [])))
                gcs <- mapM f dcons
+               -- Elaborate guarded declaration
                elabData info gsyn emptyDocstring [] emptyFC gopts (PDatadecl gn t_in gcs)
-               tya <- tyArgs cty
-               iLOG $ show tya
+               -- Create boxing and unboxing functions
+               tya <- tyArgs cty'
                boxingFunctions n gn tya)
          --}         
 
   where
+        -- Creates a list of references based on a type constructor.
+        -- As guarded recursion only works on simple types we only
+        -- look a TTypes and bindings. The check that only these exist
+        -- is done by Idris.GuardedRecursionHelpers.guardableTC
         tyArgs :: Type -> Idris [PTerm]
         tyArgs t = do i <- getIState
                       let defs = map fst (ctxtAlist (tt_ctxt i))
                       ta defs (sUN "a") t
-          where -- Totally a hack. FIX ME
+          where 
             ta ns n (TType _) = return $ []
             ta ns n (Bind _ _ t) = do let nn = uniqueName n ns
                                       rest <- ta (nn : ns) nn t
-                                      return $ (PRef emptyFC nn) : rest
-            ta _ _ _ = ifail "Guarded Recursion for this is not yet implemented."
-                                  
-
-
+                                      return $ (PRef emptyFC nn) : rest                               
     
         setDetaggable :: Name -> Idris ()
         setDetaggable n = do

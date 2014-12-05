@@ -19,7 +19,7 @@ import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
 import Idris.ParseHelpers (opChars)
 import Idris.IdrisDoc (extract)
-import Idris.GuardedRecursionHelpers
+import Idris.GuardedRecursion.GuardedRecursionHelpers
 
 import Idris.Elab.Type
 import Idris.Elab.Data
@@ -100,49 +100,25 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          mkProjAndUpdate info rsyn fc tyn cn cty_in
          -- Build guarded recursive projections.
          -- As the guarded recursive definitions are never run we use postulates.
-         gn <- getGuardedName tyn
-         mapM_ guardedNameCtxt pNas
-         let gpTys = map (guardedTerm tyn) pTys'
-         gpTys' <- mapM (guardNamesIn tyn) gpTys
-         gty <- guardNamesIn tyn ty
-         let gtf = map (prePi gty) gpTys'
-         mapM_ elabGuardedPostulate (zip pNas gtf)
+         ctxt <- getContext
+         let cty' = normalise ctxt [] cty
+         -- Check if we can build a guarded recursive definition of this type
+         when (guardableTC cty')
+               -- Get the guarded name. This should already exist from the elaborationg of the codata
+           (do gn <- getGuardedName tyn
+               -- Create guarded names for projections
+               mapM_ guardedNameCtxt pNas
+               -- Guard the projection types
+               let gpTys = map (guardedTerm tyn) pTys'
+               gpTys' <- mapM (guardNamesIn tyn) gpTys
+               -- Prefix projection type with guarded recursive reference
+               gty <- guardNamesIn tyn ty
+               let gtf = map (prePi gty) gpTys'
+               -- Elaborate guarded projections as postulates
+               mapM_ elabGuardedPostulate (zip pNas gtf))
   where
     prePi c t = PPi (Exp [] Dynamic False) (sMN 0 "__pi_arg") c t
 
-    {-
-    collectGuardedProjs :: PTerm -> PTerm -> [(Name, PTerm)]
-    collectGuardedProjs (PPi _ n ty sc) s = (n, (prePi s (mkGuarded ty tyn True))) : (collectGuardedProjs sc s)
-    collectGuardedProjs _ _ = []-}
-
-    {-
-    collectGuardedRenames :: PTerm -> [(Name, Name)]
-    collectGuardedRenames (PPi _ n _ sc)
-      = (n, guardedName n) : collectGuardedRenames sc
-    collectGuardedRenames _ = []
-          
-    guardedRecord :: Name -> SyntaxInfo -> Cons -> [(Name, Name)] -> Idris ()
-    guardedRecord gtyn gsyn dataCons gnames
-      = do iLOG $ "Guarded renames: " ++ (show gnames)
-           let gcons = guardedCons dataCons
-           elabData info gsyn emptyDocstring [] emptyFC opts (PDatadecl gtyn tyc [gcons])
-           let (gn, gty_in) = (\(_,_,n,t,_,_) -> (n, t)) gcons
-           mkProjAndUpdate info gsyn fc gtyn gn gty_in
-      where
-        mkGuarded (PPi pl n ty sc)
-          = let ty' = if getTyName ty
-                      then PApp fc laterRef
-                           [pexp (guardedRef ty)]
-                      else ty in
-                    PPi pl (guardedRename n) ty' (mkGuarded sc)
-    
-        guardedCons (_, _, name, consType, fc, _) = (emptyDocstring, [], (guardedRename name), mkGuarded consType, fc, [])
-
-        guardedRename :: Name -> Name
-        guardedRename n = case lookup n gnames of
-                            Just n' -> n'
-                            Nothing -> n
--}
     namesIn :: PTerm -> Idris [Name]
     namesIn t = filterM f (extract t)
       where
