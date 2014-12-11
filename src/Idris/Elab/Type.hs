@@ -8,7 +8,6 @@ import Idris.Error
 import Idris.Delaborate
 import Idris.Imports
 import Idris.ElabTerm
-import Idris.Coverage
 import Idris.DataOpts
 import Idris.Providers
 import Idris.Primitives

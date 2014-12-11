@@ -119,14 +119,34 @@ par (Delay x) = x
 
 namespace GuardedRecursion
   ||| A computation that is available later.
-  data Later : Type -> Type where
-    Next  : a -> Later a
-    
-  compose : Later (a -> b) -> Later a -> Later b
-  compose (Next t) (Next u) = Next (t u)  
+  data Later' : Type -> Type where
+    Next  : a -> Later' a
 
+  data Forall : Type -> Type where
+    LambdaKappa : a -> Forall a
+ 
+  apply : Forall a -> a
+  apply (LambdaKappa a) = a 
 
-||| Assert to the totality checker than y is always structurally smaller than
+  data Availability = Now | Tomorrow Availability
+
+  Later : Availability -> Type -> Type
+  Later Now a = a
+  Later (Tomorrow n) a = Later' (Later n a)
+
+  compose : {a, b : Type} -> 
+            {n : Availability} -> 
+            Later (Tomorrow n) (a -> b) -> 
+            Later (Tomorrow n) a -> 
+            Later (Tomorrow n) b
+  compose {n = Now} t u = compose' t u
+    where
+     compose' : Later' (a -> b) -> Later' a -> Later' b
+     compose' (Next t) (Next u) = Next (t u)
+  compose {n = Tomorrow n'} (Next t) (Next u) = Next (compose {n = n'} t u)
+
+  
+||| Assert to The totality checker than y is always structurally smaller than
 ||| x (which is typically a pattern argument)
 ||| @ x the larger value (typically a pattern argument)
 ||| @ y the smaller value (typically an argument to a recursive call)
