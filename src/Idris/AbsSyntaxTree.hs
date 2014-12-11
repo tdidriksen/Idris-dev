@@ -1154,8 +1154,8 @@ falseDoc = fmap (const $ Msg "") . parseDocstring . T.pack $
              "of type `Void` in scope."
 falseTy   = sUN "Void"
 
-pairTy    = sUN "Pair"
-pairCon   = sUN "MkPair"
+pairTy    = sNS (sUN "Pair") ["Builtins"]
+pairCon   = sNS (sUN "MkPair") ["Builtins"]
 
 eqTy = sUN "="
 eqCon = sUN "Refl"
@@ -1196,8 +1196,8 @@ eqParamDoc = [(n "A", annotCode (const (Left $ Msg "")) . parseDocstring . T.pac
 eqOpts = []
 
 -- Defined in builtins.idr
-sigmaTy   = sUN "Sigma"
-existsCon = sUN "MkSigma"
+sigmaTy   = sNS (sUN "Sigma") ["Builtins"]
+existsCon = sNS (sUN "MkSigma") ["Builtins"]
 
 piBind :: [(Name, PTerm)] -> PTerm -> PTerm
 piBind = piBindp expl
