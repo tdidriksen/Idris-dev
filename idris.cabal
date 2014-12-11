@@ -616,9 +616,13 @@ Library
                 , Idris.Elab.Transform
                 , Idris.Elab.Value
 
-                , Idris.GuardedRecursion.GR
+                , Idris.GuardedRecursion.Check
+                , Idris.GuardedRecursion.CheckGR
+                , Idris.GuardedRecursion.Constants
+                , Idris.GuardedRecursion.Epsilon
+                , Idris.GuardedRecursion.Error
                 , Idris.GuardedRecursion.GRLhs
-                , Idris.GuardedRecursion.GuardedRecursionHelpers
+                , Idris.GuardedRecursion.Helpers
 
                 , Idris.AbsSyntax
                 , Idris.AbsSyntaxTree

@@ -1,6 +1,6 @@
 module Idris.GuardedRecursion.GRLhs where
 
-import Idris.GuardedRecursion.GuardedRecursionHelpers
+import Idris.GuardedRecursion.Helpers
 import Idris.Core.TT
 import Idris.AbsSyntax
 import Idris.Error(ifail)

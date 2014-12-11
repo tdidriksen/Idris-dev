@@ -17,7 +17,7 @@ import Idris.PartialEval
 import Idris.DeepSeq
 import Idris.Output (iputStrLn, pshow, iWarn)
 import IRTS.Lang
-import Idris.GuardedRecursion.GuardedRecursionHelpers
+import Idris.GuardedRecursion.Helpers
 
 import Idris.Elab.Type
 import Idris.Elab.Utils

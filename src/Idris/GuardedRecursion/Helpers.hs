@@ -1,16 +1,6 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternGuards, PatternSynonyms #-}
 
-module Idris.GuardedRecursion.GuardedRecursionHelpers (boxingFunctions,
-                                                       guardedName,
-                                                       getGuardedName,
-                                                       guardedConstructor,
-                                                       guardNamesIn,
-                                                       guardedTerm,
-                                                       elabGuardedPostulate,
-                                                       withGuardedNS,
-                                                       guardableTC,
-                                                       guardedNameCtxt,
-                                                       guardedTT) where
+module Idris.GuardedRecursion.Helpers where
 
 import Idris.AbsSyntax
 import Idris.Docstrings (emptyDocstring)
@@ -20,18 +10,143 @@ import Idris.Elab.Type (elabPostulate)
 
 import Idris.Core.Evaluate
 import Idris.Core.TT
+import Idris.Core.Typecheck hiding (isType)
 
-import Prelude
+import Idris.GuardedRecursion.Constants hiding (guardedNS)
+
 import Data.Maybe
 import Data.List
 
+import Control.Monad
+import Control.Monad.State.Lazy as LazyState
+
 import qualified Data.Text as T
 
-guardedNamespace :: String
-guardedNamespace = "GuardedRecursion"
+-- FROM GR.lhs
+data Clock =
+    EmptyClock
+  | Kappa
 
-guardedPrefix :: String
-guardedPrefix = "guarded_"
+applyCompose :: Type -> Type -> Availability -> Term -> Term -> Idris Term
+applyCompose a b av f arg =
+  do compose <- composeRef
+     avTT <- availabilityTerm av
+     return $ App (App (App (App (App compose a) b) avTT) f) arg
+
+applyLater :: Availability -> Type -> Idris Type
+applyLater av ty =
+  do later <- laterRef
+     avTT <- availabilityTerm av
+     return $ App (App later avTT) ty
+
+applyLater' :: Type -> Idris Type
+applyLater' ty =
+  do later' <- later'Ref
+     return $ App later' ty
+
+applyNext :: Term -> Idris Term
+applyNext t =
+  do next <- nextRef
+     return $ App next t
+
+
+isLater' :: Type -> Bool
+isLater' (P (DCon _ _ _) (n@(NS (UN later) [gr])) ty)
+  | later == txt "Later'" && gr == txt "GuardedRecursion" = True
+isLater' _ = False
+
+isLater :: Type -> Bool
+isLater (P Ref (NS (UN later) [gr]) _)
+  | later == txt "Later" && gr == txt "GuardedRecursion" = True
+isLater _ = False
+
+unapplyLater :: Type -> Idris (Type, Availability)
+unapplyLater t = unapply' t Now
+  where
+    unapply' :: Type -> Availability -> Idris (Type, Availability)
+    unapply' (App f x) av
+     | isLater' f = unapply' x (Tomorrow av)
+    unapply' (App (App f x) y) av
+     | isLater f =
+         do xAv <- termAvailability x
+            unapply' y (delayBy xAv av)
+    unapply' ty av = return (ty, av) 
+
+guardedRef :: Name -> Idris Term
+guardedRef = undefined
+
+typeOf :: Term -> Env -> Idris Type
+typeOf t env =
+  do ctxt <- getContext
+     case check ctxt env (forget t) of
+      OK (_,t') -> return t'
+      Error e -> ierror e
+
+checkGoal :: Term -> Type -> Env -> Idris Bool
+checkGoal tm goal env =
+  do tmType <- typeOf tm env
+     ctxt <- getContext
+     ist <- get
+     let ucs = map fst (idris_constraints ist)
+     case LazyState.evalStateT (convertsC ctxt env tmType goal) (0, ucs) of
+      tc -> case tc of
+              OK () -> return True
+              _ -> return False
+
+-- Availability
+{-| Availability is a property on a type, indicating the moment
+    at which a value becomes available on a time stream
+-}
+data Availability =
+    Now
+  | Tomorrow Availability
+  deriving Eq
+
+instance Ord Availability where
+  compare Now Now = EQ
+  compare Now (Tomorrow _) = LT
+  compare (Tomorrow _) Now = GT
+  compare (Tomorrow x) (Tomorrow y) = compare x y
+
+availability :: Type -> Idris Availability
+availability ty = liftM snd (unapplyLater ty)
+
+delayBy :: Availability -> Availability -> Availability
+delayBy Now a = a
+delayBy (Tomorrow a) b = delayBy a (Tomorrow b)
+
+termAvailability :: Term -> Idris Availability
+termAvailability (P Ref name ty)
+  | name == nowName = return Now
+termAvailability (App (P Ref name ty) arg)
+  | name == tomorrowName = liftM Tomorrow (termAvailability arg)
+termAvailability tm = ifail $ "Term " ++ show tm ++ " is not an Availability term."
+
+availabilityTerm :: Availability -> Idris Term
+availabilityTerm Now = nowRef
+availabilityTerm (Tomorrow n) =
+  liftM2 App tomorrowRef (availabilityTerm n)
+
+pattern TConApp tag arity name pty x =
+  App (P (TCon tag arity) name pty) x
+pattern DConApp tag arity unique name pty x =
+  App (P (DCon tag arity unique) name pty) x
+
+isType :: Name -> Type -> Maybe Type
+isType tyName (TConApp _ _ n _ x)
+  | n == tyName = Just x
+isType _ _ = Nothing
+
+forallType ty = isType forallName ty
+
+isDCon :: Name -> Term -> Maybe Term
+isDCon tmName (DConApp _ _ _ name _ x)
+  | name == lambdaKappaName = Just x
+isDCon _ _ = Nothing
+
+lambdaKappaTerm :: Term -> Maybe Term
+lambdaKappaTerm tm = isDCon lambdaKappaName tm
+
 
 -- |Creates a guarded version of a name.
 guardedName :: Name -> Name
@@ -108,20 +223,11 @@ inNSos :: String -> Name -> Name
 inNSos s = inNSo (txt s)
 
 -- |A PTerm representing a reference to Later
-laterRef :: PTerm
-laterRef = laterRefFC emptyFC
+applyPTLater :: PTerm -> PTerm
+applyPTLater = applyPTLaterFC emptyFC
 
-laterRefFC :: FC -> PTerm
-laterRefFC fc = PRef fc laterName
-
-laterName :: Name
-laterName = (sNS (sUN "Later") [guardedNamespace])
-
-applyLater :: PTerm -> PTerm
-applyLater = applyLaterFC emptyFC
-
-applyLaterFC :: FC -> PTerm -> PTerm
-applyLaterFC fc t = PApp fc (laterRefFC fc) [pexp t]
+applyPTLaterFC :: FC -> PTerm -> PTerm
+applyPTLaterFC fc t = PApp fc (laterPTRefFC fc) [pexp t]
 
 -- |elabGuardedPostulate (n, ty) elaborates:
 -- |  postulate gn = ty
@@ -135,7 +241,7 @@ elabGuardedPostulate (n, ty) = do gn <- getGuardedName n
 -- |guardedTerm tyn t inserts laters on references to tyn in t                                  
 guardedTerm :: Name -> PTerm -> PTerm
 guardedTerm tyn t
-  | isName t = applyLater t
+  | isName t = applyPTLater t
   where
     isName :: PTerm -> Bool
     isName (PApp _ (PRef _ n) _) = n == tyn || n == (nsroot tyn)

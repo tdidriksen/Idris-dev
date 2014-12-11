@@ -1,52 +1,43 @@
-{-# LANGUAGE PatternGuards, ViewPatterns #-}
-module Idris.GuardedRecursion.CheckGR(checkGR) where
+module Idris.GuardedRecursion.CheckGR where
 
-import Idris.Core.TT
 import Idris.AbsSyntaxTree
+import Idris.AbsSyntax
 import Idris.Error
 
-data GRError = Misc String
-               | Undefined
+import Idris.Core.TT
+import Idris.Core.Evaluate
 
-type GR a = Either GRError a
+import Idris.GuardedRecursion.Helpers
 
-data Extract a = Extracted a | Nope
+import Control.Monad
 
-checkGR :: Type -> Term -> Idris ()
-checkGR ty te = case check Empty ty te of
-                  Left err -> translateError err
-                  Right _  -> return ()
+checkGuardedRecursive :: Name -> Idris Totality
+checkGuardedRecursive n =
+  do ctxt <- getContext
+     case lookupDef n ctxt of
+        [CaseOp _ _ _ _ clauses _] ->
+          do --evalStateT (buildGR n clauses) emptyGEnv
+             _ <- fixFunction n clauses
+             
+             return $ Partial NotProductive
+        _ -> return $ Partial NotProductive
 
-translateError :: GRError -> Idris ()
-translateError (Misc s) = ifail s
-translateError Undefined = ifail "Undefined error in guarded recursion checker."
+fixFunction :: Name -> [([Name], Term, Term)] -> Idris [([Name], Term, Term)]
+fixFunction n clauses =
+  do forM_ clauses $ \(pvs, lhs, rhs) ->
+       do iLOG $ show ("GR_LHS: " ++ showEnvDbg [] lhs)
+          iLOG $ show ("GR_RHS: " ++ showEnvDbg [] rhs)
+     ctxt <- getContext
+     ty <- case lookupTyExact n ctxt of
+            Just ty' -> return ty'
+            Nothing -> ifail "Seemingly defined function has no definition"
+     recRef <- recursiveRef n ty
+     let replaceRec = subst n recRef
+     let recsReplaced = map (\(pvs,lhs,rhs) -> (pvs,lhs,replaceRec rhs)) clauses
+     forM_ recsReplaced $ \(_,_,rhs) -> iLOG $ "GR " ++ show n ++ " after subst: " ++ (showEnvDbg [] rhs)
+     return recsReplaced
 
-data ClockEnv = Empty | Something
-
-check :: ClockEnv -> Type -> Term -> GR ()
--- Next
-check ce (unlift -> Extracted a) (advance -> Extracted t)
-  = check ce a t
--- Tensor
-check ce (unlift -> Extracted b) (relax -> Extracted (t, u))
-  = do ft <- getFunTy t
-       a <- getArgTy ft
-       check ce a u
-       check ce ft t
--- 
-check _ _ _ = Left Undefined
-
-advance :: Term -> Extract Term
-advance = undefined
-
-unlift :: Type -> Extract Type
-unlift = undefined
-
-relax :: Term -> Extract (Term, Term)
-relax = undefined
-
-getFunTy :: Term -> GR Type
-getFunTy = undefined
-
-getArgTy :: Type -> GR Type
-getArgTy = undefined
+recursiveRef :: Name -> Type -> Idris Type
+recursiveRef name ty =
+  do laterType <- applyLater' ty
+     return $ P Ref (sMN 0 (show name ++ "_rec")) laterType

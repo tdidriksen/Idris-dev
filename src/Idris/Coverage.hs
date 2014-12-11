@@ -11,7 +11,7 @@ import Idris.Delaborate
 import Idris.Error
 import Idris.Output (iWarn, iputStrLn)
 
-import Idris.GuardedRecursion.GR
+import Idris.GuardedRecursion.CheckGR
 
 import Data.List
 import Data.Either
