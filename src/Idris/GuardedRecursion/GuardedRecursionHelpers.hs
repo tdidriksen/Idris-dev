@@ -9,7 +9,8 @@ module Idris.GuardedRecursion.GuardedRecursionHelpers (boxingFunctions,
                                                        elabGuardedPostulate,
                                                        withGuardedNS,
                                                        guardableTC,
-                                                       guardedNameCtxt) where
+                                                       guardedNameCtxt,
+                                                       guardedTT) where
 
 import Idris.AbsSyntax
 import Idris.Docstrings (emptyDocstring)
@@ -22,6 +23,7 @@ import Idris.Core.TT
 
 import Prelude
 import Data.Maybe
+import Data.List
 
 import qualified Data.Text as T
 
@@ -73,6 +75,13 @@ guardedText = prefixTxt guardedPrefix
 prefixTxt :: String -> T.Text -> T.Text
 prefixTxt s t = txt (s ++ (str t))
 
+-- |prefixName s n prefixes n with s
+prefixName :: String -> Name -> Name
+prefixName s (UN t) = UN (prefixTxt s t)
+prefixName s (NS n ns) = NS (prefixName s n) ns
+prefixName s (MN i t) = MN i (prefixTxt s t)
+prefixName _ n = n
+
 -- |Prefixes a namespace with the guarded recursion namespace.
 guardedNS :: [T.Text] -> [T.Text]
 guardedNS ns = ns ++ [(txt guardedNamespace)]
@@ -85,15 +94,31 @@ guardedNSs ss = map str (guardedNS (map txt ss))
 withGuardedNS :: SyntaxInfo -> SyntaxInfo
 withGuardedNS syn = syn { syn_namespace = guardedNSs (syn_namespace syn) }
 
+-- |inNS ns n puts n in namespace ns
+inNS :: [T.Text] -> Name -> Name
+inNS ns' (NS n ns)  = (NS n (ns' ++ ns))
+
+inNSs :: [String] -> Name -> Name
+inNSs ss = inNS (map txt ss)
+
+inNSo :: T.Text -> Name -> Name
+inNSo n = inNS [n]
+
+inNSos :: String -> Name -> Name
+inNSos s = inNSo (txt s)
+
 -- |A PTerm representing a reference to Later
 laterRef :: PTerm
 laterRef = laterRefFC emptyFC
 
 laterRefFC :: FC -> PTerm
-laterRefFC fc = PRef fc (sNS (sUN "Later") [guardedNamespace])
+laterRefFC fc = PRef fc laterName
+
+laterName :: Name
+laterName = (sNS (sUN "Later") [guardedNamespace])
 
 applyLater :: PTerm -> PTerm
-applyLater t = PApp emptyFC laterRef [pexp t]
+applyLater = applyLaterFC emptyFC
 
 applyLaterFC :: FC -> PTerm -> PTerm
 applyLaterFC fc t = PApp fc (laterRefFC fc) [pexp t]
@@ -104,8 +129,7 @@ applyLaterFC fc t = PApp fc (laterRefFC fc) [pexp t]
 elabGuardedPostulate :: (Name, PTerm) -> Idris ()
 elabGuardedPostulate (n, ty) = do gn <- getGuardedName n
                                   let syn = withGuardedNS defaultSyntax
-                                  iLOG $ show (syn_namespace syn)                                      
-                                  iLOG $ "Created postulate " ++ show gn ++ " with type " ++ show ty ++ " from " ++ show n ++ " for checking for guarded recursion."
+                                  logLvl 3 $ "Created postulate " ++ show gn ++ " with type " ++ show ty ++ " from " ++ show n ++ " for checking for guarded recursion."
                                   elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] gn ty
 
 -- |guardedTerm tyn t inserts laters on references to tyn in t                                  
@@ -153,24 +177,22 @@ boxingFunctions n gn as = do let a = PApp emptyFC (PRef emptyFC n ) (map pexp as
                              let b = PApp emptyFC (PRef emptyFC gn) (map pexp as)
                              let syn = withGuardedNS defaultSyntax
                              let box = pi b a
-                             let boxN = boxName n
+                             let boxN = inNSos guardedNamespace (boxName n)
                              let unbox = pi a b
-                             let unboxN = unboxName n
+                             let unboxN = inNSos guardedNamespace (unboxName n)
                              elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] boxN box
                              elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] unboxN unbox
                              i <- getIState
+                             iLOG $ "(Un)boxing functions created for " ++ show n
                              putIState (i { guarded_boxing = (n, (boxN, unboxN)) : (guarded_boxing i) })
                              
   where
+    pi :: PTerm -> PTerm -> PTerm
     pi = PPi (Exp [] Dynamic False) (sUN "__pi_arg")
 
-    prefixName :: String -> Name -> Name
-    prefixName s (UN t) = UN (prefixTxt s t)
-    prefixName s (NS n ns) = NS (prefixName s n) (guardedNS ns)
-    prefixName s (MN i t) = MN i (prefixTxt s t)
-    prefixName _ n = n
-
+    boxName :: Name -> Name
     boxName = prefixName "box"
+    unboxName :: Name -> Name
     unboxName = prefixName "unbox"
 
 -- |Checks if a type constructor is simply typed.
@@ -179,3 +201,17 @@ guardableTC :: Type -> Bool
 guardableTC (Bind _ b t) = guardableTC (binderTy b) && guardableTC t
 guardableTC (TType _) = True
 guardableTC _ = False
+
+
+-- |Same as guardedTT, but ignoring names in the given list.
+guardedTTIgnore :: [Name] -> Term -> Idris Term
+guardedTTIgnore is t = do let fn = is \\ (freeNames t)
+                          i <- getIState
+                          let gns = mapMaybe (\y -> lookup y (guarded_renames i)) fn
+                          ctxt <- getContext
+                          let ps = concat $ map (\n -> lookupP n ctxt) gns
+                          return $ substNames (zip gns ps) t
+
+-- |guards all free names in the term.
+guardedTT :: Term -> Idris Term
+guardedTT = guardedTTIgnore []                 

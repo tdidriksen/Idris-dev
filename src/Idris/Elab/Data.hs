@@ -134,12 +134,12 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
                -- Create a guarded name for the declaration
                gn <- guardedNameCtxt n
                -- For all constructors:
-                                                -- Create a guarded name for the constructor
-               let f = (\(_,_,cn,ct,_,_) -> (do gcn <- guardedNameCtxt cn
-                                                -- Guard the constructor type
-                                                let gct = guardedConstructor n ct
-                                                rgct <- guardNamesIn n gct
-                                                return (emptyDocstring, [], gcn, rgct, emptyFC, [])))
+                                           -- Create a guarded name for the constructor
+               let f (_,_,cn,ct,_,_) = (do gcn <- guardedNameCtxt cn
+                                           -- Guard the constructor type
+                                           let gct = guardedConstructor n ct
+                                           rgct <- guardNamesIn n gct
+                                           return (emptyDocstring, [], gcn, rgct, emptyFC, []))
                gcs <- mapM f dcons
                -- Elaborate guarded declaration
                elabData info gsyn emptyDocstring [] emptyFC gopts (PDatadecl gn t_in gcs)

@@ -617,6 +617,8 @@ Library
                 , Idris.Elab.Value
 
                 , Idris.GuardedRecursion.GR
+                , Idris.GuardedRecursion.GRLhs
+                , Idris.GuardedRecursion.GuardedRecursionHelpers
 
                 , Idris.AbsSyntax
                 , Idris.AbsSyntaxTree
@@ -640,7 +642,6 @@ Library
                 , Idris.Erasure
                 , Idris.Error
                 , Idris.ErrReverse
-                , Idris.GuardedRecursion.GuardedRecursionHelpers
                 , Idris.Help
                 , Idris.IBC
                 , Idris.IdeSlave
