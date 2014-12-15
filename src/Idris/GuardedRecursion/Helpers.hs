@@ -12,7 +12,7 @@ import Idris.Core.Evaluate
 import Idris.Core.TT
 import Idris.Core.Typecheck hiding (isType)
 
-import Idris.GuardedRecursion.Constants hiding (guardedNS)
+import Idris.GuardedRecursion.Constants
 
 import Data.Maybe
 import Data.List
@@ -44,21 +44,55 @@ applyLater' ty =
   do later' <- later'Ref
      return $ App later' ty
 
+applyForall :: Type -> Idris Type
+applyForall ty =
+  do forall <- forallRef
+     return $ App forall ty
+
 applyNext :: Term -> Idris Term
 applyNext t =
   do next <- nextRef
      return $ App next t
 
+applyLambdaKappa :: Term -> Idris Term
+applyLambdaKappa t =
+  do lambdaK <- lambdaKappaRef
+     return $ App lambdaK t
+
+isApply :: Term -> Bool
+isApply (P Ref (NS (UN apply) [gr]) _)
+  | apply == txt applyStr && gr == txt guardedRecursion = True
+isApply _ = False                                                          
 
 isLater' :: Type -> Bool
 isLater' (P (DCon _ _ _) (n@(NS (UN later) [gr])) ty)
-  | later == txt "Later'" && gr == txt "GuardedRecursion" = True
+  | later == txt later'Str && gr == txt guardedRecursion = True
 isLater' _ = False
 
 isLater :: Type -> Bool
 isLater (P Ref (NS (UN later) [gr]) _)
-  | later == txt "Later" && gr == txt "GuardedRecursion" = True
+  | later == txt laterStr && gr == txt guardedRecursion = True
 isLater _ = False
+
+isForall :: Type -> Bool
+isForall (P (TCon _ _) (NS (UN forall) [gr]) _)
+  | forall == txt forallStr && gr == txt guardedRecursion = True
+isForall _ = False                                                            
+
+isNext :: Term -> Bool
+isNext (P Ref (NS (UN next) [gr]) _)
+  | next == txt nextStr && gr == txt guardedRecursion = True
+isNext _ = False                                                         
+
+isCompose :: Term -> Bool
+isCompose (P Ref (NS (UN compose) [gr]) _)
+  | compose == txt composeStr && gr == txt guardedRecursion = True
+isCompose _ = False
+
+isLambdaKappa :: Term -> Bool
+isLambdaKappa (P Ref (NS (UN lambdaKappa) [gr]) _)
+  | lambdaKappa == txt lambdaKappaStr && gr == txt guardedRecursion = True
+isLambdaKappa _ = False                                                                      
 
 unapplyLater :: Type -> Idris (Type, Availability)
 unapplyLater t = unapply' t Now
@@ -70,7 +104,7 @@ unapplyLater t = unapply' t Now
      | isLater f =
          do xAv <- termAvailability x
             unapply' y (delayBy xAv av)
-    unapply' ty av = return (ty, av) 
+    unapply' ty av = return (ty, av)
 
 guardedRef :: Name -> Idris Term
 guardedRef = undefined
@@ -151,7 +185,7 @@ lambdaKappaTerm tm = isDCon lambdaKappaName tm
 -- |Creates a guarded version of a name.
 guardedName :: Name -> Name
 guardedName (UN t) = UN (guardedText t)
-guardedName (NS n ns) = NS (guardedName n) (guardedNS ns)
+guardedName (NS n ns) = NS (guardedName n) (placeInGuardedNS ns)
 guardedName (MN i t) = MN i (guardedText t)
 guardedName n = n
 
@@ -198,16 +232,16 @@ prefixName s (MN i t) = MN i (prefixTxt s t)
 prefixName _ n = n
 
 -- |Prefixes a namespace with the guarded recursion namespace.
-guardedNS :: [T.Text] -> [T.Text]
-guardedNS ns = ns ++ [(txt guardedNamespace)]
+placeInGuardedNS :: [T.Text] -> [T.Text]
+placeInGuardedNS ns = ns ++ [(txt guardedRecursion)]
 
 -- |Same as guardedNS but on strings.
-guardedNSs :: [String] -> [String]
-guardedNSs ss = map str (guardedNS (map txt ss))
+placeInGuardedNSs :: [String] -> [String]
+placeInGuardedNSs ss = map str (placeInGuardedNS (map txt ss))
 
 -- |Same as guardedNS but on SyntaxInfo level.
 withGuardedNS :: SyntaxInfo -> SyntaxInfo
-withGuardedNS syn = syn { syn_namespace = guardedNSs (syn_namespace syn) }
+withGuardedNS syn = syn { syn_namespace = placeInGuardedNSs (syn_namespace syn) }
 
 -- |inNS ns n puts n in namespace ns
 inNS :: [T.Text] -> Name -> Name
@@ -283,9 +317,9 @@ boxingFunctions n gn as = do let a = PApp emptyFC (PRef emptyFC n ) (map pexp as
                              let b = PApp emptyFC (PRef emptyFC gn) (map pexp as)
                              let syn = withGuardedNS defaultSyntax
                              let box = pi b a
-                             let boxN = inNSos guardedNamespace (boxName n)
+                             let boxN = inNSs guardedNS (boxName n)
                              let unbox = pi a b
-                             let unboxN = inNSos guardedNamespace (unboxName n)
+                             let unboxN = inNSs guardedNS (unboxName n)
                              elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] boxN box
                              elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] unboxN unbox
                              i <- getIState

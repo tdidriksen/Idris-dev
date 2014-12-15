@@ -7,35 +7,55 @@ import Idris.AbsSyntaxTree
 import Idris.AbsSyntax
 import Idris.Error
 
--- NAMES
-guardedNamespace :: String
-guardedNamespace = "GuardedRecursion"
+-- STRINGS
 
-guardedPrefix :: String
+guardedRecursion, guardedPrefix, laterStr, later'Str, nextStr, composeStr, availStr, nowStr, tomorrowStr, forallStr, lambdaKappaStr, applyStr :: String
+guardedRecursion = "GuardedRecursion"
 guardedPrefix = "guarded_"
+laterStr = "Later"
+later'Str = "Later'"
+nextStr = "Next"
+composeStr = "compose"
+availStr = "Availability"
+nowStr = "Now"
+tomorrowStr = "Tomorrow"
+forallStr = "Forall"
+lambdaKappaStr = "LambdaKappa"
+applyStr = "Apply"
+
+-- NAMES
 
 guardedNS :: [String]
-guardedNS = [guardedNamespace]
+guardedNS = [guardedRecursion]
 
 later'Name, nextName, laterName, composeName :: Name
-later'Name = sNS (sUN "Later'") guardedNS
-laterName = sNS (sUN "Later") guardedNS
-nextName = sNS (sUN "Next") guardedNS
-composeName = sNS (sUN "compose") guardedNS
+later'Name = sNS (sUN later'Str) guardedNS
+laterName = sNS (sUN laterStr) guardedNS
+nextName = sNS (sUN nextStr) guardedNS
+composeName = sNS (sUN composeStr) guardedNS
 
 availabilityName, nowName, tomorrowName :: Name
-availabilityName = sNS (sUN "Availability") guardedNS
-nowName = sNS (sUN "Now") guardedNS
-tomorrowName = sNS (sUN "Tomorrow") guardedNS
+availabilityName = sNS (sUN availStr) guardedNS
+nowName = sNS (sUN nowStr) guardedNS
+tomorrowName = sNS (sUN tomorrowStr) guardedNS
 
 forallName :: Name
-forallName = sNS (sUN "Forall") guardedNS
+forallName = sNS (sUN forallStr) guardedNS
 
 lambdaKappaName :: Name
-lambdaKappaName = sNS (sUN "LambdaKappa") guardedNS
+lambdaKappaName = sNS (sUN lambdaKappaStr) guardedNS
 
+applyName :: Name
+applyName = sNS (sUN applyStr) guardedNS
 
 -- REFS
+
+applyRef :: Idris Term
+applyRef =
+  do ctxt <- getContext
+     case lookupP applyName ctxt of
+       [applyP] -> return applyP
+       _ -> ifail "Function 'apply' does not exist!"
 
 composeRef :: Idris Term
 composeRef =
@@ -43,6 +63,13 @@ composeRef =
      case lookupP composeName ctxt of
       [composeP] -> return composeP
       _ -> ifail "Function 'compose' does not exist!"
+
+forallRef :: Idris Type
+forallRef =
+  do ctxt <- getContext
+     case lookupP forallName ctxt of
+       [forallP] -> return forallP
+       _ -> ifail "Forall type does not exist!" 
 
 laterRef :: Idris Term
 laterRef =
@@ -77,6 +104,13 @@ tomorrowRef =
      case lookupP tomorrowName ctxt of
       [tomorrowP] -> return tomorrowP  -- 
       _ -> ifail "Data constructor 'Tomorrow' does not exist!"
+
+lambdaKappaRef :: Idris Term
+lambdaKappaRef =
+  do ctxt <- getContext
+     case lookupP lambdaKappaName ctxt of
+       [lambdaKP] -> return lambdaKP
+       _ -> ifail "Data constructor 'LambdaKappa' does not exists!"
 
 -- PT REFS
 
