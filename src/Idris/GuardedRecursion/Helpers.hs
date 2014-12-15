@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards, PatternSynonyms #-}
+{-# LANGUAGE PatternGuards, PatternSynonyms, ViewPatterns #-}
 
 module Idris.GuardedRecursion.Helpers where
 
@@ -9,7 +9,7 @@ import Idris.Error
 import Idris.Elab.Type (elabPostulate)
 
 import Idris.Core.Evaluate
-import Idris.Core.TT
+import Idris.Core.TT hiding (nextName)
 import Idris.Core.Typecheck hiding (isType)
 
 import Idris.GuardedRecursion.Constants
@@ -27,11 +27,24 @@ data Clock =
     EmptyClock
   | Kappa
 
+applyApply :: Term -> Idris Term
+applyApply tm =
+  do apply <- applyRef
+     return $ App apply tm
+
+unapplyApply :: Term -> Maybe Term
+unapplyApply tm = unapplyRef applyName tm
+
 applyCompose :: Type -> Type -> Availability -> Term -> Term -> Idris Term
 applyCompose a b av f arg =
   do compose <- composeRef
      avTT <- availabilityTerm av
      return $ App (App (App (App (App compose a) b) avTT) f) arg
+
+applyForall :: Type -> Idris Type
+applyForall ty =
+  do forall <- forallRef
+     return $ App forall ty
 
 applyLater :: Availability -> Type -> Idris Type
 applyLater av ty =
@@ -44,20 +57,37 @@ applyLater' ty =
   do later' <- later'Ref
      return $ App later' ty
 
-applyForall :: Type -> Idris Type
-applyForall ty =
-  do forall <- forallRef
-     return $ App forall ty
+unapplyLater' :: Type -> Maybe Type
+unapplyLater' ty = unapplyType later'Name ty
+
+unapplyTomorrow :: Term -> Maybe Term
+unapplyTomorrow tm = unapplyDataConstructor tomorrowName tm
+
+unapplyNLater :: Type -> Maybe Type
+unapplyNLater (App (App later (unapplyTomorrow -> Just av)) ty)
+ | isLater later = Just $ App (App later av) ty
+unapplyNLater _ = Nothing
+                      
+unapplyLater :: Type -> Maybe Type
+unapplyLater (unapplyLater' -> Just ty) = Just ty
+unapplyLater (unapplyNLater -> Just ty) = Just ty
+unapplyLater _ = Nothing
+
+applyLambdaKappa :: Term -> Idris Term
+applyLambdaKappa tm =
+  do lambdaKappa <- lambdaKappaRef
+     return $ App lambdaKappa tm
+
+unapplyLambdaKappa :: Term -> Maybe Term
+unapplyLambdaKappa tm = unapplyDataConstructor lambdaKappaName tm
 
 applyNext :: Term -> Idris Term
 applyNext t =
   do next <- nextRef
      return $ App next t
 
-applyLambdaKappa :: Term -> Idris Term
-applyLambdaKappa t =
-  do lambdaK <- lambdaKappaRef
-     return $ App lambdaK t
+unapplyNext :: Term -> Maybe Term
+unapplyNext tm = unapplyDataConstructor nextName tm
 
 isApply :: Term -> Bool
 isApply (P Ref (NS (UN apply) [gr]) _)
@@ -93,18 +123,6 @@ isLambdaKappa :: Term -> Bool
 isLambdaKappa (P Ref (NS (UN lambdaKappa) [gr]) _)
   | lambdaKappa == txt lambdaKappaStr && gr == txt guardedRecursion = True
 isLambdaKappa _ = False                                                                      
-
-unapplyLater :: Type -> Idris (Type, Availability)
-unapplyLater t = unapply' t Now
-  where
-    unapply' :: Type -> Availability -> Idris (Type, Availability)
-    unapply' (App f x) av
-     | isLater' f = unapply' x (Tomorrow av)
-    unapply' (App (App f x) y) av
-     | isLater f =
-         do xAv <- termAvailability x
-            unapply' y (delayBy xAv av)
-    unapply' ty av = return (ty, av)
 
 guardedRef :: Name -> Idris Term
 guardedRef = undefined
@@ -142,8 +160,8 @@ instance Ord Availability where
   compare (Tomorrow _) Now = GT
   compare (Tomorrow x) (Tomorrow y) = compare x y
 
-availability :: Type -> Idris Availability
-availability ty = liftM snd (unapplyLater ty)
+-- availability :: Type -> Idris Availability
+-- availability ty = liftM snd (unapplyLater ty)
 
 delayBy :: Availability -> Availability -> Availability
 delayBy Now a = a
@@ -166,21 +184,23 @@ pattern TConApp tag arity name pty x =
 pattern DConApp tag arity unique name pty x =
   App (P (DCon tag arity unique) name pty) x
 
-isType :: Name -> Type -> Maybe Type
-isType tyName (TConApp _ _ n _ x)
+unapplyType :: Name -> Type -> Maybe Type
+unapplyType tyName (TConApp _ _ n _ x)
   | n == tyName = Just x
-isType _ _ = Nothing
+unapplyType _ _ = Nothing
 
-forallType ty = isType forallName ty
+unapplyForall :: Term -> Maybe Term
+unapplyForall ty = unapplyType forallName ty
 
-isDCon :: Name -> Term -> Maybe Term
-isDCon tmName (DConApp _ _ _ name _ x)
-  | name == lambdaKappaName = Just x
-isDCon _ _ = Nothing
+unapplyDataConstructor :: Name -> Term -> Maybe Term
+unapplyDataConstructor tmName (DConApp _ _ _ name _ x)
+  | name == tmName = Just x
+unapplyDataConstructor _ _ = Nothing
 
-lambdaKappaTerm :: Term -> Maybe Term
-lambdaKappaTerm tm = isDCon lambdaKappaName tm
-
+unapplyRef :: Name -> Term -> Maybe Term
+unapplyRef tmName (App (P Ref name _) x)
+  | name == tmName = Just x
+unapplyRef _ _ = Nothing
 
 -- |Creates a guarded version of a name.
 guardedName :: Name -> Name

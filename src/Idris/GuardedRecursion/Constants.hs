@@ -21,7 +21,7 @@ nowStr = "Now"
 tomorrowStr = "Tomorrow"
 forallStr = "Forall"
 lambdaKappaStr = "LambdaKappa"
-applyStr = "Apply"
+applyStr = "apply"
 
 -- NAMES
 
@@ -50,67 +50,39 @@ applyName = sNS (sUN applyStr) guardedNS
 
 -- REFS
 
-applyRef :: Idris Term
-applyRef =
+ref :: Name -> Idris Term
+ref n =
   do ctxt <- getContext
-     case lookupP applyName ctxt of
-       [applyP] -> return applyP
-       _ -> ifail "Function 'apply' does not exist!"
+     case lookupP n ctxt of
+      [nP] -> return nP
+      _ -> ifail $ "Term " ++ show n ++ " does not exist!"
+
+applyRef :: Idris Term
+applyRef = ref applyName
 
 composeRef :: Idris Term
-composeRef =
-  do ctxt <- getContext
-     case lookupP composeName ctxt of
-      [composeP] -> return composeP
-      _ -> ifail "Function 'compose' does not exist!"
+composeRef = ref composeName
 
 forallRef :: Idris Type
-forallRef =
-  do ctxt <- getContext
-     case lookupP forallName ctxt of
-       [forallP] -> return forallP
-       _ -> ifail "Forall type does not exist!" 
-
-laterRef :: Idris Term
-laterRef =
-  do ctxt <- getContext
-     case lookupP laterName ctxt of
-      [laterP] -> return laterP
-      _ -> ifail "Later type does not exist!"
-
-later'Ref :: Idris Term
-later'Ref =
-  do ctxt <- getContext
-     case lookupP later'Name ctxt of
-      [later'P] -> return later'P
-      _ -> ifail "Later' type does not exist!"
-
-nextRef :: Idris Term
-nextRef =
-  do ctxt <- getContext
-     case lookupP nextName ctxt of
-      [nextP] -> return nextP
-      _ -> ifail "Data constructor Next does not exist!"
-nowRef :: Idris Term
-nowRef =
-  do ctxt <- getContext
-     case lookupP nowName ctxt of
-      [nowP] -> return nowP
-      _ -> ifail "Data constructor 'Now' does not exist!"
-
-tomorrowRef :: Idris Term
-tomorrowRef =
-  do ctxt <- getContext
-     case lookupP tomorrowName ctxt of
-      [tomorrowP] -> return tomorrowP  -- 
-      _ -> ifail "Data constructor 'Tomorrow' does not exist!"
+forallRef = ref forallName
 
 lambdaKappaRef :: Idris Term
-lambdaKappaRef =
-  do ctxt <- getContext
-     case lookupP lambdaKappaName ctxt of
-       [lambdaKP] -> return lambdaKP
-       _ -> ifail "Data constructor 'LambdaKappa' does not exists!"
+lambdaKappaRef = ref lambdaKappaName
+
+laterRef :: Idris Term
+laterRef = ref laterName
+
+later'Ref :: Idris Term
+later'Ref = ref later'Name
+
+nextRef :: Idris Term
+nextRef = ref nextName
+
+nowRef :: Idris Term
+nowRef = ref nowName
+
+tomorrowRef :: Idris Term
+tomorrowRef = ref tomorrowName
 
 -- PT REFS
 
