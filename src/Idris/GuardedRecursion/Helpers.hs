@@ -14,6 +14,8 @@ import Idris.Core.Typecheck hiding (isType)
 
 import Idris.GuardedRecursion.Constants
 
+import Control.Applicative
+
 import Data.Maybe
 import Data.List
 
@@ -22,10 +24,29 @@ import Control.Monad.State.Lazy as LazyState
 
 import qualified Data.Text as T
 
--- FROM GR.lhs
-data Clock =
-    EmptyClock
-  | Kappa
+data Extract a = Extracted a | Nope
+
+data Clock = Open | Closed
+
+instance Functor Extract where
+  fmap _ Nope          = Nope
+  fmap f (Extracted a) = Extracted (f a)
+
+instance Applicative Extract where
+  pure = Extracted
+  (Extracted f) <*> (Extracted a) = Extracted (f a)
+  Nope <*> _ = Nope
+  _ <*> Nope = Nope
+
+instance Monad Extract where
+  (Extracted x) >>= k = k x
+  Nope          >>= _ = Nope
+
+  (Extracted _ ) >> k = k
+  Nope           >> _ = Nope
+
+  return = Extracted
+  fail _ = Nope
 
 applyApply :: Term -> Idris Term
 applyApply tm =
