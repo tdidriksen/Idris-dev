@@ -56,11 +56,17 @@ applyApply tm =
 unapplyApply :: Term -> Maybe Term
 unapplyApply tm = unapplyRef applyName tm
 
-applyCompose :: Type -> Type -> Availability -> Term -> Term -> Idris Term
+applyCompose :: Type -> Type -> Term -> Term -> Term -> Idris Term
 applyCompose a b av f arg =
   do compose <- composeRef
-     avTT <- availabilityTerm av
-     return $ App (App (App (App (App compose a) b) avTT) f) arg
+     return $ App (App (App (App (App compose a) b) av) f) arg
+
+pattern Compose compose a b av f arg = App (App (App (App (App compose a) b) av) f) arg
+
+unapplyCompose :: Term -> Maybe (Type, Type, Term, Term, Term)
+unapplyCompose (Compose compose a b av f arg)
+  | isCompose compose = Just (a, b, av, f, arg)
+unapplyCompose _ = Nothing
 
 applyForall :: Type -> Idris Type
 applyForall ty =
@@ -145,8 +151,20 @@ isLambdaKappa (P Ref (NS (UN lambdaKappa) [gr]) _)
   | lambdaKappa == txt lambdaKappaStr && gr == txt guardedRecursion = True
 isLambdaKappa _ = False                                                                      
 
+guardedTerm :: Term -> Idris Term
+guardedTerm p@(P Bound n ty)      = return p
+guardedTerm (P Ref n ty)          = guardedRef n
+guardedTerm (P (DCon _ _ _) n ty) = guardedDataConstructor n
+guardedTerm p@(P (TCon _ _) n ty) = return p
+guardedTerm (Bind n binder sc)    = guardedTerm sc
+guardedTerm (App f x)             = liftM2 App (guardedTerm f) (guardedTerm x)
+guardedTerm tm                    = return tm
+
 guardedRef :: Name -> Idris Term
 guardedRef = undefined
+
+guardedDataConstructor :: Name -> Idris Term
+guardedDataConstructor = undefined
 
 typeOf :: Term -> Env -> Idris Type
 typeOf t env =
@@ -166,6 +184,15 @@ checkGoal tm goal env =
               OK () -> return True
               _ -> return False
 
+debindFirstArg :: Type -> Maybe Type
+debindFirstArg (Bind _ (Pi t _) _) = Just t
+debindFirstArg _ = Nothing
+
+nowType :: Type -> Type
+nowType    (unapplyLater -> Just ty) = nowType ty
+nowType ty@(unapplyLater -> Nothing) = ty
+
+
 -- Availability
 {-| Availability is a property on a type, indicating the moment
     at which a value becomes available on a time stream
@@ -184,9 +211,16 @@ instance Ord Availability where
 -- availability :: Type -> Idris Availability
 -- availability ty = liftM snd (unapplyLater ty)
 
-delayBy :: Availability -> Availability -> Availability
-delayBy Now a = a
-delayBy (Tomorrow a) b = delayBy a (Tomorrow b)
+-- delayBy :: Availability -> Availability -> Availability
+-- delayBy Now a = a
+-- delayBy (Tomorrow a) b = delayBy a (Tomorrow b)
+
+delayBy :: Type -> Type -> Idris Type
+delayBy (unapplyLater -> Just ty) ty' =
+  do delayed <- delayBy ty ty'
+     applyLater' delayed
+delayBy (unapplyLater -> Nothing) ty' =
+  return ty'
 
 termAvailability :: Term -> Idris Availability
 termAvailability (P Ref name ty)
@@ -314,21 +348,21 @@ elabGuardedPostulate (n, ty) = do gn <- getGuardedName n
                                   elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] gn ty
 
 -- |guardedTerm tyn t inserts laters on references to tyn in t                                  
-guardedTerm :: Name -> PTerm -> PTerm
-guardedTerm tyn t
+guardedPTerm :: Name -> PTerm -> PTerm
+guardedPTerm tyn t
   | isName t = applyPTLater t
   where
     isName :: PTerm -> Bool
     isName (PApp _ (PRef _ n) _) = n == tyn || n == (nsroot tyn)
     isName (PRef _ n) = n == tyn || n == (nsroot tyn)
     isName _ = False
-guardedTerm tyn (PPi p n t t') = PPi p n (guardedTerm tyn t) (guardedTerm tyn t')
-guardedTerm _ t = t 
+guardedPTerm tyn (PPi p n t t') = PPi p n (guardedPTerm tyn t) (guardedPTerm tyn t')
+guardedPTerm _ t = t 
 
--- |Similar to guardedTerm but only guards left hand sides of pi types.
+-- |Similar to guardedPTerm but only guards left hand sides of pi types.
 guardedConstructor :: Name -> PTerm -> PTerm
 guardedConstructor tyn (PPi p n t t')
-  = PPi p n (guardedTerm tyn t) (guardedConstructor tyn t')
+  = PPi p n (guardedPTerm tyn t) (guardedConstructor tyn t')
 guardedConstructor _ t = t
 
 -- |guardNamesIn n t replaces all occurences of n in t with the guarded version

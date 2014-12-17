@@ -109,7 +109,7 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
                -- Create guarded names for projections
                mapM_ guardedNameCtxt pNas
                -- Guard the projection types
-               let gpTys = map (guardedTerm tyn) pTys'
+               let gpTys = map (guardedPTerm tyn) pTys'
                gpTys' <- mapM (guardNamesIn tyn) gpTys
                -- Prefix projection type with guarded recursive reference
                gty <- guardNamesIn tyn ty
