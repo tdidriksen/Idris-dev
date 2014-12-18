@@ -5,25 +5,18 @@
 \begin{code}
 {-# LANGUAGE PatternGuards, ViewPatterns #-}
 module Idris.GuardedRecursion.Epsilon where
-
 import Idris.Core.TT
-
 import Idris.AbsSyntaxTree
 import Idris.Error
-
 import Idris.GuardedRecursion.Constants
 import Idris.GuardedRecursion.Helpers
-
 import Control.Monad
-
 epsFail tm msg = ifail $ "Cannot build guarded recursive term from term " ++ show tm ++ ": " ++ msg
-
 \end{code}
 
 \begin{code}
 epsilon :: Name -> Term -> Type -> Idris Term
 epsilon recName t a = epsilonCheck EmptyClock recName [] t a
-
 epsilonCheck :: Clock -> Name -> Env -> Term -> Type -> Idris Term
 -- Check next
 epsilonCheck Kappa recName env (unapplyNext -> Just t) (unapplyLater -> Just a) =
@@ -72,13 +65,11 @@ epsilonCheck Kappa recName env (unapplyCompose -> Just (a, b, av, f, arg)) (unap
      fChecked <- epsilonCheck Kappa recName env f fType
      argChecked <- epsilonCheck Kappa recName env arg laterA
      applyCompose a b av fChecked argChecked
-
 -- Tensor error cases
 epsilonCheck EmptyClock recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
   epsFail t "Compose application with empty clock environment."
 epsilonCheck _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Nothing) =
   epsFail t "Compose application not expected to be available later."
-
 -- Binders
 epsilonCheck clock recName env (Bind n binder sc) (debindFirstArg -> Just a) =
   do bindEps <- epsilonCheck clock recName ((n, binder):env) sc a
@@ -96,7 +87,6 @@ epsilonCheck clock recName env t a =
 
 
 \begin{code}
-
 epsilonInfer :: Clock -> Name -> Env -> Term -> Type -> Idris Term
 \end{code}
 
@@ -110,7 +100,6 @@ K,G |- eps f : Later' (A -> B)    K,G |- eps x : Later' A
 epsilonInfer Kappa recName env app@(App f x) a | Just a' <- unapplyLater a, Just _ <- unapplyLater a' =
   do appNext <- applyNext app
      epsilonCheck Kappa recName env appNext a'
-
 epsilonInfer Kappa recName env (App f x) b | Just b' <- unapplyLater b, Nothing <- unapplyLater b' =
   do fType <- typeOf f env
      let fNowType = nowType fType
@@ -128,7 +117,6 @@ epsilonInfer Kappa recName env (App f x) b | Just b' <- unapplyLater b, Nothing 
       case getArgTys (nowType ty) of
        []    -> epsFail ty "Is not a function type."
        ((_,x):_) -> return x
-
 \end{code}
 
 Infer next
@@ -302,8 +290,6 @@ epsilonInfer _ _ _ t a = epsFail t $ "Could not infer a guarded recursive term f
 -- epsilonInfer Kappa recName env p (unapplyLater -> Just a) =
 --   do p' <- epsilonCheck Kappa recName env p a
 --      applyNext p'
-
-
 -- epsilonInfer EmptyClock recName env p@(P Bound n pty) (unapplyForall -> Just a)
 --   | Nothing <- unapplyLater pty,
 --     Nothing <- unapplyForall pty =
@@ -335,7 +321,6 @@ epsilonInfer _ _ _ t a = epsFail t $ "Could not infer a guarded recursive term f
 -- epsilonInfer EmptyClock recName env p (unapplyForall -> Just a) =
 --   do p' <- epsilonCheck Kappa recName env p a
 --      applyLambdaKappa p'
-
 \end{code}
 
 \end{document}
