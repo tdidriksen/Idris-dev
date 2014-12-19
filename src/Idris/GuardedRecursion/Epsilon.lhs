@@ -5,11 +5,14 @@
 \begin{code}
 {-# LANGUAGE PatternGuards, ViewPatterns #-}
 module Idris.GuardedRecursion.Epsilon where
+
 import Idris.Core.TT
 import Idris.AbsSyntaxTree
 import Idris.Error
+
 import Idris.GuardedRecursion.Constants
 import Idris.GuardedRecursion.Helpers
+
 import Control.Monad
 
 epsFail tm msg = ifail $ "Cannot build guarded recursive term from term " ++ show tm ++ ": " ++ msg
@@ -19,7 +22,9 @@ epsFail tm msg = ifail $ "Cannot build guarded recursive term from term " ++ sho
 epsilon :: Name -> Term -> Type -> Idris Term
 epsilon recName t a =
   do t' <- guardedTT t
-     epsilonCheck Closed recName [] t' a
+     case unapplyForall a of
+      Just _  -> epsilonCheck Closed recName [] t' a
+      Nothing -> epsilonCheck Open recName [] t' a
 
 epsilonCheck :: Clock -> Name -> Env -> Term -> Type -> Idris Term
 -- Check next
@@ -74,7 +79,14 @@ epsilonCheck Closed recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (u
   epsFail t "Compose application with empty clock environment."
 epsilonCheck _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Nothing) =
   epsFail t "Compose application not expected to be available later."
+
 -- Binders
+epsilonCheck clock recName env (Bind n (Let letty letval) sc) a =
+  do gLetTy <- guardedTT letty
+     gLetVal <- epsilonCheck clock recName env letval gLetTy
+     let gBinder = Let gLetTy gLetVal
+     bindEps <- epsilonCheck clock recName ((n, gBinder):env) sc a
+     return $ Bind n gBinder sc
 epsilonCheck clock recName env (Bind n binder sc) (debindFirstArg -> Just a)
   | Just _ <- debindFirstArg $ binderTy binder =
       do bindEps <- epsilonCheck clock recName ((n, binder):env) sc a

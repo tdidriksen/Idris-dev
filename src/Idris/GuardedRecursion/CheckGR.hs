@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 module Idris.GuardedRecursion.CheckGR where
 
 import Idris.AbsSyntaxTree
@@ -18,8 +19,7 @@ checkGuardedRecursive n =
   do ctxt <- getContext
      case lookupDef n ctxt of
         [CaseOp _ ty _ _ clauses _] ->
-          do --evalStateT (buildGR n clauses) emptyGEnv
-             _ <- checkFunction n ty clauses
+          do _ <- checkFunction n ty clauses
              
              return $ Partial NotProductive
         _ -> return $ Partial NotProductive
@@ -29,12 +29,25 @@ checkFunction name ty clauses =
   do gName <- guardedNameCtxt name
      gTy <- guardedType ty
      gClauses <- forM clauses $ \clause -> guardedRecursiveClause gName gTy clause
-     checkRhsSeq <- forM gClauses $ \(_,rhs) -> checkGR [] rhs gTy
+     checkRhsSeq <- forM gClauses $ \(_,rhs) -> checkGR [] (gName, gTy) rhs gTy
      return $ Partial NotProductive
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
 
 guardedType :: Type -> Idris Type
-guardedType = guardedTT
+guardedType ty =
+  do gTy <- guardedTT ty
+     universallyQuantify gTy
+     
+
+universallyQuantify :: Type -> Idris Type
+universallyQuantify (Bind n binder@(Pi (unapplyForall -> Just ty) kind) sc) =
+  do quantifiedSc <- universallyQuantify sc
+     return $ Bind n binder quantifiedSc
+universallyQuantify (Bind n (Pi ty@(unapplyForall -> Nothing) kind) sc) =
+  do quantifiedSc <- universallyQuantify sc
+     forallTy <- applyForall ty
+     return $ Bind n (Pi forallTy kind) quantifiedSc
+universallyQuantify ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term
 guardedLHS = guardedTT
