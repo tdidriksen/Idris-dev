@@ -9,6 +9,7 @@
 {-# LANGUAGE PatternGuards, ViewPatterns #-}
 module Idris.GuardedRecursion.Check(checkGR) where
 
+import Idris.Core.Evaluate
 import Idris.Core.TT
 import Idris.Core.Typecheck hiding (check)
 
@@ -19,16 +20,17 @@ import Idris.GuardedRecursion.Helpers
 
 import Control.Monad.State.Lazy as LazyState hiding (fix)
 
-checkGR :: Env -> (Name, Type) -> Term -> Type -> Idris ()
+checkGR :: Env -> (Name, Type) -> Term -> Type -> Idris Totality
 checkGR = check Closed
+                         
 \end{code}
 }
 \begin{code}
-check :: Clock -> Env -> (Name, Type) -> Term -> Type -> Idris ()
+check :: Clock -> Env -> (Name, Type) -> Term -> Type -> Idris Totality
 check Open g (n, ty) (recursiveRef n -> Extracted t) a =
   do a' <- laterThan g ty a
      check Open g (n, ty) t a
-check _ _ (n, ty) (recursiveRef n -> _) _ = translateError Undefined
+check _ _ (n, ty) (recursiveRef n -> _) _ = return $ Partial NotProductive
 \end{code}
 \[\frac { \sqcup ;\Gamma \quad \vdash \quad A\quad :\quad Type\quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \quad \vdash \quad \forall \kappa .A\quad :\quad Type }\]
 \begin{code}
@@ -56,59 +58,41 @@ check Open g n (next -> Extracted t) (later -> Extracted a)
 check Open g n (tensor -> Extracted (t, u)) (later -> Extracted b) =
   do ty <- typeOf t g
      atob <- unlater ty
-     a <- debind atob b g
+     a <- debind atob
      check Open g n u =<< laterK a
      check Open g n t =<< laterK atob
-\end{code}
-
-\begin{code}
-check Open g n (fix -> Extracted (x, t)) a 
-  = checkFix g a x t
-\end{code}
-\[
-\frac { \sqcup ;\Gamma \quad \vdash \quad t\quad :\quad A\quad \quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \quad \vdash \quad \Lambda \kappa .t\quad :\quad \forall \kappa .A } 
-\]
-\begin{code}
-check Open g n (apply -> Extracted t) a
-  = do aTy <- typeOf g a
-       case aTy of
-         (TType _) -> return ()
-         _ -> translateError Undefined
-       forallA <- forall a
-       check Closed g n t forallA
 \end{code}
 \[
 \frac { \sqcup ;\Gamma \quad \vdash \quad A\quad :\quad Type\quad \quad \sqcap ;\Gamma ,\Gamma '\quad \vdash \quad t\quad :\quad \forall \kappa .A\quad \quad nofc(\Gamma ) }{ \sqcup ;\Gamma ,\Gamma '\quad \vdash \quad apply\quad (t)\quad :\quad A }
 \]
 \begin{code}
+check Open g n (apply -> Extracted t) a
+  = do aTy <- typeOf a g
+       case aTy of
+         (TType _) -> do forallA <- forall a
+                         check Closed g n t forallA
+         _ -> return $ Partial NotProductive
+\end{code}
+\[
+\frac { \sqcup ;\Gamma \quad \vdash \quad t\quad :\quad A\quad \quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \quad \vdash \quad \Lambda \kappa .t\quad :\quad \forall \kappa .A } 
+\]
+\begin{code}
 check Closed g n (lambdaKappa -> Extracted t) (forallK -> Extracted a) 
   = check Open g n t a
--- Failure --
--- Missing Clocks
-check Closed _ _ t a
-  | expectsClock t || expectsClock a = translateError MissingClock
--- Missing Laters
-check _ _ _ (next -> Extracted _) (later -> Nope)
-  = translateError MissingLater
-check _ _ _ (tensor -> Extracted _) (later -> Nope)
-  = translateError MissingLater
--- Missing Quantification
-check _ _ _ (lambdaKappa -> Extracted _) (forallK -> Nope)
-  = translateError MissingForall
--- Apply Fresh
-check d g n t (forallK -> Extracted a)
-  = ifM (guardedType a)
-    (translateError Undefined)
-    (check d g n t a)
 -- Not GR
 check d g n (App t t') b =
   do ty <- typeOf t g
-     a <- debind ty b g
+     a <- debind ty
      check d g n t ty
      check d g n t' a
-check _ g n t a = do iLOG $ "Guarded recursion catch all hit with " ++ show t ++ " of type " ++ show a
-                     ty <- typeOf t g
-                     tyEq g ty a
+check d g n (Bind n' b t) a =
+  check d ((n', b) : g) n t a
+check d g n (P _ _ ty) a =
+  ifM (cEq g ty a)
+      (return $ Total [])
+      (return $ Partial NotProductive)
+check _ _ _ t a = do iLOG $ "Guarded recursion catch all hit with \n" ++ show t ++ "\n of type \n" ++ show a
+                     return $ Partial NotProductive
 \end{code}
 \ignore{
 \begin{code}
@@ -172,13 +156,17 @@ guardedType _ = return False
 checkFix :: Env -> Type -> Term -> Term -> Idris ()
 checkFix = undefined
 
-debind :: Type -> Type -> Env -> Idris Type
-debind (Bind n b t) ty env =
+debind :: Type -> Idris Type
+debind (Bind n b t) = return $ binderTy b
+debind _ = translateError Undefined
+
+debind' :: Type -> Type -> Env -> Idris Type
+debind' (Bind n b t) ty env =
   ifM (cEq env t ty)
       (return $ binderTy b)
-      (do rest <- debind t ty env
+      (do rest <- debind' t ty env
           return $ Bind n b rest)
-debind _ _ _ = translateError Undefined  
+debind' _ _ _ = translateError Undefined  
 
 cEq :: Env -> Type -> Type -> Idris Bool
 cEq env ty ty' =
@@ -211,6 +199,7 @@ recursiveRef _ _ = Nope
 laterThan :: Env -> Type -> Type -> Idris Type
 laterThan env ty (unapplyLater -> Just ty') = do tyEq env ty ty'
                                                  return ty'
+
 \end{code}
 }
 \end{document}
