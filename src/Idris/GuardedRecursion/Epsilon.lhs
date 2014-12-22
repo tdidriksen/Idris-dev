@@ -7,6 +7,7 @@
 module Idris.GuardedRecursion.Epsilon where
 
 import Idris.Core.TT
+import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
 import Idris.Error
 
@@ -16,20 +17,25 @@ import Idris.GuardedRecursion.Helpers
 import Control.Monad
 
 epsFail tm msg = ifail $ "Cannot build guarded recursive term from term " ++ show tm ++ ": " ++ msg
+epsLog rule tm ty = iLOG $ show rule ++ ": Term " ++ showTT tm ++ " should have type " ++ showTT ty
+epsLogInfer rule tm tmty goalty = iLOG $ show rule ++ ": Term" ++ showTT tm ++ " has type " ++ showTT tmty ++ " with goal " ++ showTT goalty
 \end{code}
 
 \begin{code}
 epsilon :: Name -> Term -> Type -> Idris Term
 epsilon recName t a =
-  do t' <- guardedTT t
+  do t' <- guardedTT' t
+     iLOG $ "Epsilon start"
+     iLOG $ "Trying to infer that term:\n" ++ showTT t' ++ "\nhas type:\n" ++ showTT a
      case unapplyForall a of
       Just _  -> epsilonCheck Closed recName [] t' a
       Nothing -> epsilonCheck Open recName [] t' a
 
 epsilonCheck :: Clock -> Name -> Env -> Term -> Type -> Idris Term
 -- Check next
-epsilonCheck Open recName env (unapplyNext -> Just t) (unapplyLater -> Just a) =
-  do nexted <- epsilonCheck Open recName env t a
+epsilonCheck Open recName env tm@(unapplyNext -> Just t) ty@(unapplyLater -> Just a) =
+  do epsLog "Next check" tm ty
+     nexted <- epsilonCheck Open recName env t a
      applyNext nexted
 -- Next error cases
 epsilonCheck _ recName env tm@(unapplyNext -> Just t) (unapplyLater -> Nothing) =
@@ -38,8 +44,9 @@ epsilonCheck Closed recName env tm@(unapplyNext -> Just t) _ =
   epsFail tm "Next application with empty clock environment."
   
 -- Check forall (clock abstraction)
-epsilonCheck Closed recName env (unapplyLambdaKappa -> Just t) (unapplyForall -> Just a) =
-  do freeClockTm <- epsilonCheck Open recName env t a
+epsilonCheck Closed recName env tm@(unapplyLambdaKappa -> Just t) ty@(unapplyForall -> Just a) =
+  do epsLog "LambdaKappa check" tm ty
+     freeClockTm <- epsilonCheck Open recName env t a
      applyLambdaKappa freeClockTm
 -- Forall error cases
 epsilonCheck Open recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Just a) =
@@ -48,8 +55,9 @@ epsilonCheck _ recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> N
   epsFail tm "Clock abstraction not expected to have Forall type."
   
 -- Check apply (clock application)
-epsilonCheck Open recName env (unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
-  do forallA <- applyForall a
+epsilonCheck Open recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
+  do epsLog "Apply check" tm a
+     forallA <- applyForall a
      unappliedTm <- epsilonCheck Closed recName env t forallA
      applyApply unappliedTm
 epsilonCheck Closed recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
@@ -58,8 +66,9 @@ epsilonCheck _ recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Just 
   epsFail tm "Expected forall type as result of clock application."
   
 -- Check fix (by nexting recursive reference)
-epsilonCheck Open recName env p@(P Ref refn pty) (unapplyLater -> Just a) | refn == recName =
-  do recRef <- epsilonCheck Open recName env p a
+epsilonCheck Open recName env p@(P Ref refn pty) ty@(unapplyLater -> Just a) | refn == recName =
+  do epsLog "Recursive ref check" p ty
+     recRef <- epsilonCheck Open recName env p a
      applyNext recRef
 -- Fix error cases
 epsilonCheck Closed recName env p@(P Ref refn pty) (unapplyLater -> Just a) | refn == recName =
@@ -68,8 +77,9 @@ epsilonCheck _ recName env p@(P Ref refn pty) (unapplyLater -> Nothing) | refn =
   epsFail p "Recursive reference not expected to be available later."
   
 -- Check tensor
-epsilonCheck Open recName env (unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
-  do fType <- typeOf f env
+epsilonCheck Open recName env tm@(unapplyCompose -> Just (a, b, av, f, arg)) ty@(unapplyLater -> Just b') =
+  do epsLog "Tensor check" tm ty
+     fType <- typeOf f env
      laterA <- applyLater' a
      fChecked <- epsilonCheck Open recName env f fType
      argChecked <- epsilonCheck Open recName env arg laterA
@@ -81,29 +91,37 @@ epsilonCheck _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unappl
   epsFail t "Compose application not expected to be available later."
 
 -- Binders
-epsilonCheck clock recName env (Bind n (Let letty letval) sc) a =
-  do gLetTy <- guardedTT letty
+epsilonCheck clock recName env tm@(Bind n (Let letty letval) sc) a =
+  do epsLog "Let binder check" tm a
+     gLetTy <- guardedTT letty
      gLetVal <- epsilonCheck clock recName env letval gLetTy
      let gBinder = Let gLetTy gLetVal
      bindEps <- epsilonCheck clock recName ((n, gBinder):env) sc a
      return $ Bind n gBinder sc
-epsilonCheck clock recName env (Bind n binder sc) (debindFirstArg -> Just a)
+epsilonCheck clock recName env tm@(Bind n binder sc) ty@(debindFirstArg -> Just a)
   | Just _ <- debindFirstArg $ binderTy binder =
-      do bindEps <- epsilonCheck clock recName ((n, binder):env) sc a
+      do epsLog "Function arg binder check" tm ty
+         bindEps <- epsilonCheck clock recName ((n, binder):env) sc a
          return $ Bind n binder bindEps
-epsilonCheck clock recName env (Bind n binder sc) a
+epsilonCheck clock recName env tm@(Bind n binder sc) a
   | Nothing <- debindFirstArg $ binderTy binder =
-      do bindEps <- epsilonCheck clock recName ((n, binder):env) sc a
+      do epsLog "Other binder check" tm a
+         bindEps <- epsilonCheck clock recName ((n, binder):env) sc a
          return $ Bind n binder bindEps
      
 -- Conversion check to see if term already has the required type.
 -- If not, try to infer a term that does.
 epsilonCheck clock recName env t a =
-  do tTy <- typeOf t env
-     ok <- checkGoal t a env
-     if ok
-      then return t
-      else epsilonInfer clock recName env t tTy a
+  do epsLog "Inference mode?" t a
+     return t
+     --tTy <- typeOf t env -- Problem: typeOf makes conversion check with context
+                         -- Solution? : Take term type as input, and take it apart by hand.
+     
+     -- ok <- ifail "SUPERERROR"  --idrisCatch (checkGoal t a env) (\err -> return False)
+     -- if ok
+     --  then do epsLog "Epsilon done" t a; return t
+     --  else do iLOG "Going into inference mode!"
+     --          epsilonInfer clock recName env t tTy a
 \end{code}
 
 
@@ -127,11 +145,13 @@ O,G |- eps f : Later' (A -> B)    O,G |- eps x : Later' A
 
 \begin{code}
 epsilonInfer Open recName env app@(App f x) appTy a | Just a' <- unapplyLater a, Just _ <- unapplyLater a' =
-  do appNext <- applyNext app
+  do epsLogInfer "Tensor infer later-later" app appTy a
+     appNext <- applyNext app
      epsilonCheck Open recName env appNext a'
 
 epsilonInfer Open recName env (App f x) appTy b | Just b' <- unapplyLater b, Nothing <- unapplyLater b' =
-  do fType <- typeOf f env
+  do epsLogInfer "Tensor infer" (App f x) appTy b
+     fType <- typeOf f env
      let fNowType = nowType fType
      a <- firstArg fNowType
      laterA <- applyLater' a
@@ -156,7 +176,8 @@ O,G |- eps t : A
 O,G |- eps (Next t) : Later' A
 \begin{code}
 epsilonInfer Open recName env t tTy a@(unapplyLater -> Just a') =
-  do tEps <- epsilonCheck Open recName env t a'
+  do epsLogInfer "Next infer" t tTy a
+     tEps <- epsilonCheck Open recName env t a'
      tNext <- applyNext tEps
      epsilonCheck Open recName env tNext a
 \end{code}
@@ -168,7 +189,8 @@ O,G |- eps t : A
 C,G |- eps (lambdaKappa t) : forall A
 \begin{code}
 epsilonInfer Closed recName env t tTy a@(unapplyForall -> Just a') =
-  do tEps <- epsilonCheck Open recName env t a'
+  do epsLogInfer "LambdaKappa infer" t tTy a
+     tEps <- epsilonCheck Open recName env t a'
      tLambdaKappa <- applyLambdaKappa tEps
      epsilonCheck Closed recName env tLambdaKappa a
 \end{code}
@@ -179,8 +201,9 @@ C, G |- eps t : forall A
 -------------------------
 O, G |- eps (apply t) : A (A not forall.A, since only one clock)
 \begin{code}
-epsilonInfer Open recName env t (unapplyForall -> Just tTy) a@(unapplyForall -> Nothing) =
-  do forallA <- applyForall a
+epsilonInfer Open recName env t ty@(unapplyForall -> Just tTy) a@(unapplyForall -> Nothing) =
+  do epsLogInfer "Apply infer" t ty a
+     forallA <- applyForall a
      tEps <- epsilonCheck Closed recName env t forallA
      tApply <- applyApply tEps
      epsilonCheck Open recName env tApply a
@@ -188,7 +211,8 @@ epsilonInfer Open recName env t (unapplyForall -> Just tTy) a@(unapplyForall -> 
 
 \begin{code}
 epsilonInfer clock recName env app@(App f x) appTy a =
-  do let (f', args) = unApply app
+  do epsLogInfer "App recurse" app appTy a
+     let (f', args) = unApply app
      f'Type <- typeOf f' env
      let argTys = map snd $ getArgTys f'Type
      argEps <- forM (zip args argTys) $ \(arg, argTy) ->

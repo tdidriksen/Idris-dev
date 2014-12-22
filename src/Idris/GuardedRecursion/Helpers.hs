@@ -19,6 +19,8 @@ import Control.Applicative
 import Data.Maybe
 import Data.List
 
+import Data.Traversable as Tr
+
 import Control.Monad
 import Control.Monad.State.Lazy as LazyState
 
@@ -176,13 +178,18 @@ typeOf t env =
 checkGoal :: Term -> Type -> Env -> Idris Bool
 checkGoal tm goal env =
   do tmType <- typeOf tm env
+     iLOG $ "Conversion checking " ++ showTT tmType ++ " and " ++ showTT goal
      ctxt <- getContext
      ist <- get
-     let ucs = map fst (idris_constraints ist)
-     case LazyState.evalStateT (convertsC ctxt env tmType goal) (0, ucs) of
+     -- let ucs = map fst (idris_constraints ist)
+     case convEq' ctxt (map fst (filter isHole env)) tmType goal of
       tc -> case tc of
-              OK () -> return True
-              _ -> return False
+             OK True -> do iLOG $ "Conversion check succeeded"; return True
+             _ -> do iLOG $ "Conversion check failed"; return False
+     -- catchError (LazyState.evalStateT (convertsC ctxt env tmType goal) (0, ucs)) of
+     --  tc -> case tc of
+     --          OK () -> return True
+     --          _ -> return False
 
 debindFirstArg :: Type -> Maybe Type
 debindFirstArg (Bind _ (Pi t _) _) = Just t
@@ -268,7 +275,7 @@ guardedName n = n
 addGuardedRename :: Name -> Name -> Idris ()
 addGuardedRename n gn = do i <- getIState
                            case lookup n (guarded_renames i) of
-                             Just _ -> tclift $ tfail (Elaborating "guarded recursion of " n (Msg $ "A guarded recursive name already exist for " ++ show n))
+                             Just _ -> tclift $ tfail (Elaborating "guarded recursion of " n (Msg $ "A guarded recursive name already exists for " ++ show n))
                              Nothing -> putIState (i { guarded_renames = (n, gn) : (guarded_renames i) })
 
 -- |Creates and adds a rename to the guarded context.
@@ -429,4 +436,84 @@ guardedTTIgnore is t = do let fn = is \\ (freeNames t)
 
 -- |guards all free names in the term.
 guardedTT :: Term -> Idris Term
-guardedTT = guardedTTIgnore []                 
+guardedTT = guardedTTIgnore []
+
+guardedTT' :: Term -> Idris Term
+guardedTT' tm = mapMTT withGuardedNames tm
+  where
+    withGuardedNames :: Term -> Idris Term
+    withGuardedNames tm@(P Bound _ _) = return tm
+    withGuardedNames (P _ n ty) = guardedP n
+    withGuardedNames (Bind n binder sc) = do gBinder <- Tr.forM binder withGuardedNames
+                                             gSc <- withGuardedNames sc
+                                             return $ Bind n gBinder gSc
+    withGuardedNames (App f x) = liftM2 App (withGuardedNames f) (withGuardedNames x)
+    withGuardedNames (Proj tm i) = liftM (\gtm -> Proj gtm i) (withGuardedNames tm)
+    withGuardedNames tm = return tm
+    
+    guardedP :: Name -> Idris Term
+    guardedP n =
+      do i <- get
+         gname <- case lookup n $ guarded_renames i of
+                   Just n' -> return n'
+                   Nothing -> return n
+         let ctxt = tt_ctxt i
+         case lookupP gname ctxt of
+          [p] -> return p
+          _ -> ifail $ "Name " ++ show gname ++ " has no definition."
+
+
+
+mapMTT :: Monad m => (TT n -> m (TT n)) -> TT n -> m (TT n)
+mapMTT f (P nameType n ty) =
+  do ty' <- f ty
+     f (P nameType n ty')
+mapMTT f (Bind n binder sc) =
+  do sc' <- f sc
+     binder' <- Tr.forM binder f
+     f (Bind n binder' sc')
+mapMTT f (App a b) =
+  do a' <- f a
+     b' <- f b
+     f (App a' b')
+mapMTT f (Proj tm i) =
+  do tm' <- f tm
+     f (Proj tm' i)
+mapMTT f tm = f tm
+      
+
+mapTT :: (TT n -> TT n) -> TT n -> TT n
+mapTT f (P nt n ty) = f (P nt n (f ty))
+mapTT f (Bind n binder sc) = f (Bind n (fmap f binder) (f sc))
+mapTT f (App t t') = f (App (f t) (f t'))
+mapTT f (Proj t i) = f (Proj (f t) i)
+mapTT f t = f t
+
+showTT :: Term -> String
+showTT (P nametype n ty) = "(P " ++ showNameType nametype ++ " " ++ show n ++ " " ++ showTT ty ++ ")"
+showTT (V i) = "V " ++ show i
+showTT (Bind n binder sc) = "(Bind " ++ show n ++ " " ++ showBinder binder ++ " " ++ showTT sc ++ ")"
+showTT (App f x) = "(App " ++ showTT f ++ " " ++ showTT x ++ ")"
+showTT (Constant c) = "(Constant ++ " ++ show c ++ ")"
+showTT (Proj t i) = "(Proj " ++ showTT t ++ " " ++ show i ++ ")"
+showTT Erased = "Erased"
+showTT Impossible = "Impossible"
+showTT (TType _) = "TType"
+showTT (UType _) = "UType"
+
+showNameType :: NameType -> String
+showNameType Ref = "Ref"
+showNameType Bound = "Bound"
+showNameType (DCon tag _ _) = "(DCon " ++ show tag ++ ")"
+showNameType (TCon tag _) = "(TCon " ++ show tag ++ ")"
+
+showBinder :: Binder Term -> String
+showBinder (Lam ty) = "Lam " ++ showTT ty
+showBinder (Pi ty kind) = "Pi " ++ showTT ty ++ " " ++ showTT kind
+showBinder (Let ty val) = "Let " ++ showTT ty ++ " " ++ showTT val
+showBinder (NLet ty val) = "NLet " ++ showTT ty ++ " " ++ showTT val
+showBinder (Hole ty) = "Lam " ++ showTT ty
+showBinder (GHole e ty) = "GHole " ++ show e ++ " " ++ showTT ty
+showBinder (Guess ty val) = "Guess " ++ showTT ty ++ " " ++ showTT val
+showBinder (PVar ty) = "PVar " ++ showTT ty
+showBinder (PVTy ty) = "PVTy " ++ showTT ty

@@ -13,31 +13,42 @@ import Idris.GuardedRecursion.Epsilon (epsilon)
 import Idris.GuardedRecursion.Check (checkGR)
 
 import Control.Monad
+import Control.Monad.State
 
 checkGuardedRecursive :: Name -> Idris Totality
 checkGuardedRecursive n =
   do ctxt <- getContext
      case lookupDef n ctxt of
         [CaseOp _ ty _ _ clauses _] ->
-          do _ <- checkFunction n ty clauses
+          do forM_ clauses $ \(pvs, lhs, rhs) ->
+               do iLOG $ show ("GR_LHS: " ++ showTT lhs)
+                  iLOG $ show ("GR_RHS: " ++ showTT rhs)
+             _ <- checkFunction n ty clauses
              
              return $ Partial NotProductive
         _ -> return $ Partial NotProductive
 
 checkFunction :: Name -> Type -> [([Name], Term, Term)] -> Idris Totality
 checkFunction name ty clauses =
-  do gName <- guardedNameCtxt name
-     gTy <- guardedType ty
-     gClauses <- forM clauses $ \clause -> guardedRecursiveClause gName gTy clause
-     checkRhsSeq <- forM gClauses $ \(_,rhs) -> checkGR [] (gName, gTy) rhs gTy
+  do let expTy = explicitNames ty
+     let expClauses = flip map clauses $ \(pvs, lhs, rhs) -> (pvs, explicitNames lhs, explicitNames rhs)
+     gName <- getGuardedNameSoft name
+     gTy <- guardedType expTy
+     ist <- get
+     ctxt <- getContext
+     gClauses <- forM expClauses $ \clause -> guardedRecursiveClause gName gTy clause
+     iLOG $ show "Guarded type: " ++ showTT gTy
+     forM_ gClauses $ \(lhs, rhs) ->
+       do iLOG $ show ("GR_LHS_EPS: " ++ showTT lhs)
+          iLOG $ show ("GR_RHS_EPS: " ++ showTT rhs)
+     --checkRhsSeq <- forM gClauses $ \(_,rhs) -> checkGR [] (gName, gTy) rhs gTy
      return $ Partial NotProductive
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
 
 guardedType :: Type -> Idris Type
 guardedType ty =
-  do gTy <- guardedTT ty
+  do gTy <- guardedTT' ty
      universallyQuantify gTy
-     
 
 universallyQuantify :: Type -> Idris Type
 universallyQuantify (Bind n binder@(Pi (unapplyForall -> Just ty) kind) sc) =
@@ -50,13 +61,19 @@ universallyQuantify (Bind n (Pi ty@(unapplyForall -> Nothing) kind) sc) =
 universallyQuantify ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term
-guardedLHS = guardedTT
+guardedLHS = guardedTT'
 
 guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Idris (Term, Term)
 guardedRecursiveClause _ _ (_, lhs, Impossible) = return (lhs, Impossible)
 guardedRecursiveClause name ty (_, lhs, rhs) =
-  do glhs <- guardedLHS lhs
-     grhs <- epsilon name rhs ty
+  do rhsTy <- typeOf rhs []
+     gRhsTy <- guardedType (explicitNames rhsTy)
+     ist <- get
+     ctxt <- getContext
+     put $ ist { tt_ctxt = addTyDecl name Ref gRhsTy ctxt }
+     glhs <- guardedLHS lhs
+     iLOG $ "Guarded LHS: " ++ showTT glhs
+     grhs <- epsilon name (explicitNames rhs) gRhsTy
      return (glhs, grhs)
      
 
