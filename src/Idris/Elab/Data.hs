@@ -142,27 +142,8 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
                                            return (emptyDocstring, [], gcn, rgct, emptyFC, []))
                gcs <- mapM f dcons
                -- Elaborate guarded declaration
-               elabData info gsyn emptyDocstring [] emptyFC gopts (PDatadecl gn t_in gcs)
-               -- Create boxing and unboxing functions
-               tya <- tyArgs cty'
-               boxingFunctions n gn tya)
-         --}         
-
-  where
-        -- Creates a list of references based on a type constructor.
-        -- As guarded recursion only works on simple types we only
-        -- look a TTypes and bindings. The check that only these exist
-        -- is done by Idris.GuardedRecursionHelpers.guardableTC
-        tyArgs :: Type -> Idris [PTerm]
-        tyArgs t = do i <- getIState
-                      let defs = map fst (ctxtAlist (tt_ctxt i))
-                      ta defs (sUN "a") t
-          where 
-            ta ns n (TType _) = return $ []
-            ta ns n (Bind _ _ t) = do let nn = uniqueName n ns
-                                      rest <- ta (nn : ns) nn t
-                                      return $ (PRef emptyFC nn) : rest                               
-    
+               elabData info gsyn emptyDocstring [] emptyFC gopts (PDatadecl gn t_in gcs))
+  where    
         setDetaggable :: Name -> Idris ()
         setDetaggable n = do
             ist <- getIState

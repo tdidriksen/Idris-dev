@@ -294,6 +294,9 @@ guardedName :: Name -> Name
 guardedName (UN t) = UN (guardedText t)
 guardedName (NS n ns) = NS (guardedName n) (placeInGuardedNS ns)
 guardedName (MN i t) = MN i (guardedText t)
+-- FIX ME: We need to figure out more about what special names are so we can figure out how to "guard" them.
+-- Total hack!
+guardedName (SN s) = sUN (show s)
 guardedName n = n
 
 -- |Adds a rename to the guarded context.
@@ -536,3 +539,20 @@ showBinder (GHole e ty) = "GHole " ++ show e ++ " " ++ showTT ty
 showBinder (Guess ty val) = "Guess " ++ showTT ty ++ " " ++ showTT val
 showBinder (PVar ty) = "PVar " ++ showTT ty
 showBinder (PVTy ty) = "PVTy " ++ showTT ty
+
+buildEnv :: Term -> Env
+buildEnv term = nubBy (\(x,_) (y,_) -> x == y) (bounded term)
+  where
+    bounded :: Term -> Env
+    bounded (P Bound n ty) = [(n, PVar ty)]
+    bounded (Bind _ binder sc) =
+      let l = bounded sc in
+      let r = bb binder in
+      l ++ r
+      where
+        -- Ignore kinds?
+        bb :: Binder Term -> Env
+        bb b' = bounded (binderTy b')
+    bounded (App t t') = bounded t ++ bounded t'
+    bounded (Proj t _) = bounded t
+    bounded _ = []
