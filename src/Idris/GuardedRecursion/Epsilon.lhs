@@ -44,55 +44,8 @@ epsilonCheck Closed recName env p@(P Ref refn pty) (unapplyLater -> Just a) | re
   epsFail p "Accessing recursive reference with empty clock context."
 epsilonCheck Closed recName env p@(P Ref refn (unapplyForall -> Just _)) (unapplyForall -> Just _) | refn == recName =
   return p 
-epsilonCheck _ recName env p@(P Ref refn pty) (unapplyLater -> Nothing) | refn == recName =
-  epsFail p "Recursive reference not expected to be available later."
-
--- Check next
-epsilonCheck Open recName env tm@(unapplyNext -> Just t) ty@(unapplyLater -> Just a) =
-  do epsLog "Next check" tm ty
-     nexted <- epsilonCheck Open recName env t a
-     applyNext nexted
--- Next error cases
-epsilonCheck _ recName env tm@(unapplyNext -> Just t) (unapplyLater -> Nothing) =
-  epsFail tm "Next application occurred outside later context."
-epsilonCheck Closed recName env tm@(unapplyNext -> Just t) _ =
-  epsFail tm "Next application with empty clock environment."
-  
--- Check forall (clock abstraction)
-epsilonCheck Closed recName env tm@(unapplyLambdaKappa -> Just t) ty@(unapplyForall -> Just a) =
-  do epsLog "LambdaKappa check" tm ty
-     freeClockTm <- epsilonCheck Open recName env t a
-     applyLambdaKappa freeClockTm
--- Forall error cases
-epsilonCheck Open recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Just a) =
-  epsFail tm "Clock abstraction in context with open clock."
-epsilonCheck _ recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Nothing) =
-  epsFail tm "Clock abstraction not expected to have Forall type."
-  
--- Check apply (clock application)
-epsilonCheck Open recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
-  do epsLog "Apply check" tm a
-     forallA <- applyForall a
-     unappliedTm <- epsilonCheck Closed recName env t forallA
-     applyApply unappliedTm
-epsilonCheck Closed recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
-  epsFail tm "Clock application with empty clock environment."
-epsilonCheck _ recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Just _) =
-  epsFail tm "Expected forall type as result of clock application."
-    
--- Check tensor
-epsilonCheck Open recName env tm@(unapplyCompose -> Just (a, b, av, f, arg)) ty@(unapplyLater -> Just b') =
-  do epsLog "Tensor check" tm ty
-     (Just fType) <- typeOfMaybe f env
-     laterA <- applyLater' a
-     fChecked <- epsilonCheck Open recName env f fType
-     argChecked <- epsilonCheck Open recName env arg laterA
-     applyCompose a b av fChecked argChecked
--- Tensor error cases
-epsilonCheck Closed recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
-  epsFail t "Compose application with empty clock environment."
-epsilonCheck _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Nothing) =
-  epsFail t "Compose application not expected to be available later."
+--epsilonCheck _ recName env p@(P Ref refn pty) (unapplyLater -> Nothing) | refn == recName =
+--  epsFail p "Recursive reference not expected to be available later."
 
 -- Binders
 epsilonCheck clock recName env tm@(Bind n (Let letty letval) sc) a =
@@ -113,20 +66,105 @@ epsilonCheck clock recName env tm@(Bind n binder sc) a
          bindEps <- epsilonCheck clock recName ((n, binder):env) sc a
          return $ Bind n binder bindEps
 
--- epsilonCheck clock recName env (unapplyDelay -> Just tm) a =
---   do iLOG $ "Delay removal"
---      epsilonCheck clock recName env tm a
+-- Check tensor
+epsilonCheck Open recName env tm@(unapplyCompose -> Just (a, b, av, f, arg)) ty@(unapplyLater -> Just b') =
+  do epsLog "Tensor check" tm ty
+     (Just fType) <- typeOfMaybe f env
+     laterA <- applyLater' a
+     fChecked <- epsilonCheck Open recName env f fType
+     argChecked <- epsilonCheck Open recName env arg laterA
+     applyCompose a b av fChecked argChecked
+-- Tensor error cases
+epsilonCheck Closed recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
+  epsFail t "Compose application with empty clock environment."
+epsilonCheck _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Nothing) =
+  epsFail t "Compose application not expected to be available later."
+
+
+
+-- Check next
+epsilonCheck Open recName env tm@(unapplyNext -> Just t) ty@(unapplyLater -> Just a) =
+  do epsLog "Next check" tm ty
+     nexted <- epsilonCheck Open recName env t a
+     applyNext nexted
+-- Next error cases
+epsilonCheck _ recName env tm@(unapplyNext -> Just t) (unapplyLater -> Nothing) =
+  epsFail tm "Next application occurred outside later context."
+epsilonCheck Closed recName env tm@(unapplyNext -> Just t) _ =
+  epsFail tm "Next application with empty clock environment."
+
+
+-- Check forall (clock abstraction)
+epsilonCheck Closed recName env tm@(unapplyLambdaKappa -> Just t) ty@(unapplyForall -> Just a) =
+  do epsLog "LambdaKappa check" tm ty
+     freeClockTm <- epsilonCheck Open recName env t a
+     applyLambdaKappa freeClockTm
+-- Infer forall
+epsilonCheck Closed recName env tm@(unapplyLambdaKappa -> Nothing) ty@(unapplyForall -> Just a) =
+  do epsLog "LambdaKappa infer" tm ty
+     recEps <- epsilonCheck Open recName env tm a
+     hasForall <- hasForallType recEps
+     case hasForall of
+      Just _ -> return recEps
+      Nothing -> applyLambdaKappa recEps
+  where
+    hasForallType :: Term -> Idris (Maybe Term)
+    hasForallType t = do tyMaybe <- typeOfMaybe t env
+                         case tyMaybe of
+                          Just ty' -> return $ unapplyForall ty'
+                          Nothing -> return Nothing
+-- Forall error cases
+epsilonCheck Open recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Just a) =
+  epsFail tm "Clock abstraction in context with open clock."
+epsilonCheck _ recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Nothing) =
+  epsFail tm "Clock abstraction not expected to have Forall type."
+  
+-- Check apply (clock application)
+epsilonCheck Open recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
+  do epsLog "Apply check" tm a
+     forallA <- applyForall a
+     unappliedTm <- epsilonCheck Closed recName env t forallA
+     applyApply unappliedTm
+--epsilonCheck Open recName env tm@(unapplyApply -> Nothing) a@(unapplyForall -> Nothing) =
+--  do epsLog "Apply infer" tm a
+     
+epsilonCheck Closed recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
+  epsFail tm "Clock application with empty clock environment."
+epsilonCheck _ recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Just _) =
+  epsFail tm "Expected forall type as result of clock application."
+
+epsilonCheck clock recName env app@(App f x) a =
+  do epsLog "App recurse" app a
+     let (f', args) = unApply app
+     (Just f'Type) <- typeOfMaybe f' env
+     let argTys = map snd $ getArgTys f'Type
+     argEps <- forM (zip args argTys) $ \(arg, argTy) ->
+                do delayedType <- delayBy a argTy
+                   epsilonCheck clock recName env arg delayedType
+     return (mkApp f' argEps)
+
+epsilonCheck Open recName env tm@(unapplyApply -> Nothing) a@(unapplyForall -> Nothing) =
+  do tmTyMaybe <- typeOfMaybe tm env
+     case tmTyMaybe of
+      Just tmTy' -> case unapplyForall tmTy' of
+                     Just _ -> do epsLog "Apply infer" tm a
+                                  applyApply tm
+                     Nothing -> do iLOG $ "No apply necessary"
+                                   return tm
+      Nothing -> return tm
 
 -- Conversion check to see if term already has the required type.
 -- If not, try to infer a term that does.
 epsilonCheck clock recName env t a =
-  do --iLOG "Going into inference mode!"
-     tTy <- typeOfMaybe t env
-     ok <- idrisCatch (checkGoal t a env) (\err -> return False)
-     if ok
-      then do epsLog "Epsilon done" t a; return t
-      else do iLOG "Going into inference mode!"
-              epsilonInfer clock recName env t tTy a
+  do iLOG $  "Epsilon done: " ++ showTT t
+     return t
+     --iLOG "Going into inference mode!"
+     -- tTy <- typeOfMaybe t env
+     -- ok <- idrisCatch (checkGoal t a env) (\err -> return False)
+     -- if ok
+     --  then do epsLog "Epsilon done" t a; return t
+     --  else do iLOG "Going into inference mode!"
+     --          epsilonInfer clock recName env t tTy a
               
   -- do epsLog "Inference mode?" t a
   --    --return t
