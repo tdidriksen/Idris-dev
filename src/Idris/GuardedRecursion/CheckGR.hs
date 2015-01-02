@@ -23,7 +23,10 @@ checkGuardedRecursive n =
           do forM_ clauses $ \(pvs, lhs, rhs) ->
                do iLOG $ show ("GR_LHS: " ++ showTT lhs)
                   iLOG $ show ("GR_RHS: " ++ showTT rhs)
-             _ <- checkFunction n ty clauses
+             ctxt <- getContext
+             _ <- case lookupTyExact n ctxt of
+                   Just nty -> checkFunction n nty clauses
+                   Nothing -> checkFunction n ty clauses
              
              return $ Partial NotProductive
         _ -> return $ Partial NotProductive

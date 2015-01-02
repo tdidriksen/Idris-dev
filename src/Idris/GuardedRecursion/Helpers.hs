@@ -70,6 +70,20 @@ unapplyCompose (Compose compose a b av f arg)
   | isCompose compose = Just (a, b, av, f, arg)
 unapplyCompose _ = Nothing
 
+pattern Delay delay lazyType delayType t = App (App (App delay lazyType) delayType) t
+
+unapplyDelay :: Term -> Maybe Term
+unapplyDelay (Delay delay lazyType _ tm)
+  | isDelay delay && isLazyCodata lazyType = Just tm
+unapplyDelay _ = Nothing
+
+removeDelay :: Term -> Term
+removeDelay t = mapTT withoutDelay t
+  where
+    withoutDelay :: Term -> Term
+    withoutDelay (unapplyDelay -> Just tm) = tm
+    withoutDelay tm = tm
+
 applyForall :: Type -> Idris Type
 applyForall ty =
   do forall <- forallRef
@@ -148,6 +162,14 @@ isCompose (P Ref (NS (UN compose) [gr]) _)
   | compose == txt composeStr && gr == txt guardedRecursion = True
 isCompose _ = False
 
+isDelay :: Term -> Bool
+isDelay (P _ (UN delay) _) | delay == txt delayStr = True
+isDelay _ = False
+
+isLazyCodata :: Term -> Bool
+isLazyCodata (P _ (UN lazyCodata) _) | lazyCodata == txt lazyCodataStr = True
+isLazyCodata _ = False
+
 isLambdaKappa :: Term -> Bool
 isLambdaKappa (P Ref (NS (UN lambdaKappa) [gr]) _)
   | lambdaKappa == txt lambdaKappaStr && gr == txt guardedRecursion = True
@@ -167,6 +189,9 @@ guardedRef = undefined
 
 guardedDataConstructor :: Name -> Idris Term
 guardedDataConstructor = undefined
+
+typeOfMaybe :: Term -> Env -> Idris (Maybe Type)
+typeOfMaybe t env = idrisCatch (typeOf t env >>= \t' -> return $ Just t') (\_ -> return Nothing)
 
 typeOf :: Term -> Env -> Idris Type
 typeOf t env =
@@ -442,14 +467,8 @@ guardedTT' :: Term -> Idris Term
 guardedTT' tm = mapMTT withGuardedNames tm
   where
     withGuardedNames :: Term -> Idris Term
-    withGuardedNames tm@(P Bound _ _) = return tm
-    withGuardedNames (P _ n ty) = guardedP n
-    withGuardedNames (Bind n binder sc) = do gBinder <- Tr.forM binder withGuardedNames
-                                             gSc <- withGuardedNames sc
-                                             return $ Bind n gBinder gSc
-    withGuardedNames (App f x) = liftM2 App (withGuardedNames f) (withGuardedNames x)
-    withGuardedNames (Proj tm i) = liftM (\gtm -> Proj gtm i) (withGuardedNames tm)
-    withGuardedNames tm = return tm
+    withGuardedNames (P nt n _) | nt /= Bound = guardedP n
+    withGuardedNames t = return t
     
     guardedP :: Name -> Idris Term
     guardedP n =
@@ -458,7 +477,7 @@ guardedTT' tm = mapMTT withGuardedNames tm
                    Just n' -> return n'
                    Nothing -> return n
          let ctxt = tt_ctxt i
-         case lookupP gname ctxt of
+         case lookupP gname ctxt of 
           [p] -> return p
           _ -> ifail $ "Name " ++ show gname ++ " has no definition."
 
@@ -466,27 +485,27 @@ guardedTT' tm = mapMTT withGuardedNames tm
 
 mapMTT :: Monad m => (TT n -> m (TT n)) -> TT n -> m (TT n)
 mapMTT f (P nameType n ty) =
-  do ty' <- f ty
+  do ty' <- mapMTT f ty
      f (P nameType n ty')
 mapMTT f (Bind n binder sc) =
-  do sc' <- f sc
+  do sc' <- mapMTT f sc
      binder' <- Tr.forM binder f
      f (Bind n binder' sc')
 mapMTT f (App a b) =
-  do a' <- f a
-     b' <- f b
+  do a' <- mapMTT f a
+     b' <- mapMTT f b
      f (App a' b')
 mapMTT f (Proj tm i) =
-  do tm' <- f tm
+  do tm' <- mapMTT f tm
      f (Proj tm' i)
 mapMTT f tm = f tm
       
 
 mapTT :: (TT n -> TT n) -> TT n -> TT n
-mapTT f (P nt n ty) = f (P nt n (f ty))
-mapTT f (Bind n binder sc) = f (Bind n (fmap f binder) (f sc))
-mapTT f (App t t') = f (App (f t) (f t'))
-mapTT f (Proj t i) = f (Proj (f t) i)
+mapTT f (P nt n ty) = f (P nt n (mapTT f ty))
+mapTT f (Bind n binder sc) = f (Bind n (fmap f binder) (mapTT f sc))
+mapTT f (App t t') = f (App (mapTT f t) (mapTT f t'))
+mapTT f (Proj t i) = f (Proj (mapTT f t) i)
 mapTT f t = f t
 
 showTT :: Term -> String
