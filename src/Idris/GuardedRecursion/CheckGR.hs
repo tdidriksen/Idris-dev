@@ -21,8 +21,8 @@ checkGuardedRecursive n =
      case lookupDef n ctxt of
         [CaseOp _ ty _ _ clauses _] ->
           do forM_ clauses $ \(pvs, lhs, rhs) ->
-               do iLOG $ show ("GR_LHS: " ++ showTT lhs)
-                  iLOG $ show ("GR_RHS: " ++ showTT rhs)
+               do iLOG $ show ("GR_LHS: " ++ show lhs)
+                  iLOG $ show ("GR_RHS: " ++ show rhs)
              ctxt <- getContext
              _ <- case lookupTyExact n ctxt of
                    Just nty -> checkFunction n nty clauses
@@ -42,8 +42,8 @@ checkFunction name ty clauses =
      gClauses <- forM expClauses $ \clause -> guardedRecursiveClause gName gTy clause
      iLOG $ show "Guarded type: " ++ showTT gTy
      forM_ gClauses $ \(lhs, rhs) ->
-       do iLOG $ show ("GR_LHS_EPS: " ++ showTT lhs)
-          iLOG $ show ("GR_RHS_EPS: " ++ showTT rhs)
+       do iLOG $ show ("GR_LHS_EPS: " ++ show lhs)
+          iLOG $ show ("GR_RHS_EPS: " ++ show rhs)
      --checkRhsSeq <- forM gClauses $ \(_,rhs) -> checkGR [] (gName, gTy) rhs gTy
      return $ Partial NotProductive
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
@@ -75,8 +75,8 @@ guardedRecursiveClause name ty (_, lhs, rhs) =
      ctxt <- getContext
      put $ ist { tt_ctxt = addTyDecl name Ref gRhsTy ctxt }
      glhs <- guardedLHS lhs
-     iLOG $ "Guarded LHS: " ++ showTT glhs
-     grhs <- epsilon name (explicitNames rhs) gRhsTy
+     iLOG $ "Guarded LHS: " ++ show glhs
+     grhs <- epsilon name (explicitNames rhs) gRhsTy (buildEnv glhs)
      return (glhs, grhs)
      
 

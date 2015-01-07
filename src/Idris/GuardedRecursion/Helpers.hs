@@ -1,3 +1,4 @@
+
 {-# LANGUAGE PatternGuards, PatternSynonyms, ViewPatterns #-}
 
 module Idris.GuardedRecursion.Helpers where
@@ -60,8 +61,8 @@ unapplyApply tm = unapplyRef applyName tm
 
 applyCompose :: Type -> Type -> Term -> Term -> Term -> Idris Term
 applyCompose a b av f arg =
-  do compose <- composeRef
-     return $ App (App (App (App (App compose a) b) av) f) arg
+  do composeF <- composeRef
+     return $ App (App (App (App (App composeF a) b) av) f) arg
 
 pattern Compose compose a b av f arg = App (App (App (App (App compose a) b) av) f) arg
 
@@ -114,7 +115,38 @@ unapplyNLater _ = Nothing
 unapplyLater :: Type -> Maybe Type
 unapplyLater (unapplyLater' -> Just ty) = Just ty
 unapplyLater (unapplyNLater -> Just ty) = Just ty
+-- unapplyLater (Bind n (Pi (unapplyLater' -> Just piTy) kind) sc) =
+--   do sc' <- unapplyLater sc
+--      return $ (Bind n (Pi piTy kind) sc')
 unapplyLater _ = Nothing
+
+distributeLater :: Type -> Idris Type
+distributeLater (unapplyLater -> Just b@(Bind n (Pi t kind) sc)) =
+  do b' <- applyLaters b
+     distributeLater b'
+  where
+    applyLaters :: Type -> Idris Type
+    applyLaters (Bind n (Pi t kind) sc) =
+      do laterPiTy <- applyLater' t
+         laterSc <- applyLaters sc
+         return $ Bind n (Pi laterPiTy kind) laterSc
+    applyLaters ty = applyLater' ty
+distributeLater ty = return ty
+
+collectLater :: Type -> Idris Type
+collectLater b@(Bind n (Pi (unapplyLater -> Just ty) kind) sc) =
+  do sc' <- idrisCatch (collectLater' sc) (\_ -> return b)
+     applyLater' =<< collectLater sc'
+  where
+    collectLater' :: Type -> Idris Type
+    collectLater' (Bind n (Pi (unapplyLater -> Just ty) kind) sc) =
+      do sc' <- collectLater' sc
+         return $ Bind n (Pi ty kind) sc
+    collectLater' (unapplyLater -> Just ty) = return ty
+    collectLater' (unapplyLater -> Nothing) = ifail "Unable to collect later from argument."
+collectLater ty = return ty
+     
+     
 
 applyLambdaKappa :: Term -> Idris Term
 applyLambdaKappa tm =
@@ -197,7 +229,7 @@ typeOf :: Term -> Env -> Idris Type
 typeOf t env =
   do ctxt <- getContext
      case check ctxt env (forget t) of
-      OK (_,t') -> return t'
+      OK (_,t') -> return (explicitNames t')
       Error e -> ierror e
 
 checkGoal :: Term -> Type -> Env -> Idris Bool
@@ -292,7 +324,7 @@ unapplyRef _ _ = Nothing
 -- |Creates a guarded version of a name.
 guardedName :: Name -> Name
 guardedName (UN t) = UN (guardedText t)
-guardedName (NS n ns) = NS (guardedName n) (placeInGuardedNS ns)
+guardedName (NS n ns) = NS (guardedName n) ns --(placeInGuardedNS ns)
 guardedName (MN i t) = MN i (guardedText t)
 -- FIX ME: We need to figure out more about what special names are so we can figure out how to "guard" them.
 -- Total hack!
@@ -556,3 +588,16 @@ buildEnv term = nubBy (\(x,_) (y,_) -> x == y) (bounded term)
     bounded (App t t') = bounded t ++ bounded t'
     bounded (Proj t _) = bounded t
     bounded _ = []
+
+compareAvailability :: Type -> Type -> Ordering
+compareAvailability (unapplyLater -> Just _) (unapplyLater -> Nothing) = LT
+compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Just _) = GT
+compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Nothing) = EQ
+compareAvailability (unapplyLater -> Just a) (unapplyLater -> Just b) = compareAvailability a b
+
+fixRecursiveRef :: Name -> Term -> Idris Term
+fixRecursiveRef recName t = mapMTT fixRecRef t
+  where
+    fixRecRef :: Term -> Idris Term
+    fixRecRef p@(P Ref n _) | n == recName = applyNext =<< applyApply p
+    fixRecRef tm = return tm
