@@ -1,5 +1,5 @@
 {-# LANGUAGE PatternGuards #-}
-{-# OPTIONS_GHC -fwarn-incomplete-patterns -Werror #-}
+{-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 module Idris.Elab.Value(elabVal, elabValBind, elabDocTerms) where
 
 import Idris.AbsSyntax
@@ -63,7 +63,7 @@ elabValBind info aspat norm tm_in
         --    * elaboration as a function a -> b
 
         ((tm', defer, is), _) <-
-                tclift (elaborate ctxt (sMN 0 "val") infP []
+                tclift (elaborate ctxt (sMN 0 "val") infP initEState
                         (build i info aspat [Reflection] (sMN 0 "val") (infTerm tm)))
         let vtm = orderPats (getInferTerm tm')
 

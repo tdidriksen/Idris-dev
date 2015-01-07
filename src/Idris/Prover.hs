@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternGuards #-}
 module Idris.Prover where
 
 import Idris.Core.Elaborate hiding (Tactic(..))
@@ -52,10 +53,10 @@ showProof lit n ps
   where bird = if lit then "> " else ""
         break = "\n" ++ bird
 
-proverSettings :: ElabState [PDecl] -> Settings Idris
+proverSettings :: ElabState EState -> Settings Idris
 proverSettings e = setComplete (proverCompletion (assumptionNames e)) defaultSettings
 
-assumptionNames :: ElabState [PDecl] -> [String]
+assumptionNames :: ElabState EState -> [String]
 assumptionNames e
   = case envAtFocus (proof e) of
          OK env -> names env
@@ -67,7 +68,7 @@ prove :: Ctxt OptInfo -> Context -> Bool -> Name -> Type -> Idris ()
 prove opt ctxt lit n ty
     = do let ps = initElaborator n ctxt ty
          ideslavePutSExp "start-proof-mode" n
-         (tm, prf) <- ploop n True ("-" ++ show n) [] (ES (ps, []) "" Nothing) Nothing
+         (tm, prf) <- ploop n True ("-" ++ show n) [] (ES (ps, initEState) "" Nothing) Nothing
          iLOG $ "Adding " ++ show tm
          i <- getIState
          case idris_outputmode i of
@@ -75,7 +76,7 @@ prove opt ctxt lit n ty
            _            -> iputStrLn $ showProof lit n prf
          let proofs = proof_list i
          putIState (i { proof_list = (n, prf) : proofs })
-         let tree = simpleCase False True False CompileTime (fileFC "proof") [] [] [([], P Ref n ty, tm)]
+         let tree = simpleCase False (STerm Erased) False CompileTime (fileFC "proof") [] [] [([], P Ref n ty, tm)]
          logLvl 3 (show tree)
          (ptm, pty) <- recheckC (fileFC "proof") [] tm
          logLvl 5 ("Proof type: " ++ show pty ++ "\n" ++
@@ -85,7 +86,7 @@ prove opt ctxt lit n ty
               Error e -> ierror (CantUnify False ty pty e [] 0)
          ptm' <- applyOpts ptm
          ei <- getErasureInfo `fmap` getIState
-         updateContext (addCasedef n ei (CaseInfo True False) False False True False
+         updateContext (addCasedef n ei (CaseInfo True False) False (STerm Erased) True False
                                  [] []  -- argtys, inaccArgs
                                  [Right (P Ref n ty, ptm)]
                                  [([], P Ref n ty, ptm)]
@@ -98,7 +99,7 @@ prove opt ctxt lit n ty
              runIO . hPutStrLn h $ IdeSlave.convSExp "return" (IdeSlave.SymbolAtom "ok", "") n
            _ -> return ()
 
-elabStep :: ElabState [PDecl] -> ElabD a -> Idris (a, ElabState [PDecl])
+elabStep :: ElabState EState -> ElabD a -> Idris (a, ElabState EState)
 elabStep st e = case runStateT eCheck st of
                      OK (a, st') -> return (a, st')
                      Error a -> ierror a
@@ -114,10 +115,11 @@ elabStep st e = case runStateT eCheck st of
                          ((_,_,_,_,e,_,_):_) -> lift $ Error e
 
 dumpState :: IState -> ProofState -> Idris ()
-dumpState ist (PS nm [] _ _ tm _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =
-  do rendered <- iRender $ prettyName True False [] nm <> colon <+> text "No more goals."
+dumpState ist ps | [] <- holes ps =
+  do let nm = thname ps
+     rendered <- iRender $ prettyName True False [] nm <> colon <+> text "No more goals."
      iputGoal rendered
-dumpState ist ps@(PS nm (h:hs) _ _ tm _ _ _ _ _ _ problems i _ _ _ ctxt _ _ _ _ _) = do
+dumpState ist ps | (h : hs) <- holes ps = do
   let OK ty  = goalAtFocus ps
   let OK env = envAtFocus ps
   let state = prettyOtherGoals hs <> line <>
@@ -127,6 +129,8 @@ dumpState ist ps@(PS nm (h:hs) _ _ tm _ _ _ _ _ _ problems i _ _ _ ctxt _ _ _ _ 
   iputGoal rendered
 
   where
+    (h : hs) = holes ps -- apparently the pattern guards don't give us this
+
     ppo = ppOptionIst ist
 
     tPretty bnd t = annotate (AnnTerm bnd t) .
@@ -173,11 +177,11 @@ dumpState ist ps@(PS nm (h:hs) _ _ tm _ _ _ _ _ _ problems i _ _ _ ctxt _ _ _ _ 
     freeEnvNames :: Env -> [Name]
     freeEnvNames = foldl (++) [] . map (\(n, b) -> freeNames (Bind n b Erased))
 
-lifte :: ElabState [PDecl] -> ElabD a -> Idris a
+lifte :: ElabState EState -> ElabD a -> Idris a
 lifte st e = do (v, _) <- elabStep st e
                 return v
 
-receiveInput :: Handle -> ElabState [PDecl] -> Idris (Maybe String)
+receiveInput :: Handle -> ElabState EState -> Idris (Maybe String)
 receiveInput h e =
   do i <- getIState
      let inh = if h == stdout then stdin else h
@@ -201,7 +205,7 @@ receiveInput h e =
        Just (IdeSlave.DocsFor str) -> return (Just (":doc " ++ str))
        _ -> return Nothing
 
-ploop :: Name -> Bool -> String -> [String] -> ElabState [PDecl] -> Maybe History -> Idris (Term, [String])
+ploop :: Name -> Bool -> String -> [String] -> ElabState EState -> Maybe History -> Idris (Term, [String])
 ploop fn d prompt prf e h
     = do i <- getIState
          let autoSolve = opt_autoSolve (idris_options i)
@@ -323,7 +327,7 @@ ploop fn d prompt prf e h
                putIState ist
                return (False, e, False, prf, Right action))
               (\err -> do putIState ist ; ierror err)
-        docStr :: Either Name Const -> Idris (Bool, ElabState [PDecl], Bool, [String], Either Err (Idris ()))
+        docStr :: Either Name Const -> Idris (Bool, ElabState EState, Bool, [String], Either Err (Idris ()))
         docStr (Left n) = do ist <- getIState
                              idrisCatch (case lookupCtxtName n (idris_docstrings ist) of
                                            [] -> return (False, e, False, prf,
@@ -336,4 +340,4 @@ ploop fn d prompt prf e h
                                              return $ pprintDocs ist doc
         docStr (Right c) = do ist <- getIState
                               return (False, e, False, prf, Right . iRenderResult $ pprintConstDocs ist c (constDocs c))
-        search t = return (False, e, False, prf, Right $ searchByType t)
+        search t = return (False, e, False, prf, Right $ searchByType [] t)

@@ -5,7 +5,7 @@ module Idris.REPL where
 
 import Idris.AbsSyntax
 import Idris.ASTUtils
-import Idris.Apropos (apropos)
+import Idris.Apropos (apropos, aproposModules)
 import Idris.REPLParser
 import Idris.ElabDecls
 import Idris.ElabTerm
@@ -13,14 +13,14 @@ import Idris.Erasure
 import Idris.Error
 import Idris.ErrReverse
 import Idris.Delaborate
-import Idris.Docstrings (Docstring, overview, renderDocstring)
+import Idris.Docstrings (Docstring, overview, renderDocstring, renderDocTerm)
+import Idris.Help
 import Idris.IdrisDoc
 import Idris.Prover
 import Idris.Parser hiding (indent)
 import Idris.Primitives
 import Idris.Coverage
 import Idris.Docs hiding (Doc)
-import Idris.Help
 import Idris.Completion
 import qualified Idris.IdeSlave as IdeSlave
 import Idris.Chaser
@@ -33,6 +33,7 @@ import Idris.Output
 import Idris.Interactive
 import Idris.WhoCalls
 import Idris.TypeSearch (searchByType)
+import Idris.IBC (loadPkgIndex, writePkgIndex)
 
 import Idris.Elab.Type
 import Idris.Elab.Clause
@@ -75,7 +76,7 @@ import System.Process
 import System.Directory
 import System.IO
 import Control.Monad
-import Control.Monad.Trans.Error (ErrorT(..))
+import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Control.Monad.Trans.State.Strict ( StateT, execStateT, evalStateT, get, put )
 import Control.Monad.Trans ( lift )
 import Control.Concurrent.MVar
@@ -96,8 +97,9 @@ import Debug.Trace
 -- | Run the REPL
 repl :: IState -- ^ The initial state
      -> [FilePath] -- ^ The loaded modules
+     -> FilePath -- ^ The file to edit (with :e)
      -> InputT Idris ()
-repl orig mods
+repl orig mods efile
    = -- H.catch
      do let quiet = opt_quiet (idris_options orig)
         i <- lift getIState
@@ -115,10 +117,13 @@ repl orig mods
             Nothing -> do lift $ when (not quiet) (iputStrLn "Bye bye")
                           return ()
             Just input -> -- H.catch
-                do ms <- H.catch (lift $ processInput input orig mods)
+                do ms <- H.catch (lift $ processInput input orig mods efile)
                                  (ctrlC (return (Just mods)))
                    case ms of
-                        Just mods -> repl orig mods
+                        Just mods -> let efile' = case mods of
+                                                       [] -> efile
+                                                       (e:_) -> e in
+                                         repl orig mods efile'
                         Nothing -> return ()
 --                             ctrlC)
 --       ctrlC
@@ -169,7 +174,7 @@ processNetCmd :: IState -> IState -> Handle -> FilePath -> String ->
 processNetCmd orig i h fn cmd
     = do res <- case parseCmd i "(net)" cmd of
                   Failure err -> return (Left (Msg " invalid command"))
-                  Success (Right c) -> runErrorT $ evalStateT (processNet fn c) i
+                  Success (Right c) -> runExceptT $ evalStateT (processNet fn c) i
                   Success (Left err) -> return (Left (Msg err))
          case res of
               Right x -> return x
@@ -308,8 +313,8 @@ runIdeSlaveCommand h id orig fn mods (IdeSlave.LoadFile filename toline) =
      clearErr
      putIState (orig { idris_options = idris_options i,
                        idris_outputmode = (IdeSlave id h) })
-     loadInputs [filename] toline
-     isetPrompt (mkPrompt [filename])
+     mods <- loadInputs [filename] toline
+     isetPrompt (mkPrompt mods)
      -- Report either success or failure
      i <- getIState
      case (errSpan i) of
@@ -320,7 +325,7 @@ runIdeSlaveCommand h id orig fn mods (IdeSlave.LoadFile filename toline) =
                                   (idris_parsedSpan i)
                   in runIO . hPutStrLn h $ IdeSlave.convSExp "return" msg id
        Just x -> iPrintError $ "didn't load " ++ filename
-     ideslave h orig [filename]
+     ideslave h orig mods
 runIdeSlaveCommand h id orig fn mods (IdeSlave.TypeOf name) =
   case splitName name of
     Left err -> iPrintError err
@@ -355,7 +360,7 @@ runIdeSlaveCommand h id orig fn mods (IdeSlave.MakeLemma line name) =
     Left err -> iPrintError err
     Right n -> process fn (MakeLemma False line n)
 runIdeSlaveCommand h id orig fn mods (IdeSlave.Apropos a) =
-  process fn (Apropos a)
+  process fn (Apropos [] a)
 runIdeSlaveCommand h id orig fn mods (IdeSlave.GetOpts) =
   do ist <- getIState
      let opts = idris_options ist
@@ -540,7 +545,7 @@ ideslaveProcess fn (Defn n) = do process fn (Defn n)
 ideslaveProcess fn (TotCheck n) = process fn (TotCheck n)
 ideslaveProcess fn (DebugInfo n) = do process fn (DebugInfo n)
                                       iPrintResult ""
-ideslaveProcess fn (Search t) = process fn (Search t)
+ideslaveProcess fn (Search ps t) = process fn (Search ps t)
 ideslaveProcess fn (Spec t) = process fn (Spec t)
 -- RmProof and AddProof not supported!
 ideslaveProcess fn (ShowProof n') = process fn (ShowProof n')
@@ -583,8 +588,8 @@ ideslaveProcess fn (MakeWith False pos str) = process fn (MakeWith False pos str
 ideslaveProcess fn (DoProofSearch False r pos str xs) = process fn (DoProofSearch False r pos str xs)
 ideslaveProcess fn (SetConsoleWidth w) = do process fn (SetConsoleWidth w)
                                             iPrintResult ""
-ideslaveProcess fn (Apropos a) = do process fn (Apropos a)
-                                    iPrintResult ""
+ideslaveProcess fn (Apropos pkg a) = do process fn (Apropos pkg a)
+                                        iPrintResult ""
 ideslaveProcess fn (WhoCalls n) = process fn (WhoCalls n)
 ideslaveProcess fn (CallsWho n) = process fn (CallsWho n)
 ideslaveProcess fn (PrintDef n) = process fn (PrintDef n)
@@ -603,8 +608,8 @@ lit f = case splitExtension f of
             _ -> False
 
 processInput :: String ->
-                IState -> [FilePath] -> Idris (Maybe [FilePath])
-processInput cmd orig inputs
+                IState -> [FilePath] -> FilePath -> Idris (Maybe [FilePath])
+processInput cmd orig inputs efile
     = do i <- getIState
          let opts = idris_options i
          let quiet = opt_quiet opts
@@ -621,20 +626,20 @@ processInput cmd orig inputs
                                     }
                    clearErr
                    mods <- loadInputs inputs Nothing
-                   return (Just inputs)
+                   return (Just mods)
             Success (Right (Load f toline)) ->
                 do putIState orig { idris_options = idris_options i
                                   , idris_colourTheme = idris_colourTheme i
                                   }
                    clearErr
                    mod <- loadInputs [f] toline
-                   return (Just [f])
+                   return (Just mod)
             Success (Right (ModImport f)) ->
                 do clearErr
                    fmod <- loadModule f
-                   return (Just (inputs ++ [fmod]))
+                   return (Just (inputs ++ maybe [] (:[]) fmod))
             Success (Right Edit) -> do -- takeMVar stvar
-                               edit fn orig
+                               edit efile orig
                                return (Just inputs)
             Success (Right Proofs) -> do proofs orig
                                          return (Just inputs)
@@ -882,12 +887,17 @@ process fn (Check t)
 
 process fn (DocStr (Left n))
    = do ist <- getIState
-        case lookupCtxtName n (idris_docstrings ist) of
+        let docs = lookupCtxtName n (idris_docstrings ist) ++
+                   map (\(n,d)-> (n, (d,[]))) (lookupCtxtName (modDocN n) (idris_moduledocs ist))
+        case docs of
           [] -> iPrintError $ "No documentation for " ++ show n
           ns -> do toShow <- mapM (showDoc ist) ns
                    iRenderResult (vsep toShow)
     where showDoc ist (n, d) = do doc <- getDocs n
                                   return $ pprintDocs ist doc
+          modDocN (NS (UN n) ns) = NS modDocName (n:ns)
+          modDocN (UN n)         = NS modDocName [n]
+          modDocN _              = sMN 1 "NotFoundForSure"
 
 process fn (DocStr (Right c))
    = do ist <- getIState
@@ -957,7 +967,7 @@ process fn (DebugInfo n)
         when (not (null cg')) $ do iputStrLn "Call graph:\n"
                                    iputStrLn (show cg')
         when (not (null fn)) $ iputStrLn (show fn)
-process fn (Search t) = searchByType t
+process fn (Search pkgs t) = searchByType pkgs t
 process fn (CaseSplitAt updatefile l n)
     = caseSplitAt fn updatefile l n
 process fn (AddClauseFrom updatefile l n)
@@ -1075,7 +1085,7 @@ process fn Execute
                            runIO $ hClose tmph
                            t <- codegen
                            ir <- compile t tmpn m
-                           runIO $ generate t (head (idris_imported ist)) ir
+                           runIO $ generate t (fst (head (idris_imported ist))) ir
                            case idris_outputmode ist of
                              RawOutput h -> do runIO $ rawSystem tmpn []
                                                return ()
@@ -1091,7 +1101,7 @@ process fn (Compile codegen f)
                                    [pexp $ PRef fc (sNS (sUN "main") ["Main"])])
                        ir <- compile codegen f m
                        i <- getIState
-                       runIO $ generate codegen (head (idris_imported i)) ir
+                       runIO $ generate codegen (fst (head (idris_imported i))) ir
   where fc = fileFC "main"
 process fn (LogLvl i) = setLogLevel i
 -- Elaborate as if LHS of a pattern (debug command)
@@ -1163,17 +1173,27 @@ process fn ListErrorHandlers =
        handlers -> "Registered error handlers: " ++ (concat . intersperse ", " . map show) handlers
 process fn (SetConsoleWidth w) = setWidth w
 
-process fn (Apropos a) =
-  do ist <- getIState
+process fn (Apropos pkgs a) =
+  do orig <- getIState
+     when (not (null pkgs)) $ 
+       iputStrLn $ "Searching packages: " ++ showSep ", " pkgs
+     mapM_ loadPkgIndex pkgs
+     ist <- getIState
+     let mods = aproposModules ist (T.pack a)
      let names = apropos ist (T.pack a)
      let aproposInfo = [ (n,
                           delabTy ist n,
                           fmap (overview . fst) (lookupCtxtExact n (idris_docstrings ist)))
                        | n <- sort names, isUN n ]
-     iRenderResult $ vsep (map (prettyDocumentedIst ist) aproposInfo)
+     iRenderResult $ vsep (map (\(m, d) -> text "Module" <+> text m <$>
+                                           ppD ist d <> line) mods) <$>
+                     vsep (map (prettyDocumentedIst ist) aproposInfo)
+     putIState orig
   where isUN (UN _) = True
         isUN (NS n _) = isUN n
         isUN _ = False
+        ppD ist = renderDocstring (renderDocTerm (pprintDelab ist) (normaliseAll (tt_ctxt ist) []))
+
 
 process fn (WhoCalls n) =
   do calls <- whoCalls n
@@ -1316,7 +1336,7 @@ replSettings hFile = setComplete replCompletion $ defaultSettings {
 
 -- | Invoke as if from command line. It is an error if there are unresolved totality problems.
 idris :: [Opt] -> IO (Maybe IState)
-idris opts = do res <- runErrorT $ execStateT totalMain idrisInit
+idris opts = do res <- runExceptT $ execStateT totalMain idrisInit
                 case res of
                   Left err -> do putStrLn $ pshow idrisInit err
                                  return Nothing
@@ -1328,7 +1348,7 @@ idris opts = do res <- runErrorT $ execStateT totalMain idrisInit
                            [] -> return ()
 
 
-loadInputs :: [FilePath] -> Maybe Int -> Idris ()
+loadInputs :: [FilePath] -> Maybe Int -> Idris [FilePath]
 loadInputs inputs toline -- furthest line to read in input source files
   = idrisCatch
        (do ist <- getIState
@@ -1357,7 +1377,7 @@ loadInputs inputs toline -- furthest line to read in input source files
                    when (not (all ibc ifiles) || loadCode) $
                         tryLoad False (filter (not . ibc) ifiles)
                    -- return the files that need rechecking
-                   return ifiles)
+                   return (input, ifiles))
                       ninputs
            inew <- getIState
            let tidata = idris_tyinfodata inew
@@ -1366,7 +1386,7 @@ loadInputs inputs toline -- furthest line to read in input source files
            case errSpan inew of
               Nothing ->
                 do putIState (ist { idris_tyinfodata = tidata })
-                   ibcfiles <- mapM findNewIBC (nub (concat ifiles))
+                   ibcfiles <- mapM findNewIBC (nub (concat (map snd ifiles)))
                    tryLoad True (mapMaybe id ibcfiles)
               _ -> return ()
            ist <- getIState
@@ -1377,7 +1397,7 @@ loadInputs inputs toline -- furthest line to read in input source files
                [] -> performUsageAnalysis  -- interactive
                _  -> return []  -- batch, will be checked by the compiler
 
-           return ())
+           return (map fst ifiles))
         (\e -> do i <- getIState
                   case e of
                     At f e' -> do setErrSpan f
@@ -1386,7 +1406,8 @@ loadInputs inputs toline -- furthest line to read in input source files
                     _ -> do setErrSpan emptyFC -- FIXME! Propagate it
                                                -- Issue #1576 on the issue tracker.
                                                -- https://github.com/idris-lang/Idris-dev/issues/1576
-                            iWarn emptyFC $ pprintErr i e)
+                            iWarn emptyFC $ pprintErr i e
+                  return [])
    where -- load all files, stop if any fail
          tryLoad :: Bool -> [IFileType] -> Idris ()
          tryLoad keepstate [] = warnTotality >> return ()
@@ -1403,7 +1424,7 @@ loadInputs inputs toline -- furthest line to read in input source files
                                                           then Just l
                                                           else Nothing
                                             _ -> Nothing
-                      loadFromIFile f maxline
+                      loadFromIFile True f maxline
                       inew <- getIState
                       -- FIXME: Save these in IBC to avoid this hack! Need to
                       -- preserve it all from source inputs
@@ -1532,7 +1553,10 @@ idrisMain opts =
          iputStrLn banner
 
        orig <- getIState
-       when (not idesl) $ loadInputs inputs Nothing
+       mods <- if idesl then return [] else loadInputs inputs Nothing
+       let efile = case inputs of
+                        [] -> ""
+                        (f:_) -> f
 
        runIO $ hSetBuffering stdout LineBuffering
 
@@ -1568,10 +1592,14 @@ idrisMain opts =
 
        historyFile <- fmap (</> "repl" </> "history") getIdrisUserDataDir
 
+       when ok $ case opt getPkgIndex opts of
+                      (f : _) -> writePkgIndex f
+                      _ -> return ()
+
        when (runrepl && not idesl) $ do
 --          clearOrigPats
-         startServer port orig inputs
-         runInputT (replSettings (Just historyFile)) $ repl orig inputs
+         startServer port orig mods
+         runInputT (replSettings (Just historyFile)) $ repl orig mods efile
        let idesock = IdeslaveSocket `elem` opts
        when (idesl) $ ideslaveStart idesock orig inputs
        ok <- noErrors
@@ -1590,7 +1618,7 @@ idrisMain opts =
                      addIBC (IBCImportDir (ddir </> p))
 
 runMain :: Idris () -> IO ()
-runMain prog = do res <- runErrorT $ execStateT prog idrisInit
+runMain prog = do res <- runExceptT $ execStateT prog idrisInit
                   case res of
                        Left err -> putStrLn $ "Uncaught error: " ++ show err
                        Right _ -> return ()
@@ -1705,6 +1733,10 @@ getCodegen _ = Nothing
 getExecScript :: Opt -> Maybe String
 getExecScript (InterpretScript expr) = Just expr
 getExecScript _ = Nothing
+
+getPkgIndex :: Opt -> Maybe FilePath
+getPkgIndex (PkgIndex file) = Just file
+getPkgIndex _ = Nothing
 
 getEvalExpr :: Opt -> Maybe String
 getEvalExpr (EvalExpr expr) = Just expr

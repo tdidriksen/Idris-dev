@@ -571,9 +571,9 @@ isUsableUniverse x = isUniverse x
 
 convEq' ctxt hs x y = evalStateT (convEq ctxt hs x y) (0, [])
 
-convEq :: Context -> [Name] -> TT Name -> TT Name -> StateT UCs (TC' Err) Bool
+convEq :: Context -> [Name] -> TT Name -> TT Name -> StateT UCs TC Bool
 convEq ctxt holes topx topy = ceq [] topx topy where
-    ceq :: [(Name, Name)] -> TT Name -> TT Name -> StateT UCs (TC' Err) Bool
+    ceq :: [(Name, Name)] -> TT Name -> TT Name -> StateT UCs TC Bool
     ceq ps (P xt x _) (P yt y _)
         | x `elem` holes || y `elem` holes = return True
         | x == y || (x, y) `elem` ps || (y,x) `elem` ps = return True
@@ -692,6 +692,15 @@ deriving instance Binary CaseInfo
 {-!
 deriving instance Binary CaseDefs
 !-}
+{-!
+deriving instance NFData Def
+!-}
+{-!
+deriving instance NFData CaseInfo
+!-}
+{-!
+deriving instance NFData CaseDefs
+!-}
 
 instance Show Def where
     show (Function ty tm) = "Function: " ++ show (ty, tm)
@@ -717,6 +726,9 @@ instance Show Def where
 
 data Accessibility = Public | Frozen | Hidden
     deriving (Show, Eq)
+{-!
+deriving instance NFData Accessibility
+!-}
 
 -- | The result of totality checking
 data Totality = Total [Int] -- ^ well-founded arguments
@@ -724,11 +736,17 @@ data Totality = Total [Int] -- ^ well-founded arguments
               | Partial PReason
               | Unchecked
     deriving Eq
+{-!
+deriving instance NFData Totality
+!-}
 
 -- | Reasons why a function may not be total
 data PReason = Other [Name] | Itself | NotCovering | NotPositive | UseUndef Name
              | ExternalIO | BelieveMe | Mutual [Name] | NotProductive
     deriving (Show, Eq)
+{-!
+deriving instance NFData PReason
+!-}
 
 instance Show Totality where
     show (Total args)= "Total" -- ++ show args ++ " decreasing arguments"
@@ -837,7 +855,8 @@ addDatatype (Data n tag ty unique cons) uctxt
 -- Issue #1724 on the issue tracker.
 -- https://github.com/idris-lang/Idris-dev/issues/1724
 addCasedef :: Name -> ErasureInfo -> CaseInfo ->
-              Bool -> Bool -> Bool -> Bool ->
+              Bool -> SC -> -- default case
+              Bool -> Bool ->
               [Type] -> -- argument types
               [Int] ->  -- inaccessible arguments
               [Either Term (Term, Term)] ->
@@ -883,7 +902,7 @@ simplifyCasedef n ei uctxt
               [(CaseOp ci ty atys ps_in ps cd, acc, tot, metainf)] ->
                  let ps_in' = map simpl ps_in
                      pdef = map debind ps_in' in
-                     case simpleCase False True False CompileTime emptyFC [] atys pdef ei of
+                     case simpleCase False (STerm Erased) False CompileTime emptyFC [] atys pdef ei of
                        OK (CaseDef args sc _) ->
                           addDef n (CaseOp ci
                                            ty atys ps_in' ps (cd { cases_totcheck = (args, sc) }),
@@ -981,7 +1000,7 @@ isTCDict n ctxt
 
 lookupP :: Name -> Context -> [Term]
 lookupP n ctxt
-   = do def <-  lookupCtxt n (definitions ctxt)
+   = do def <- lookupCtxt n (definitions ctxt)
         p <- case def of
           (Function ty tm, a, _, _) -> return (P Ref n ty, a)
           (TyDecl nt ty, a, _, _) -> return (P nt n ty, a)

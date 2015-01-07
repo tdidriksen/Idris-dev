@@ -145,16 +145,16 @@ namespace GuardedRecursion
      compose' : Later' (a -> b) -> Later' a -> Later' b
      compose' (Next t) (Next u) = Next (t u)
   compose {n = Tomorrow n'} (Next t) (Next u) = Next (compose {n = n'} t u)
-
   
-||| Assert to The totality checker than y is always structurally smaller than
+
+||| Assert to the totality checker that y is always structurally smaller than
 ||| x (which is typically a pattern argument)
 ||| @ x the larger value (typically a pattern argument)
 ||| @ y the smaller value (typically an argument to a recursive call)
 assert_smaller : (x : a) -> (y : b) -> b
 assert_smaller x y = y
 
-||| Assert to the totality checker than the given expression will always
+||| Assert to the totality checker that the given expression will always
 ||| terminate.
 assert_total : a -> a
 assert_total x = x

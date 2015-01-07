@@ -30,6 +30,7 @@ recheckC_borrowing uniq_check bs fc env t
          (tm, ty, cs) <- tclift $ case recheck_borrowing uniq_check bs ctxt env (forget t) t of
                                    Error e -> tfail (At fc e)
                                    OK x -> return x
+         logLvl 6 $ "CONSTRAINTS ADDED: " ++ show cs
          addConstraints fc cs
          return (tm, ty)
 
@@ -157,6 +158,9 @@ pvars ist _ = []
 getFixedInType i env (PExp _ _ _ _ : is) (Bind n (Pi t _) sc)
     = nub $ getFixedInType i env [] t ++
             getFixedInType i (n : env) is (instantiate (P Bound n t) sc)
+            ++ case t of
+                    P _ n _ -> if n `elem` env then [n] else []
+                    _ -> []
 getFixedInType i env (_ : is) (Bind n (Pi t _) sc)
     = getFixedInType i (n : env) is (instantiate (P Bound n t) sc)
 getFixedInType i env is tm@(App f a)

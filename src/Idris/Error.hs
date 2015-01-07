@@ -17,7 +17,7 @@ import System.Console.Haskeline
 import System.Console.Haskeline.MonadException
 import Control.Monad (when)
 import Control.Monad.State.Strict
-import Control.Monad.Error (throwError, catchError)
+import Control.Monad.Except (throwError, catchError)
 import System.IO.Error(isUserError, ioeGetErrorString)
 import Data.Char
 import Data.List (intercalate, isPrefixOf)
@@ -28,8 +28,10 @@ import qualified Data.Foldable as Foldable
 
 iucheck :: Idris ()
 iucheck = do tit <- typeInType
+             ist <- getIState
+             let cs = idris_constraints ist
+             logLvl 7 $ "ALL CONSTRAINTS: " ++ show cs
              when (not tit) $
-                do ist <- getIState
                    (tclift $ ucheck (idris_constraints ist)) `idrisCatch`
                               (\e -> do setErrSpan (getErrSpan e)
                                         iputStrLn (pshow ist e))
@@ -87,9 +89,9 @@ warnDisamb ist (PQuote _) = return ()
 warnDisamb ist (PRef _ _) = return ()
 warnDisamb ist (PInferRef _ _) = return ()
 warnDisamb ist (PPatvar _ _) = return ()
-warnDisamb ist (PLam _ t b) = warnDisamb ist t >> warnDisamb ist b
+warnDisamb ist (PLam _ _ t b) = warnDisamb ist t >> warnDisamb ist b
 warnDisamb ist (PPi _ _ t b) = warnDisamb ist t >> warnDisamb ist b
-warnDisamb ist (PLet _ x t b) = warnDisamb ist x >> warnDisamb ist t >> warnDisamb ist b
+warnDisamb ist (PLet _ _ x t b) = warnDisamb ist x >> warnDisamb ist t >> warnDisamb ist b
 warnDisamb ist (PTyped x t) = warnDisamb ist x >> warnDisamb ist t
 warnDisamb ist (PApp _ t args) = warnDisamb ist t >>
                                  mapM_ (warnDisamb ist . getTm) args
@@ -145,3 +147,4 @@ warnDisamb ist (PNoImplicits tm) = warnDisamb ist tm
 warnDisamb ist (PQuasiquote tm goal) = warnDisamb ist tm >>
                                        Foldable.mapM_ (warnDisamb ist) goal
 warnDisamb ist (PUnquote tm) = warnDisamb ist tm
+warnDisamb ist (PAs _ _ tm) = warnDisamb ist tm

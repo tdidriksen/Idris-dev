@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -fwarn-incomplete-patterns -Werror #-}
+{-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 
 {-# LANGUAGE FlexibleInstances, IncoherentInstances, PatternGuards #-}
 
@@ -150,9 +150,9 @@ instance SExpable OutputAnnotation where
   toSExp (AnnSearchResult ordr) = toSExp [(SymbolAtom "doc-overview",
       StringAtom ("Result type is " ++ descr))]
       where descr = case ordr of
-	      EQ -> "isomorphic"
-	      LT -> "more general than searched type"
-	      GT -> "more specific than searched type"
+              EQ -> "isomorphic"
+              LT -> "more general than searched type"
+              GT -> "more specific than searched type"
   toSExp (AnnErr e) = toSExp [(SymbolAtom "error", StringAtom (encodeErr e))]
 
 encodeTerm :: [(Name, Bool)] -> Term -> String

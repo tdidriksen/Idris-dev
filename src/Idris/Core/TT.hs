@@ -18,12 +18,12 @@
      programs with implicit syntax into fully explicit terms.
 -}
 
-module Idris.Core.TT(module Idris.Core.TT, module Idris.Core.TC) where
+module Idris.Core.TT where
 
-import Idris.Core.TC
-
+import Control.Applicative (Applicative (..), Alternative)
+import qualified Control.Applicative as A (Alternative (..))
 import Control.Monad.State.Strict
-import Control.Monad.Trans.Error (Error(..))
+import Control.Monad.Trans.Except (Except (..))
 import Debug.Trace
 import qualified Data.Map.Strict as Map
 import Data.Char
@@ -147,6 +147,7 @@ data Err' t
           | UniqueKindError Universe Name
           | ProgramLineComment
           | Inaccessible Name
+          | CantMatch t
           | NonCollapsiblePostulate Name
           | AlreadyDefined Name
           | ProofSearchFail (Err' t)
@@ -161,6 +162,36 @@ data Err' t
   deriving (Eq, Functor)
 
 type Err = Err' Term
+
+data TC a = OK !a
+          | Error Err
+  deriving (Eq, Functor)
+
+bindTC :: TC a -> (a -> TC b) -> TC b
+bindTC x k = case x of
+                OK v -> k v
+                Error e -> Error e
+{-# INLINE bindTC #-}
+
+instance Monad TC where
+    return x = OK x
+    x >>= k = bindTC x k 
+    fail e = Error (InternalMsg e)
+
+instance MonadPlus TC where
+    mzero = fail "Unknown error"
+    (OK x) `mplus` _ = OK x
+    _ `mplus` (OK y) = OK y
+    err `mplus` _    = err
+
+
+instance Applicative TC where
+    pure = return
+    (<*>) = ap
+
+instance Alternative TC where
+    empty = mzero
+    (<|>) = mplus
 
 {-!
 deriving instance NFData Err
@@ -210,7 +241,7 @@ score _ = 0
 instance Show Err where
     show (Msg s) = s
     show (InternalMsg s) = "Internal error: " ++ show s
-    show (CantUnify rec l r e sc i) = "CantUnify " ++ show rec ++ " " ++
+    show (CantUnify rcv l r e sc i) = "CantUnify " ++ show rcv ++ " " ++
                                          show l ++ " " ++ show r ++ " " ++
                                          show e ++ " in " ++ show sc ++ " " ++ show i
     show (CantSolveGoal g _) = "CantSolve " ++ show g
@@ -233,11 +264,6 @@ instance Pretty Err OutputAnnotation where
   pretty (ProviderError msg) = text msg
   pretty err@(LoadingFailed _ _) = text (show err)
   pretty _ = text "Error"
-
-instance Error Err where
-  strMsg = InternalMsg
-
-type TC = TC' Err
 
 instance (Pretty a OutputAnnotation) => Pretty (TC a) OutputAnnotation where
   pretty (OK ok) = pretty ok
@@ -527,6 +553,15 @@ data Const = I Int | BI Integer | Fl Double | Ch Char | Str String
 deriving instance Binary Const
 deriving instance NFData Const
 !-}
+
+isTypeConst :: Const -> Bool
+isTypeConst (AType _) = True
+isTypeConst StrType = True
+isTypeConst ManagedPtrType = True
+isTypeConst BufferType = True
+isTypeConst PtrType = True
+isTypeConst VoidType = True
+isTypeConst _ = False
 
 instance Sized Const where
   size _ = 1
@@ -1052,13 +1087,15 @@ noOccurrence n t = no' 0 t
 
 -- | Returns all names used free in the term
 freeNames :: Eq n => TT n -> [n]
-freeNames (P _ n _) = [n]
-freeNames (Bind n (Let t v) sc) = nub $ freeNames v ++ (freeNames sc \\ [n])
-                                        ++ freeNames t
-freeNames (Bind n b sc) = nub $ freeNames (binderTy b) ++ (freeNames sc \\ [n])
-freeNames (App f a) = nub $ freeNames f ++ freeNames a
-freeNames (Proj x i) = nub $ freeNames x
-freeNames _ = []
+freeNames t = nub $ freeNames' t
+  where
+    freeNames' (P _ n _) = [n]
+    freeNames' (Bind n (Let t v) sc) = freeNames' v ++ (freeNames' sc \\ [n])
+                                            ++ freeNames' t
+    freeNames' (Bind n b sc) = freeNames' (binderTy b) ++ (freeNames' sc \\ [n])
+    freeNames' (App f a) = freeNames' f ++ freeNames' a
+    freeNames' (Proj x i) = freeNames' x
+    freeNames' _ = []
 
 -- | Return the arity of a (normalised) type
 arity :: TT n -> Int
@@ -1379,7 +1416,7 @@ orderPats tm = op [] tm
 
 refsIn :: TT Name -> [Name]
 refsIn (P _ n _) = [n]
-refsIn (Bind n b t) = nub $ nb b ++ (refsIn t \\ [n])
+refsIn (Bind n b t) = nub $ nb b ++ refsIn t
   where nb (Let   t v) = nub (refsIn t) ++ nub (refsIn v)
         nb (Guess t v) = nub (refsIn t) ++ nub (refsIn v)
         nb t = refsIn (binderTy t)

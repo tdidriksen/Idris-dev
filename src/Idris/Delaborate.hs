@@ -56,7 +56,7 @@ delabTy' ist imps tm fullname mvs = de [] imps tm
                                   Just (Just _, mi, _) -> mkMVApp n []
                                   _ -> PRef un n
     de env _ (Bind n (Lam ty) sc)
-          = PLam n (de env [] ty) (de ((n,n):env) [] sc)
+          = PLam un n (de env [] ty) (de ((n,n):env) [] sc)
     de env ((PImp { argopts = opts }):is) (Bind n (Pi ty _) sc)
           = PPi (Imp opts Dynamic False) n (de env [] ty) (de ((n,n):env) is sc)
     de env (PConstraint _ _ _ _:is) (Bind n (Pi ty _) sc)
@@ -76,7 +76,7 @@ delabTy' ist imps tm fullname mvs = de [] imps tm
           , (P _ cOp _, args) <- unApply sc
           , Just caseblock    <- delabCase env imps n val cOp args = caseblock
           | otherwise    =
-              PLet n (de env [] ty) (de env [] val) (de ((n,n):env) [] sc)
+              PLet un n (de env [] ty) (de env [] val) (de ((n,n):env) [] sc)
     de env _ (Bind n (Hole ty) sc) = de ((n, sUN "[__]"):env) [] sc
     de env _ (Bind n (Guess ty val) sc) = de ((n, sUN "[__]"):env) [] sc
     de env plic (Bind n bb sc) = de ((n,n):env) [] sc
@@ -211,13 +211,16 @@ pprintErr' i (CantUnify _ x_in y_in e sc s) =
       _ -> line <> line <> text "Specifically:" <>
            indented (pprintErr' i e) <>
            if (opt_errContext (idris_options i)) then showSc i sc else empty
-pprintErr' i (CantConvert x y env) =
+pprintErr' i (CantConvert x_in y_in env) =
+ let (x_ns, y_ns, nms) = renameMNs x_in y_in
+     (x, y) = addImplicitDiffs (delab i (flagUnique x_ns)) 
+                               (delab i (flagUnique y_ns)) in
   text "Can't convert" <>
-  indented (annTm x (pprintTerm' i (map (\ (n, b) -> (n, False)) env)
-               (delab i (flagUnique x)))) <$>
+  indented (annTm x_ns (pprintTerm' i (map (\ (n, b) -> (n, False)) env)
+               x)) <$>
   text "with" <>
-  indented (annTm y (pprintTerm' i (map (\ (n, b) -> (n, False)) env)
-               (delab i (flagUnique y)))) <>
+  indented (annTm y_ns (pprintTerm' i (map (\ (n, b) -> (n, False)) env)
+               y)) <>
   if (opt_errContext (idris_options i)) then line <> showSc i env else empty
     where flagUnique (Bind n (Pi t k@(UType u)) sc)
               = App (P Ref (sUN (show u)) Erased)
@@ -262,6 +265,8 @@ pprintErr' i (NoTypeDecl n) = text "No type declaration for" <+> annName n
 pprintErr' i (NoSuchVariable n) = text "No such variable" <+> annName n
 pprintErr' i (WithFnType ty) =
   text "Can't match on a function: type is" <+> annTm ty (pprintTerm i (delab i ty))
+pprintErr' i (CantMatch t) =
+  text "Can't match on" <+> annTm t (pprintTerm i (delab i t))
 pprintErr' i (IncompleteTerm t) = text "Incomplete term" <+> annTm t (pprintTerm i (delab i t))
 pprintErr' i UniverseError = text "Universe inconsistency"
 pprintErr' i (UniqueError NullType n)
@@ -329,10 +334,6 @@ pprintErr' i (ReflectionFailed msg err) =
 -- Make sure the machine invented names are shown helpfully to the user, so
 -- that any names which differ internally also differ visibly
 
--- FIXME: I can't actually contrive an error to test this! Will revisit later...
---
--- Issue #1590 in the Issue tracker.
---     https://github.com/idris-lang/Idris-dev/issues/1590
 renameMNs :: Term -> Term -> (Term, Term, [Name])
 renameMNs x y = let ns = nub $ allTTNames x ++ allTTNames y
                     newnames = evalState (getRenames [] ns) 1 in
@@ -340,12 +341,22 @@ renameMNs x y = let ns = nub $ allTTNames x ++ allTTNames y
   where
     getRenames :: [(Name, Name)] -> [Name] -> State Int [(Name, Name)]
     getRenames acc [] = return acc
-    getRenames acc (n@(MN i x) : xs) | UN x `elem` xs
+    getRenames acc (n@(MN i x) : xs) | rpt x xs 
+         = do idx <- get
+              put (idx + 1)
+              let x' = sUN (str x ++ show idx)
+              getRenames ((n, x') : acc) xs
+    getRenames acc (n@(UN x) : xs) | rpt x xs 
          = do idx <- get
               put (idx + 1)
               let x' = sUN (str x ++ show idx)
               getRenames ((n, x') : acc) xs
     getRenames acc (x : xs) = getRenames acc xs
+
+    rpt x [] = False
+    rpt x (UN y : xs) | x == y = True
+    rpt x (MN i y : xs) | x == y = True
+    rpt x (_ : xs) = rpt x xs
 
     rename :: [(Name, Name)] -> Term -> Term
     rename ns (P nt x t) | Just x' <- lookup x ns = P nt x' t
@@ -380,10 +391,10 @@ addImplicitDiffs x y
                          else (a { getTm = a' } : as',
                                b { getTm = b' } : bs')
              addShows xs ys = (xs, ys)
-    addI (PLam n a b) (PLam n' c d)
+    addI (PLam fc n a b) (PLam fc' n' c d)
          = let (a', c') = addI a c
                (b', d') = addI b d in
-               (PLam n a' b', PLam n' c' d')
+               (PLam fc n a' b', PLam fc' n' c' d')
     addI (PPi p n a b) (PPi p' n' c d)
          = let (a', c') = addI a c
                (b', d') = addI b d in
@@ -433,7 +444,7 @@ addImplicitDiffs x y
           and (zipWith expLike (getExps as) (getExps as'))
     expLike (PPi _ n s t) (PPi _ n' s' t')
         = n == n' && expLike s s' && expLike t t'
-    expLike (PLam n s t) (PLam n' s' t')
+    expLike (PLam _ n s t) (PLam _ n' s' t')
         = n == n' && expLike s s' && expLike t t'
     expLike (PPair _ _ x y) (PPair _ _ x' y') = expLike x x' && expLike y y'
     expLike (PDPair _ _ x _ y) (PDPair _ _ x' _ y') = expLike x x' && expLike y y'
@@ -513,3 +524,5 @@ showbasic n@(UN _) = show n
 showbasic (MN _ s) = str s
 showbasic (NS n s) = showSep "." (map str (reverse s)) ++ "." ++ showbasic n
 showbasic (SN s) = show s
+showbasic n = show n
+

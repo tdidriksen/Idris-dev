@@ -12,7 +12,7 @@ import Util.System
 
 import Control.Monad
 import Control.Monad.Trans.State.Strict (execStateT)
-import Control.Monad.Error (runErrorT)
+import Control.Monad.Except (runExceptT)
 
 import Data.List
 import Data.List.Split(splitOn)
@@ -23,11 +23,13 @@ import Idris.Parser (loadModule)
 import Idris.Output (pshow)
 import Idris.AbsSyntax
 import Idris.IdrisDoc
+import Idris.IBC
 import Idris.Output
-
-import IRTS.System
+import Idris.Imports
 
 import Pkg.PParser
+
+import IRTS.System
 
 -- To build a package:
 -- * read the package description
@@ -40,17 +42,18 @@ import Pkg.PParser
 buildPkg :: Bool -> (Bool, FilePath) -> IO ()
 buildPkg warnonly (install, fp)
      = do pkgdesc <- parseDesc fp
+          let idx = PkgIndex (pkgIndex (pkgname pkgdesc))
           ok <- mapM (testLib warnonly (pkgname pkgdesc)) (libdeps pkgdesc)
           when (and ok) $
             do dir <- getCurrentDirectory
                setCurrentDirectory $ dir </> sourcedir pkgdesc
                make (makefile pkgdesc)
                m_ist <- case (execout pkgdesc) of
-                   Nothing -> buildMods (NoREPL : Verbose : idris_opts pkgdesc)
+                   Nothing -> buildMods (idx : NoREPL : Verbose : idris_opts pkgdesc)
                                     (modules pkgdesc)
                    Just o -> do let exec = dir </> o
                                 buildMods
-                                    (NoREPL : Verbose : Output exec : idris_opts pkgdesc)
+                                    (idx : NoREPL : Verbose : Output exec : idris_opts pkgdesc)
                                     [idris_main pkgdesc]
                setCurrentDirectory dir
                case m_ist of
@@ -60,14 +63,7 @@ buildPkg warnonly (install, fp)
                        case errSpan ist of
                             Just _ -> exitWith (ExitFailure 1)
                             _ -> return ()
-                       -- Also give up if there are metavariables to solve
-                       case (map fst (idris_metavars ist) \\ primDefs) of
-                            _ -> when install $ installPkg pkgdesc
---                             ms -> do if install
---                                         then putStrLn "Can't install: there are undefined metavariables:"
---                                         else putStrLn "There are undefined metavariables:"
---                                      putStrLn $ "\t" ++ show ms
---                                      exitWith (ExitFailure 1)
+                       when install $ installPkg pkgdesc
 
 -- | Type check packages only
 --
@@ -122,6 +118,7 @@ cleanPkg fp
           setCurrentDirectory $ dir </> sourcedir pkgdesc
           clean (makefile pkgdesc)
           mapM_ rmIBC (modules pkgdesc)
+          rmIdx (pkgname pkgdesc)
           case execout pkgdesc of
                Nothing -> return ()
                Just s -> rmFile $ dir </> s
@@ -145,7 +142,7 @@ documentPkg fp =
      setCurrentDirectory $ pkgDir </> sourcedir pkgdesc
      make (makefile pkgdesc)
      setCurrentDirectory $ pkgDir
-     let run l       = runErrorT . (execStateT l)
+     let run l       = runExceptT . execStateT l
          load []     = return ()
          load (f:fs) = do loadModule f; load fs
          loader      = do idrisMain opts; load fs
@@ -203,7 +200,8 @@ installPkg pkgdesc
      = do dir <- getCurrentDirectory
           setCurrentDirectory $ dir </> sourcedir pkgdesc
           case (execout pkgdesc) of
-              Nothing -> mapM_ (installIBC (pkgname pkgdesc)) (modules pkgdesc)
+              Nothing -> do mapM_ (installIBC (pkgname pkgdesc)) (modules pkgdesc)
+                            installIdx (pkgname pkgdesc)
               Just o -> return () -- do nothing, keep executable locally, for noe
           mapM_ (installObj (pkgname pkgdesc)) (objs pkgdesc)
 
@@ -213,7 +211,6 @@ installPkg pkgdesc
 
 buildMods :: [Opt] -> [Name] -> IO (Maybe IState)
 buildMods opts ns = do let f = map (toPath . showCG) ns
---                        putStrLn $ "MODULE: " ++ show f
                        idris (map Filename f ++ opts)
     where toPath n = foldl1' (</>) $ splitOn "." n
 
@@ -236,6 +233,11 @@ testLib warn p f
 rmIBC :: Name -> IO ()
 rmIBC m = rmFile $ toIBCFile m
 
+rmIdx :: String -> IO ()
+rmIdx p = do let f = pkgIndex p
+             ex <- doesFileExist f
+             when ex $ rmFile f 
+
 toIBCFile (UN n) = str n ++ ".ibc"
 toIBCFile (NS n ns) = foldl1' (</>) (reverse (toIBCFile n : map str ns))
 
@@ -250,6 +252,14 @@ installIBC p m = do let f = toIBCFile m
     where getDest (UN n) = ""
           getDest (NS n ns) = foldl1' (</>) (reverse (getDest n : map str ns))
 
+installIdx :: String -> IO ()
+installIdx p = do d <- getTargetDir
+                  let f = pkgIndex p
+                  let destdir = d </> p 
+                  putStrLn $ "Installing " ++ f ++ " to " ++ destdir
+                  createDirectoryIfMissing True destdir
+                  copyFile f (destdir </> takeFileName f)
+                  return ()
 
 installObj :: String -> String -> IO ()
 installObj p o = do d <- getTargetDir

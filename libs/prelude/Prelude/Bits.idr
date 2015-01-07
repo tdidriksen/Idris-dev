@@ -1,12 +1,18 @@
 module Prelude.Bits
 
-import Prelude.Strings
-import Prelude.Vect
+import Builtins
+
+import Prelude.Basics
 import Prelude.Bool
+import Prelude.Cast
+import Prelude.Classes
+import Prelude.Foldable
+import Prelude.Nat
+import Prelude.List
+import Prelude.Strings
 
 %access public
 %default total
-
 
 b8ToString : Bits8 -> String
 b8ToString c = pack (with List [c1, c2])

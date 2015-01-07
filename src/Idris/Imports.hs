@@ -1,9 +1,14 @@
 module Idris.Imports where
 
+import Control.Applicative ((<$>))
+import Data.List (isSuffixOf)
+
 import Idris.AbsSyntax
 import Idris.Error
 
 import Idris.Core.TT
+
+import IRTS.System (getIdrisLibDir)
 
 import System.FilePath
 import System.Directory
@@ -11,6 +16,10 @@ import Control.Monad.State.Strict
 
 data IFileType = IDR FilePath | LIDR FilePath | IBC FilePath IFileType
     deriving (Show, Eq)
+
+-- | Get the index file name for a package name
+pkgIndex :: String -> FilePath
+pkgIndex s = "00" ++ s ++ "-idx.ibc"
 
 srcPath :: FilePath -> FilePath
 srcPath fp = let (n, ext) = splitExtension fp in
@@ -72,4 +81,23 @@ findInPath (d:ds) fp = do let p = d </> fp
                           e <- doesFileExist p
                           if e then return p else findInPath ds fp
 
+findPkgIndex :: String -> Idris FilePath
+findPkgIndex p = do let idx = pkgIndex p
+                    ids <- allImportDirs
+                    runIO $ findInPath ids idx
+
+
+installedPackages :: IO [String]
+installedPackages = do
+  idir <- getIdrisLibDir
+  filterM (goodDir idir) =<< dirContents idir
+  where
+  allFilesInDir base fp = do
+    let fullpath = base </> fp
+    isDir <- doesDirectoryExist fullpath
+    if isDir
+      then fmap concat (mapM (allFilesInDir fullpath) =<< dirContents fullpath)
+      else return [fp]
+  dirContents = fmap (filter (not . (`elem` [".", ".."]))) . getDirectoryContents
+  goodDir idir d = any (".ibc" `isSuffixOf`) <$> allFilesInDir idir d
 

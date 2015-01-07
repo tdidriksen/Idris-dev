@@ -24,6 +24,7 @@ import Idris.DSL
 import Idris.Imports
 import Idris.Delaborate
 import Idris.Error
+import Idris.Elab.Value
 import Idris.ElabDecls
 import Idris.ElabTerm
 import Idris.Coverage
@@ -49,7 +50,7 @@ import Idris.Core.Evaluate
 
 import Control.Applicative hiding (Const)
 import Control.Monad
-import Control.Monad.Error (throwError, catchError)
+import Control.Monad.Except (throwError, catchError)
 import Control.Monad.State.Strict
 
 import Data.Function
@@ -90,18 +91,21 @@ import System.IO
       ModuleHeader ::= 'module' Identifier_t ';'?;
 @
 -}
-moduleHeader :: IdrisParser [String]
-moduleHeader =     try (do noDocCommentHere "Modules cannot have documentation comments"
+moduleHeader :: IdrisParser (Maybe (Docstring ()), [String])
+moduleHeader =     try (do docs <- optional docComment
+                           noArgs docs
                            reserved "module"
                            i <- identifier
                            option ';' (lchar ';')
-                           return (moduleName i))
+                           return (fmap fst docs, moduleName i))
                <|> try (do lchar '%'; reserved "unqualified"
-                           return [])
-               <|> return (moduleName "Main")
+                           return (Nothing, []))
+               <|> return (Nothing, moduleName "Main")
   where moduleName x = case span (/='.') x of
                            (x, "")    -> [x]
                            (x, '.':y) -> x : moduleName y
+        noArgs (Just (_, args)) | not (null args) = fail "Modules do not take arguments"
+        noArgs _ = return ()
 
 {- | Parses an import statement
 
@@ -109,13 +113,14 @@ moduleHeader =     try (do noDocCommentHere "Modules cannot have documentation c
   Import ::= 'import' Identifier_t ';'?;
 @
  -}
-import_ :: IdrisParser (String, Maybe String, FC)
+import_ :: IdrisParser (Bool, String, Maybe String, FC)
 import_ = do fc <- getFC
              reserved "import"
+             reexport <- option False (do reserved "public"; return True)
              id <- identifier
              newName <- optional (reserved "as" *> identifier)
              option ';' (lchar ';')
-             return (toPath id, toPath <$> newName, fc)
+             return (reexport, toPath id, toPath <$> newName, fc)
           <?> "import statement"
   where toPath = foldl1' (</>) . Spl.splitOn "."
 
@@ -640,8 +645,7 @@ instance_ syn = do reserved "instance"; fc <- getFC
                    cn <- fnName
                    args <- many (simpleExpr syn)
                    let sc = PApp fc (PRef fc cn) (map pexp args)
-                   let t = bindList (PPi constraint)
-                                    (map (\x -> (sMN 0 "constraint", x)) cs) sc
+                   let t = bindList (PPi constraint) cs sc
                    ds <- option [] (instanceBlock syn)
                    return [PInstance syn fc cs cn args t en ds]
                  <?> "instance declaration"
@@ -758,10 +762,11 @@ RHSName ::= '{' FnName '}';
 rhs :: SyntaxInfo -> Name -> IdrisParser PTerm
 rhs syn n = do lchar '='; expr syn
         <|> do symbol "?=";
+               fc <- getFC
                name <- option n' (do symbol "{"; n <- fnName; symbol "}";
                                      return n)
                r <- expr syn
-               return (addLet name r)
+               return (addLet fc name r)
         <|> do reserved "impossible"; return PImpossible
         <?> "function right hand side"
   where mkN :: Name -> Name
@@ -771,11 +776,11 @@ rhs syn n = do lchar '='; expr syn
         mkN (NS x n) = NS (mkN x) n
         n' :: Name
         n' = mkN n
-        addLet :: Name -> PTerm -> PTerm
-        addLet nm (PLet n ty val r) = PLet n ty val (addLet nm r)
-        addLet nm (PCase fc t cs) = PCase fc t (map addLetC cs)
-          where addLetC (l, r) = (l, addLet nm r)
-        addLet nm r = (PLet (sUN "value") Placeholder r (PMetavar nm))
+        addLet :: FC -> Name -> PTerm -> PTerm
+        addLet fc nm (PLet fc' n ty val r) = PLet fc' n ty val (addLet fc nm r)
+        addLet fc nm (PCase fc' t cs) = PCase fc' t (map addLetC cs)
+          where addLetC (l, r) = (l, addLet fc nm r)
+        addLet fc nm r = (PLet fc (sUN "value") Placeholder r (PMetavar nm))
 
 {- |Parses a function clause
 
@@ -841,7 +846,7 @@ clause syn
                                            return x,
                                         do terminator
                                            return ([], [])]
-              let capp = PLet (sMN 0 "match")
+              let capp = PLet fc (sMN 0 "match")
                               ty
                               (PMatchApp fc n)
                               (PRef fc (sMN 0 "match"))
@@ -1141,24 +1146,24 @@ parseTactic :: IState -> String -> Result PTactic
 parseTactic st = runparser (fullTactic defaultSyntax) st "(input)"
 
 -- | Parse module header and imports
-parseImports :: FilePath -> String -> Idris ([String], [(String, Maybe String, FC)], Maybe Delta)
+parseImports :: FilePath -> String -> Idris (Maybe (Docstring ()), [String], [(Bool, String, Maybe String, FC)], Maybe Delta)
 parseImports fname input
     = do i <- getIState
          case parseString (runInnerParser (evalStateT imports i)) (Directed (UTF8.fromString fname) 0 0 0 0) input of
               Failure err    -> fail (show err)
               Success (x, i) -> do putIState i
                                    return x
-  where imports :: IdrisParser (([String], [(String, Maybe String, FC)], Maybe Delta), IState)
+  where imports :: IdrisParser ((Maybe (Docstring ()), [String], [(Bool, String, Maybe String, FC)], Maybe Delta), IState)
         imports = do whiteSpace
-                     mname <- moduleHeader
-                     ps    <- many import_
-                     mrk   <- mark
-                     isEof <- lookAheadMatches eof
+                     (mdoc, mname) <- moduleHeader
+                     ps            <- many import_
+                     mrk           <- mark
+                     isEof         <- lookAheadMatches eof
                      let mrk' = if isEof
                                    then Nothing
                                    else Just mrk
                      i     <- get
-                     return ((mname, ps, mrk'), i)
+                     return ((mdoc, mname, ps, mrk'), i)
 
 -- | There should be a better way of doing this...
 findFC :: Doc -> (FC, String)
@@ -1205,13 +1210,13 @@ parseProg syn fname input mrk
                           return (ds, i')
 
 {- | Load idris module and show error if something wrong happens -}
-loadModule :: FilePath -> Idris String
+loadModule :: FilePath -> Idris (Maybe String)
 loadModule f
-   = idrisCatch (loadModule' f)
+   = idrisCatch (fmap Just (loadModule' f))
                 (\e -> do setErrSpan (getErrSpan e)
                           ist <- getIState
                           iWarn (getErrSpan e) $ pprintErr ist e
-                          return "")
+                          return Nothing)
 
 {- | Load idris module -}
 loadModule' :: FilePath -> Idris String
@@ -1228,7 +1233,7 @@ loadModule' f
                     IDR fn  -> loadSource False fn Nothing
                     LIDR fn -> loadSource True  fn Nothing
                     IBC fn src ->
-                      idrisCatch (loadIBC fn)
+                      idrisCatch (loadIBC True fn)
                                  (\c -> do iLOG $ fn ++ " failed " ++ pshow i c
                                            case src of
                                              IDR sfn -> loadSource False sfn Nothing
@@ -1238,18 +1243,18 @@ loadModule' f
 
 
 {- | Load idris code from file -}
-loadFromIFile :: IFileType -> Maybe Int -> Idris ()
-loadFromIFile i@(IBC fn src) maxline
+loadFromIFile :: Bool -> IFileType -> Maybe Int -> Idris ()
+loadFromIFile reexp i@(IBC fn src) maxline
    = do iLOG $ "Skipping " ++ getSrcFile i
-        idrisCatch (loadIBC fn)
+        idrisCatch (loadIBC reexp fn)
                 (\err -> ierror $ LoadingFailed fn err)
   where
     getSrcFile (IDR fn) = fn
     getSrcFile (LIDR fn) = fn
     getSrcFile (IBC f src) = getSrcFile src
 
-loadFromIFile (IDR fn) maxline = loadSource' False fn maxline
-loadFromIFile (LIDR fn) maxline = loadSource' True fn maxline
+loadFromIFile _ (IDR fn) maxline = loadSource' False fn maxline
+loadFromIFile _ (LIDR fn) maxline = loadSource' True fn maxline
 
 {-| Load idris source code and show error if something wrong happens -}
 loadSource' :: Bool -> FilePath -> Maybe Int -> Idris ()
@@ -1269,24 +1274,25 @@ loadSource lidr f toline
                   let def_total = default_total i
                   file_in <- runIO $ readFile f
                   file <- if lidr then tclift $ unlit f file_in else return file_in
-                  (mname, imports_in, pos) <- parseImports f file
+                  (mdocs, mname, imports_in, pos) <- parseImports f file
                   ai <- getAutoImports
-                  let imports = map (\n -> (n, Just n, emptyFC)) ai ++ imports_in
+                  let imports = map (\n -> (True, n, Just n, emptyFC)) ai ++ imports_in
                   ids <- allImportDirs
                   ibcsd <- valIBCSubDir i
-                  mapM_ (\f -> do fp <- findImport ids ibcsd f
+                  mapM_ (\(re, f) -> 
+                               do fp <- findImport ids ibcsd f
                                   case fp of
                                       LIDR fn -> ifail $ "No ibc for " ++ f
                                       IDR fn -> ifail $ "No ibc for " ++ f
-                                      IBC fn src -> loadIBC fn)
-                        [fn | (fn, _, _) <- imports]
+                                      IBC fn src -> loadIBC True fn)
+                        [(re, fn) | (re, fn, _, _) <- imports]
                   reportParserWarnings
 
                   -- process and check module aliases
                   let modAliases = M.fromList
-                        [(prep alias, prep realName) | (realName, Just alias, fc) <- imports]
+                        [(prep alias, prep realName) | (reexport, realName, Just alias, fc) <- imports]
                       prep = map T.pack . reverse . Spl.splitOn "/"
-                      aliasNames = [(alias, fc) | (_, Just alias, fc) <- imports]
+                      aliasNames = [(alias, fc) | (_, _, Just alias, fc) <- imports]
                       histogram = groupBy ((==) `on` fst) . sortBy (comparing fst) $ aliasNames
                   case map head . filter ((/= 1) . length) $ histogram of
                     []       -> logLvl 3 $ "Module aliases: " ++ show (M.toList modAliases)
@@ -1298,7 +1304,7 @@ loadSource lidr f toline
                   -- record package info in .ibc
                   imps <- allImportDirs
                   mapM_ addIBC (map IBCImportDir imps)
-                  mapM_ (addIBC . IBCImport) [realName | (realName, alias, fc) <- imports]
+                  mapM_ (addIBC . IBCImport) [(reexport, realName) | (reexport, realName, alias, fc) <- imports]
                   let syntax = defaultSyntax{ syn_namespace = reverse mname,
                                               maxline = toline }
                   ds' <- parseProg syntax f file pos
@@ -1347,6 +1353,13 @@ loadSource lidr f toline
                   i <- getIState
                   addHides (hide_list i)
 
+                  -- Save module documentation if applicable
+                  i <- getIState
+                  case mdocs of
+                    Nothing   -> return ()
+                    Just docs -> addModDoc syntax mname docs
+
+
                   -- Finally, write an ibc if checking was successful
                   ok <- noErrors
                   when ok $
@@ -1370,6 +1383,17 @@ loadSource lidr f toline
                    PClass _ _ _ _ _ _ _ _ -> r
                    PInstance _ _ _ _ _ _ _ _ -> r
                    _ -> x
+
+    addModDoc :: SyntaxInfo -> [String] -> Docstring () -> Idris ()
+    addModDoc syn mname docs =
+      do ist <- getIState
+         docs' <- elabDocTerms recinfo (parsedDocs ist)
+         let modDocs' = addDef docName docs' (idris_moduledocs ist)
+         putIState ist { idris_moduledocs = modDocs' }
+         addIBC (IBCModDocs docName)
+      where
+        docName = NS modDocName (map T.pack (reverse mname))
+        parsedDocs ist = annotCode (tryFullExpr syn ist) docs
 
 {- | Adds names to hide list -}
 addHides :: [(Name, Maybe Accessibility)] -> Idris ()

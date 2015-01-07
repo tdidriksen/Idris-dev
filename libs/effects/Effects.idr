@@ -1,8 +1,8 @@
 module Effects
 
 import Language.Reflection
-import Control.Catchable
-import Effect.Default
+import public Effect.Default
+import Data.Vect
 
 --- Effectful computations are described as algebraic data types that
 --- explain how an effect is interpreted in some underlying context.

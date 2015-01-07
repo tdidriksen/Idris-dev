@@ -18,7 +18,7 @@ import qualified Idris.Docstrings as Docstrings
 import IRTS.System (getDataFileName)
 
 import Control.Monad (forM_)
-import Control.Monad.Trans.Error
+import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict
 
 import Data.Maybe
@@ -258,7 +258,7 @@ loadDocs :: IState     -- ^ IState to extract infomation from
          -> Name       -- ^ Name to load Docs for
          -> IO (Maybe Docs)
 loadDocs ist n
-  | mayHaveDocs n = do docs <- runErrorT $ evalStateT (getDocs n) ist
+  | mayHaveDocs n = do docs <- runExceptT $ evalStateT (getDocs n) ist
                        case docs of Right d -> return (Just d)
                                     Left _  -> return Nothing
   | otherwise     = return Nothing
@@ -273,9 +273,9 @@ extractPTermNames :: PTerm  -- ^ Where to extract names from
 extractPTermNames (PRef _ n)         = [n]
 extractPTermNames (PInferRef _ n)    = [n]
 extractPTermNames (PPatvar _ n)      = [n]
-extractPTermNames (PLam n p1 p2)     = n : concatMap extract [p1, p2]
+extractPTermNames (PLam _ n p1 p2)   = n : concatMap extract [p1, p2]
 extractPTermNames (PPi _ n p1 p2)    = n : concatMap extract [p1, p2]
-extractPTermNames (PLet n p1 p2 p3)  = n : concatMap extract [p1, p2, p3]
+extractPTermNames (PLet _ n p1 p2 p3) = n : concatMap extract [p1, p2, p3]
 extractPTermNames (PTyped p1 p2)     = concatMap extract [p1, p2]
 extractPTermNames (PApp _ p pas)     = let names = concatMap extractPArg pas
                                        in  (extract p) ++ names

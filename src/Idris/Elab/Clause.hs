@@ -19,6 +19,7 @@ import Idris.DeepSeq
 import Idris.Output (iputStrLn, pshow, iWarn, iRenderResult)
 import IRTS.Lang
 
+import Idris.Elab.AsPat
 import Idris.Elab.Type
 import Idris.Elab.Transform
 import Idris.Elab.Utils
@@ -40,6 +41,7 @@ import Control.Applicative hiding (Const)
 import Control.DeepSeq
 import Control.Monad
 import Control.Monad.State.Strict as State
+import qualified Control.Monad.State.Lazy as LState
 import Data.List
 import Data.Maybe
 import Debug.Trace
@@ -157,7 +159,7 @@ elabClauses info' fc opts n_in cs =
 
            erInfo <- getErasureInfo <$> getIState
            tree@(CaseDef scargs sc _) <- tclift $
-                 simpleCase tcase False reflect CompileTime fc inacc atys pdef erInfo
+                 simpleCase tcase (UnmatchedCase "Error") reflect CompileTime fc inacc atys pdef erInfo
            cov <- coverage
            pmissing <-
                    if cov && not (hasDefault cs)
@@ -204,8 +206,14 @@ elabClauses info' fc opts n_in cs =
                                 ":warning - Unreachable case: " ++
                                    show (delab ist x)) xs
            let knowncovering = (pcover && cov) || AssertTotal `elem` opts
+           let defaultcase = if knowncovering 
+                                then STerm Erased
+                                else UnmatchedCase $ "*** " ++ 
+                                      show fc ++ 
+                                       ":unmatched case in " ++ show n ++ 
+                                       " ***"
 
-           tree' <- tclift $ simpleCase tcase knowncovering reflect
+           tree' <- tclift $ simpleCase tcase defaultcase reflect
                                         RunTime fc inacc atys pdef' erInfo
            logLvl 3 $ "Unoptimised " ++ show n ++ ": " ++ show tree
            logLvl 3 $ "Optimised: " ++ show tree'
@@ -217,7 +225,7 @@ elabClauses info' fc opts n_in cs =
            let caseInfo = CaseInfo (inlinable opts) (dictionary opts)
            case lookupTy n ctxt of
                [ty] -> do updateContext (addCasedef n erInfo caseInfo
-                                                       tcase knowncovering
+                                                       tcase defaultcase
                                                        reflect
                                                        (AssertTotal `elem` opts)
                                                        atys
@@ -444,7 +452,7 @@ checkPossible info fc tcgen fname lhs_in
         i <- getIState
         let lhs = addImplPat i lhs_in
         -- if the LHS type checks, it is possible
-        case elaborate ctxt (sMN 0 "patLHS") infP []
+        case elaborate ctxt (sMN 0 "patLHS") infP initEState
                             (erun fc (buildTC i info ELHS [] fname (infTerm lhs))) of
             OK ((lhs', _, _), _) ->
                do let lhs_tm = orderPats (getInferTerm lhs')
@@ -496,6 +504,7 @@ checkPossible info fc tcgen fname lhs_in
 
           ntRec x y | Ref <- x = True
                     | Ref <- y = True
+                    | (Bound, Bound) <- (x, y) = True
                     | otherwise = False -- name is different, unrecoverable
 
 propagateParams :: IState -> [Name] -> Type -> PTerm -> PTerm
@@ -543,9 +552,11 @@ elabClause info opts (_, PClause fc fname lhs_in [] PImpossible [])
                                 (Msg $ show lhs_in ++ " is a valid case"))
             False -> do ptm <- mkPatTm lhs_in
                         return (Left ptm, lhs)
-elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
+elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as whereblock)
    = do let tcgen = Dictionary `elem` opts
+        push_estack fname
         ctxt <- getContext
+        let (lhs_in, rhs_in) = desugarAs lhs_in_as rhs_in_as
 
         -- Build the LHS as an "Infer", and pull out its type and
         -- pattern bindings
@@ -559,14 +570,16 @@ elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
                          [t] -> t
                          _ -> []
         let params = getParamsInType i [] fn_is fn_ty
-        let lhs = mkLHSapp $ stripUnmatchable i $
-                    propagateParams i params fn_ty (addImplPat i (stripLinear i lhs_in))
+        let lhs = mkLHSapp $ stripLinear i $ stripUnmatchable i $
+                    propagateParams i params fn_ty (addImplPat i lhs_in)
+--         let lhs = mkLHSapp $ 
+--                     propagateParams i params fn_ty (addImplPat i lhs_in)
         logLvl 5 ("LHS: " ++ show fc ++ " " ++ showTmImpls lhs)
         logLvl 4 ("Fixed parameters: " ++ show params ++ " from " ++ show lhs_in ++
                   "\n" ++ show (fn_ty, fn_is))
 
         (((lhs', dlhs, []), probs, inj), _) <-
-            tclift $ elaborate ctxt (sMN 0 "patLHS") infP []
+            tclift $ elaborate ctxt (sMN 0 "patLHS") infP initEState
                      (do res <- errAt "left hand side of " fname
                                   (erun fc (buildTC i info ELHS opts fname (infTerm lhs)))
                          probs <- get_probs
@@ -640,7 +653,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
         ctxt <- getContext -- new context with where block added
         logLvl 5 "STARTING CHECK"
         ((rhs', defer, is, probs), _) <-
-           tclift $ elaborate ctxt (sMN 0 "patRHS") clhsty []
+           tclift $ elaborate ctxt (sMN 0 "patRHS") clhsty initEState
                     (do pbinds ist lhs_tm
                         mapM_ setinj (nub (params ++ inj))
                         setNextName
@@ -650,7 +663,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
                               (erun fc $ psolve lhs_tm)
                         hs <- get_holes
                         aux <- getAux
-                        mapM_ (elabCaseHole aux) hs
+                        mapM_ (elabCaseHole (case_decls aux)) hs
                         tt <- get_term
                         let (tm, ds) = runState (collectDeferred (Just fname) tt) []
                         probs <- get_probs
@@ -684,8 +697,12 @@ elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
                              then recheckC_borrowing True borrowed fc [] rhs'
                              else return (rhs', clhsty)
         logLvl 6 $ " ==> " ++ show crhsty ++ "   against   " ++ show clhsty
-        case  converts ctxt [] clhsty crhsty of
-            OK _ -> return ()
+        ctxt <- getContext
+        let constv = next_tvar ctxt
+        case LState.runStateT (convertsC ctxt [] crhsty clhsty) (constv, []) of
+            OK (_, cs) -> do addConstraints fc cs 
+                             logLvl 6 $ "CONSTRAINTS ADDED: " ++ show cs
+                             return ()
             Error e -> ierror (At fc (CantUnify False clhsty crhsty e [] 0))
         i <- getIState
         checkInferred fc (delab' i crhs True True) rhs
@@ -703,6 +720,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in withs rhs_in whereblock)
         when (rev || ErrorReverse `elem` opts) $ do
            addIBC (IBCErrRev (crhs, clhs))
            addErrRev (crhs, clhs)
+        pop_estack
         return $ (Right (clhs, crhs), lhs)
   where
     pinfo :: ElabInfo -> [(Name, PTerm)] -> [Name] -> Int -> ElabInfo
@@ -791,10 +809,10 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in withblock)
                          [t] -> t
                          _ -> []
         let params = getParamsInType i [] fn_is fn_ty
-        let lhs = propagateParams i params fn_ty (addImplPat i (stripLinear i lhs_in))
+        let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params fn_ty (addImplPat i lhs_in)
         logLvl 2 ("LHS: " ++ show lhs)
         ((lhs', dlhs, []), _) <-
-            tclift $ elaborate ctxt (sMN 0 "patLHS") infP []
+            tclift $ elaborate ctxt (sMN 0 "patLHS") infP initEState
               (errAt "left hand side of with in " fname
                 (erun fc (buildTC i info ELHS opts fname (infTerm lhs))) )
         let lhs_tm = orderPats (getInferTerm lhs')
@@ -810,7 +828,7 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in withblock)
         -- Elaborate wval in this context
         ((wval', defer, is), _) <-
             tclift $ elaborate ctxt (sMN 0 "withRHS")
-                        (bindTyArgs PVTy bargs infP) []
+                        (bindTyArgs PVTy bargs infP) initEState
                         (do pbinds i lhs_tm
                             setNextName
                             -- TODO: may want where here - see winfo abpve
@@ -890,7 +908,7 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in withblock)
         ctxt <- getContext -- New context with block added
         i <- getIState
         ((rhs', defer, is), _) <-
-           tclift $ elaborate ctxt (sMN 0 "wpatRHS") clhsty []
+           tclift $ elaborate ctxt (sMN 0 "wpatRHS") clhsty initEState
                     (do pbinds i lhs_tm
                         setNextName
                         (_, d, is) <- erun fc (build i info ERHS opts fname rhs)

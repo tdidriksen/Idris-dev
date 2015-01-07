@@ -19,7 +19,7 @@ import System.IO
 
 import Control.Applicative
 import Control.Monad.State
-import Control.Monad.Error(throwError)
+import Control.Monad.Except (throwError, catchError)
 
 import Data.List hiding (insert,union)
 import Data.Char
@@ -32,7 +32,6 @@ import Data.Word (Word)
 
 import Debug.Trace
 
-import Control.Monad.Error (throwError, catchError)
 import System.IO.Error(isUserError, ioeGetErrorString, tryIOError)
 
 import Util.Pretty
@@ -97,9 +96,10 @@ addAutoImport fp = do i <- getIState
 addHdr :: Codegen -> String -> Idris ()
 addHdr tgt f = do i <- getIState; putIState $ i { idris_hdrs = nub $ (tgt, f) : idris_hdrs i }
 
-addImported :: FilePath -> Idris ()
-addImported f = do i <- getIState
-                   putIState $ i { idris_imported = nub $ f : idris_imported i }
+addImported :: Bool -> FilePath -> Idris ()
+addImported pub f 
+     = do i <- getIState
+          putIState $ i { idris_imported = nub $ (f, pub) : idris_imported i }
 
 addLangExt :: LanguageExt -> Idris ()
 addLangExt TypeProviders = do i <- getIState
@@ -315,6 +315,16 @@ getNameHints i n =
 addToCalledG :: Name -> [Name] -> Idris ()
 addToCalledG n ns = return () -- TODO
 
+push_estack :: Name -> Idris ()
+push_estack n = do i <- getIState
+                   putIState (i { elab_stack = n : elab_stack i })
+
+pop_estack :: Idris ()
+pop_estack = do i <- getIState
+                putIState (i { elab_stack = ptail (elab_stack i) })
+    where ptail [] = []
+          ptail (x : xs) = xs
+
 -- Add a class instance function. Dodgy hack: Put integer instances first in the
 -- list so they are resolved by default.
 -- Dodgy hack 2: put constraint chasers (@@) last
@@ -369,6 +379,7 @@ resetNameIdx = do i <- getIState
 addNameIdx :: Name -> Idris (Int, Name)
 addNameIdx n = do i <- getIState
                   let (i', x) = addNameIdx' i n
+                  putIState i'
                   return x
 
 addNameIdx' :: IState -> Name -> (IState, (Int, Name))
@@ -379,10 +390,18 @@ addNameIdx' i n
             _ -> let i' = fst (idris_nameIdx i) + 1 in
                     (i { idris_nameIdx = (i', addDef n (i', n) idxs) }, (i', n))
 
+getSymbol :: Name -> Idris Name
+getSymbol n = do i <- getIState
+                 case M.lookup n (idris_symbols i) of
+                      Just n' -> return n'
+                      Nothing -> do let sym' = M.insert n n (idris_symbols i)
+                                    put (i { idris_symbols = sym' })
+                                    return n
+
 getHdrs :: Codegen -> Idris [String]
 getHdrs tgt = do i <- getIState; return (forCodegen tgt $ idris_hdrs i)
 
-getImported ::  Idris [FilePath]
+getImported ::  Idris [(FilePath, Bool)]
 getImported = do i <- getIState; return (idris_imported i)
 
 setErrSpan :: FC -> Idris ()
@@ -493,7 +512,7 @@ addConstraints :: FC -> (Int, [UConstraint]) -> Idris ()
 addConstraints fc (v, cs)
     = do i <- getIState
          let ctxt = tt_ctxt i
-         let ctxt' = ctxt { uconstraints = cs ++ uconstraints ctxt,
+         let ctxt' = ctxt { uconstraints = nub cs ++ uconstraints ctxt,
                             next_tvar = v }
          let ics = zip cs (repeat fc) ++ idris_constraints i
          putIState $ i { tt_ctxt = ctxt', idris_constraints = ics }
@@ -874,21 +893,21 @@ expandParams dec ps ns infs tm = en tm
     mkShadow (MN i n) = MN (i+1) n
     mkShadow (NS x s) = NS (mkShadow x) s
 
-    en (PLam n t s)
+    en (PLam fc n t s)
        | n `elem` (map fst ps ++ ns)
                = let n' = mkShadow n in
-                     PLam n' (en t) (en (shadow n n' s))
-       | otherwise = PLam n (en t) (en s)
+                     PLam fc n' (en t) (en (shadow n n' s))
+       | otherwise = PLam fc n (en t) (en s)
     en (PPi p n t s)
        | n `elem` (map fst ps ++ ns)
                = let n' = mkShadow n in -- TODO THINK SHADOWING TacImp?
                      PPi (enTacImp p) n' (en t) (en (shadow n n' s))
        | otherwise = PPi (enTacImp p) n (en t) (en s)
-    en (PLet n ty v s)
+    en (PLet fc n ty v s)
        | n `elem` (map fst ps ++ ns)
                = let n' = mkShadow n in
-                     PLet n' (en ty) (en v) (en (shadow n n' s))
-       | otherwise = PLet n (en ty) (en v) (en s)
+                     PLet fc n' (en ty) (en v) (en (shadow n n' s))
+       | otherwise = PLet fc n (en ty) (en v) (en s)
     -- FIXME: Should only do this in a type signature!
     en (PDPair f p (PRef f' n) t r)
        | n `elem` (map fst ps ++ ns) && t /= Placeholder
@@ -1027,14 +1046,14 @@ expandParamsD rhs ist dec ps ns (PMutual f pds)
    = PMutual f (map (expandParamsD rhs ist dec ps ns) pds)
 expandParamsD rhs ist dec ps ns (PClass doc info f cs n params pDocs decls)
    = PClass doc info f
-           (map (expandParams dec ps ns []) cs)
+           (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) cs)
            n
            (map (mapsnd (expandParams dec ps ns [])) params)
            pDocs
            (map (expandParamsD rhs ist dec ps ns) decls)
 expandParamsD rhs ist dec ps ns (PInstance info f cs n params ty cn decls)
    = PInstance info f
-           (map (expandParams dec ps ns []) cs)
+           (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) cs)
            n
            (map (expandParams dec ps ns []) params)
            (expandParams dec ps ns [] ty)
@@ -1396,7 +1415,7 @@ implicitise syn ignore ist tm = -- trace ("INCOMING " ++ showImp True tm) $
         = do (decls, ns) <- get
              let isn = concatMap (namesIn uvars ist) as
              put (decls, nub (ns ++ (isn `dropAll` (env ++ map fst (getImps decls)))))
-    imps top env (PLam n ty sc)
+    imps top env (PLam fc n ty sc)
         = do imps False env ty
              imps False (n:env) sc
     imps top env (PHidden tm)    = imps False env tm
@@ -1437,7 +1456,7 @@ addImpl' inpat env infns ist ptm
         | f `elem` infns = PInferRef fc f
         | not (f `elem` map fst env) = handleErr $ aiFn inpat inpat qq ist fc f ds []
     ai qq env ds (PHidden (PRef fc f))
-        | not (f `elem` map fst env) = handleErr $ aiFn inpat False qq ist fc f ds []
+        | not (f `elem` map fst env) = PHidden (handleErr $ aiFn inpat False qq ist fc f ds [])
     ai qq env ds (PEq fc lt rt l r)
       = let lt' = ai qq env ds lt
             rt' = ai qq env ds rt
@@ -1488,15 +1507,24 @@ addImpl' inpat env infns ist ptm
         -- definition which is passed through addImpl again with more scope
         -- information
             PCase fc c' os
-    ai qq env ds (PLam n ty sc)
-      = let ty' = ai qq env ds ty
-            sc' = ai qq ((n, Just ty):env) ds sc in
-            PLam n ty' sc'
-    ai qq env ds (PLet n ty val sc)
-      = let ty' = ai qq env ds ty
-            val' = ai qq env ds val
-            sc' = ai qq ((n, Just ty):env) ds sc in
-            PLet n ty' val' sc'
+    -- If the name in a lambda is a constructor name, do this as a 'case'
+    -- instead (it is harmless to do so, especially since the lambda will
+    -- be lifted anyway!)
+    ai qq env ds (PLam fc n ty sc)
+      = case lookupDef n (tt_ctxt ist) of
+             [] -> let ty' = ai qq env ds ty
+                       sc' = ai qq ((n, Just ty):env) ds sc in
+                       PLam fc n ty' sc'
+             _ -> ai qq env ds (PLam fc (sMN 0 "lamp") ty
+                                     (PCase fc (PRef fc (sMN 0 "lamp") )
+                                        [(PRef fc n, sc)])) 
+    ai qq env ds (PLet fc n ty val sc)
+      = case lookupDef n (tt_ctxt ist) of
+             [] -> let ty' = ai qq env ds ty
+                       val' = ai qq env ds val
+                       sc' = ai qq ((n, Just ty):env) ds sc in
+                       PLet fc n ty' val' sc'
+             _ -> ai qq env ds (PCase fc val [(PRef fc n, sc)])
     ai qq env ds (PPi p n ty sc)
       = let ty' = ai qq env ds ty
             sc' = ai qq ((n, Just ty):env) ds sc in
@@ -1576,8 +1604,8 @@ aiFn inpat expat qq ist fc f ds as
                         _ -> True
 
     getAccessibility n
-             = case lookupDefAcc n False (tt_ctxt ist) of
-                    [(n,t)] -> t
+             = case lookupDefAccExact n False (tt_ctxt ist) of
+                    Just (n,t) -> t
                     _ -> Public
 
     insertImpl :: [PArg] -> [PArg] -> [PArg]
@@ -1632,8 +1660,6 @@ aiFn inpat expat qq ist fc f ds as
     find n (g : gs) acc = find n gs (g : acc)
 
 -- replace non-linear occurrences with _
--- ASSUMPTION: This is called before adding 'alternatives' because otherwise
--- it is hard to get right!
 
 stripLinear :: IState -> PTerm -> PTerm
 stripLinear i tm = evalState (sl tm) [] where
@@ -1643,17 +1669,25 @@ stripLinear i tm = evalState (sl tm) [] where
               = return $ PRef fc f
          | otherwise = do ns <- get
                           if (f `elem` ns)
-                             then return Placeholder
+                             then return $ PHidden (PRef fc f) -- Placeholder
                              else do put (f : ns)
                                      return (PRef fc f)
     sl (PPatvar fc f)
                      = do ns <- get
                           if (f `elem` ns)
-                             then return Placeholder
+                             then return $ PHidden (PPatvar fc f) -- Placeholder
                              else do put (f : ns)
                                      return (PPatvar fc f)
-    sl t@(PAlternative _ (a : as)) = do sl a
-                                        return t
+    -- Assumption is that variables are all the same in each alternative
+    sl t@(PAlternative b as) = do ns <- get
+                                  as' <- slAlts ns as
+                                  return (PAlternative b as')
+       where slAlts ns (a : as) = do put ns
+                                     a' <- sl a
+                                     as' <- slAlts ns as
+                                     return (a' : as')
+             slAlts ns [] = return []
+    sl (PPair fc p l r) = do l' <- sl l; r' <- sl r; return (PPair fc p l' r')
     sl (PApp fc fn args) = do -- Just the args, fn isn't matchable as a var
                               args' <- mapM slA args
                               return $ PApp fc fn args'
@@ -1679,15 +1713,24 @@ stripUnmatchable i (PApp fc fn args) = PApp fc fn (fmap (fmap su) args) where
     su (PRef fc f)
        | (Bind n (Pi t _) sc :_) <- lookupTy f (tt_ctxt i)
           = Placeholder
-    su (PApp fc fn args)
-       = PApp fc fn (fmap (fmap su) args)
+    su (PApp fc f@(PRef _ fn) args)
+       | isDConName fn ctxt 
+          = PApp fc f (fmap (fmap su) args)
+    su (PApp fc f args)
+          = PHidden (PApp fc f args)
     su (PAlternative b alts)
        = let alts' = filter (/= Placeholder) (map su alts) in
              if null alts' then Placeholder
                            else PAlternative b alts'
     su (PPair fc p l r) = PPair fc p (su l) (su r)
     su (PDPair fc p l t r) = PDPair fc p (su l) (su t) (su r)
+    su t@(PLam fc _ _ _) = PHidden t
+    su t@(PPi _ _ _ _) = PHidden t
+    su t@(PEq _ _ _ _ _) = PHidden t
     su t = t
+
+    ctxt = tt_ctxt i
+
 stripUnmatchable i tm = tm
 
 mkPApp fc a f [] = f
@@ -1828,14 +1871,22 @@ matchClause' names i x y = checkRpts $ match (fullApp x) (fullApp y) where
     match (PPi _ _ t s) (PPi _ _ t' s') = do mt <- match' t t'
                                              ms <- match' s s'
                                              return (mt ++ ms)
-    match (PLam _ t s) (PLam _ t' s') = do mt <- match' t t'
-                                           ms <- match' s s'
-                                           return (mt ++ ms)
-    match (PLet _ t ty s) (PLet _ t' ty' s') = do mt <- match' t t'
-                                                  mty <- match' ty ty'
-                                                  ms <- match' s s'
-                                                  return (mt ++ mty ++ ms)
-    match (PHidden x) (PHidden y) = match' x y
+    match (PLam _ _ t s) (PLam _ _ t' s') = do mt <- match' t t'
+                                               ms <- match' s s'
+                                               return (mt ++ ms)
+    match (PLet _ _ t ty s) (PLet _ _ t' ty' s') = do mt <- match' t t'
+                                                      mty <- match' ty ty'
+                                                      ms <- match' s s'
+                                                      return (mt ++ mty ++ ms)
+    match (PHidden x) (PHidden y)
+          | RightOK xs <- match x y = return xs -- to collect variables
+          | otherwise = return [] -- Otherwise hidden things are unmatchable
+    match (PHidden x) y 
+          | RightOK xs <- match x y = return xs 
+          | otherwise = return []
+    match x (PHidden y) 
+          | RightOK xs <- match x y = return xs 
+          | otherwise = return []
     match (PUnifyLog x) y = match' x y
     match x (PUnifyLog y) = match' x y
     match (PNoImplicits x) y = match' x y
@@ -1869,7 +1920,7 @@ substMatch n = substMatchShadow n []
 substMatchShadow :: Name -> [Name] -> PTerm -> PTerm -> PTerm
 substMatchShadow n shs tm t = sm shs t where
     sm xs (PRef _ n') | n == n' = tm
-    sm xs (PLam x t sc) = PLam x (sm xs t) (sm xs sc)
+    sm xs (PLam fc x t sc) = PLam fc x (sm xs t) (sm xs sc)
     sm xs (PPi p x t sc)
          | x `elem` xs
              = let x' = nextName x in
@@ -1896,9 +1947,9 @@ substMatchShadow n shs tm t = sm shs t where
 shadow :: Name -> Name -> PTerm -> PTerm
 shadow n n' t = sm t where
     sm (PRef fc x) | n == x = PRef fc n'
-    sm (PLam x t sc) | n /= x = PLam x (sm t) (sm sc)
+    sm (PLam fc x t sc) | n /= x = PLam fc x (sm t) (sm sc)
     sm (PPi p x t sc) | n /=x = PPi p x (sm t) (sm sc)
-    sm (PLet x t v sc) | n /= x = PLet x (sm t) (sm v) (sm sc)
+    sm (PLet fc x t v sc) | n /= x = PLet fc x (sm t) (sm v) (sm sc)
     sm (PApp f x as) = PApp f (sm x) (map (fmap sm) as)
     sm (PAppBind f x as) = PAppBind f (sm x) (map (fmap sm) as)
     sm (PCase f x as) = PCase f (sm x) (map (pmap sm) as)
@@ -1937,7 +1988,7 @@ mkUniqueNames env tm = evalState (mkUniq tm) (S.fromList env) where
   mkUniqT tac = return tac
 
   mkUniq :: PTerm -> State (S.Set Name) PTerm
-  mkUniq (PLam n ty sc)
+  mkUniq (PLam fc n ty sc)
          = do env <- get
               (n', sc') <-
                     if n `S.member` env
@@ -1948,7 +1999,7 @@ mkUniqueNames env tm = evalState (mkUniq tm) (S.fromList env) where
               put (S.insert n' env)
               ty' <- mkUniq ty
               sc'' <- mkUniq sc'
-              return $! PLam n' ty' sc''
+              return $! PLam fc n' ty' sc''
   mkUniq (PPi p n ty sc)
          = do env <- get
               (n', sc') <-
@@ -1961,7 +2012,7 @@ mkUniqueNames env tm = evalState (mkUniq tm) (S.fromList env) where
               ty' <- mkUniq ty
               sc'' <- mkUniq sc'
               return $! PPi p n' ty' sc''
-  mkUniq (PLet n ty val sc)
+  mkUniq (PLet fc n ty val sc)
          = do env <- get
               (n', sc') <-
                     if n `S.member` env
@@ -1972,7 +2023,7 @@ mkUniqueNames env tm = evalState (mkUniq tm) (S.fromList env) where
               put (S.insert n' env)
               ty' <- mkUniq ty; val' <- mkUniq val
               sc'' <- mkUniq sc'
-              return $! PLet n' ty' val' sc''
+              return $! PLet fc n' ty' val' sc''
   mkUniq (PApp fc t args)
          = do t' <- mkUniq t
               args' <- mapM mkUniqA args

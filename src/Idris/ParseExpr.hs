@@ -165,13 +165,13 @@ extension syn ns rules =
     update ns (PRef fc n) = case lookup n ns of
                               Just (SynTm t) -> t
                               _ -> PRef fc n
-    update ns (PLam n ty sc)
-      = PLam (updateB ns n) (update ns ty) (update (dropn n ns) sc)
+    update ns (PLam fc n ty sc)
+      = PLam fc (updateB ns n) (update ns ty) (update (dropn n ns) sc)
     update ns (PPi p n ty sc)
       = PPi (updTacImp ns p) (updateB ns n)
             (update ns ty) (update (dropn n ns) sc)
-    update ns (PLet n ty val sc) 
-      = PLet  (updateB ns n) (update ns ty)
+    update ns (PLet fc n ty val sc) 
+      = PLet fc (updateB ns n) (update ns ty)
               (update ns val) (update (dropn n ns) sc)
     update ns (PApp fc t args)
       = PApp fc (update ns t) (map (fmap (update ns)) args)
@@ -332,7 +332,12 @@ simpleExpr syn =
                           [pexp (PConstant (Str (show str)))])
         <|> do fc <- getFC
                x <- fnName
-               return (PRef fc x)
+               if inPattern syn 
+                  then option (PRef fc x)
+                              (do reservedOp "@"
+                                  s <- simpleExpr syn
+                                  return (PAs fc x s))
+                  else return (PRef fc x)
         <|> idiom syn
         <|> listExpr syn
         <|> alt syn
@@ -383,7 +388,7 @@ bracketed' syn =
                     -- No prefix operators! (bit of a hack here...)
                     if (o == "-" || o == "!")
                       then fail "minus not allowed in section"
-                      else return $ PLam (sMN 1000 "ARG") Placeholder
+                      else return $ PLam fc (sMN 1000 "ARG") Placeholder
                          (PApp fc (PRef fc (sUN o)) [pexp (PRef fc (sMN 1000 "ARG")),
                                                      pexp e]))
         <|> try (do l <- simpleExpr syn
@@ -393,7 +398,7 @@ bracketed' syn =
                     fc0 <- getFC
                     case op of
                          Nothing -> bracketedExpr syn l
-                         Just o -> return $ PLam (sMN 1000 "ARG") Placeholder
+                         Just o -> return $ PLam fc0 (sMN 1000 "ARG") Placeholder
                              (PApp fc0 (PRef fc0 (sUN o)) [pexp l,
                                                            pexp (PRef fc0 (sMN 1000 "ARG"))]))
         <|> do l <- expr syn
@@ -527,7 +532,7 @@ app syn = do f <- reserved "mkForeign"
              args <- many (do notEndApp; arg syn)
              i <- get
              let ap = PApp fc (PRef fc (sUN "liftPrimIO"))
-                       [pexp (PLam (sMN 0 "w")
+                       [pexp (PLam fc (sMN 0 "w")
                              Placeholder
                              (PApp fc (PRef fc (sUN "mkForeignPrim"))
                                          (fn : args ++
@@ -538,7 +543,7 @@ app syn = do f <- reserved "mkForeign"
               (do try $ reservedOp "<=="
                   fc <- getFC
                   ff <- fnName
-                  return (PLet (sMN 0 "match")
+                  return (PLet fc (sMN 0 "match")
                                 f
                                 (PMatchApp fc ff)
                                 (PRef fc (sMN 0 "match")))
@@ -662,13 +667,13 @@ recordType syn =
               Left fields ->
                 case rec of
                    Nothing ->
-                       return (PLam (sMN 0 "fldx") Placeholder
+                       return (PLam fc (sMN 0 "fldx") Placeholder
                                    (applyAll fc fields (PRef fc (sMN 0 "fldx"))))
                    Just v -> return (applyAll fc fields v)
               Right fields ->
                 case rec of
                    Nothing ->
-                       return (PLam (sMN 0 "fldx") Placeholder
+                       return (PLam fc (sMN 0 "fldx") Placeholder
                                  (getAll fc (reverse fields) 
                                      (PRef fc (sMN 0 "fldx"))))
                    Just v -> return (getAll fc (reverse fields) v)
@@ -726,8 +731,7 @@ TypeExpr ::= ConstraintList? Expr;
 typeExpr :: SyntaxInfo -> IdrisParser PTerm
 typeExpr syn = do cs <- if implicitAllowed syn then constraintList syn else return []
                   sc <- expr syn
-                  return (bindList (PPi constraint)
-                                   (map (\x -> (sMN 0 "constrarg", x)) cs) sc)
+                  return (bindList (PPi constraint) cs sc)
                <?> "type signature"
 
 {- | Parses a lambda expression
@@ -747,11 +751,12 @@ SimpleExprList ::=
 lambda :: SyntaxInfo -> IdrisParser PTerm
 lambda syn = do lchar '\\' <?> "lambda expression"
                 (do xt <- try $ tyOptDeclList syn
+                    fc <- getFC
                     symbol "=>"
                     sc <- expr syn
-                    return (bindList PLam xt sc)) <|> do
+                    return (bindList (PLam fc) xt sc)) <|> do
                       ps <- sepBy (do fc <- getFC
-                                      e <- simpleExpr syn
+                                      e <- simpleExpr (syn { inPattern = True })
                                       return (fc, e)) (lchar ',')
                       symbol "=>"
                       sc <- expr syn
@@ -760,7 +765,7 @@ lambda syn = do lchar '\\' <?> "lambda expression"
     where pmList :: [(Int, (FC, PTerm))] -> PTerm -> PTerm
           pmList [] sc = sc
           pmList ((i, (fc, x)) : xs) sc
-                = PLam (sMN i "lamp") Placeholder
+                = PLam fc (sMN i "lamp") Placeholder
                         (PCase fc (PRef fc (sMN i "lamp"))
                                 [(x, pmList xs sc)])
 
@@ -801,7 +806,7 @@ let_ syn = try (do reserved "let"
            <?> "let binding"
   where buildLets [] sc = sc
         buildLets ((fc,PRef _ n,ty,v,[]):ls) sc
-          = PLet n ty v (buildLets ls sc)
+          = PLet fc n ty v (buildLets ls sc)
         buildLets ((fc,pat,ty,v,alts):ls) sc
           = PCase fc v ((pat, buildLets ls sc) : alts)
 
@@ -907,17 +912,23 @@ ConstraintList ::=
   ;
 @
 -}
-constraintList :: SyntaxInfo -> IdrisParser [PTerm]
+constraintList :: SyntaxInfo -> IdrisParser [(Name, PTerm)]
 constraintList syn = try (do lchar '('
-                             tys <- sepBy1 (expr' (disallowImp syn)) (lchar ',')
+                             tys <- sepBy1 nexpr (lchar ',')
                              lchar ')'
                              reservedOp "=>"
                              return tys)
                  <|> try (do t <- expr (disallowImp syn)
                              reservedOp "=>"
-                             return [t])
+                             return [(defname, t)])
                  <|> return []
                  <?> "type constraint list"
+  where nexpr = try (do n <- name; lchar ':'
+                        e <- expr' (disallowImp syn)
+                        return (n, e))
+                <|> do e <- expr' (disallowImp syn)
+                       return (defname, e)
+        defname = sMN 0 "constrarg"
 
 {- | Parses a type declaration list
 @
@@ -1129,23 +1140,29 @@ Constant ::=
   ;
 @
 -}
+
+constants :: [(String, Idris.Core.TT.Const)]
+constants = 
+  [ ("Integer",            AType (ATInt ITBig))
+  , ("Int",                AType (ATInt ITNative))
+  , ("Char",               AType (ATInt ITChar))
+  , ("Float",              AType ATFloat)
+  , ("String",             StrType)
+  , ("Ptr",                PtrType)
+  , ("ManagedPtr",         ManagedPtrType)
+  , ("prim__UnsafeBuffer", BufferType)
+  , ("Bits8",              AType (ATInt (ITFixed IT8)))
+  , ("Bits16",             AType (ATInt (ITFixed IT16)))
+  , ("Bits32",             AType (ATInt (ITFixed IT32)))
+  , ("Bits64",             AType (ATInt (ITFixed IT64)))
+  , ("Bits8x16",           AType (ATInt (ITVec IT8 16)))
+  , ("Bits16x8",           AType (ATInt (ITVec IT16 8)))
+  , ("Bits32x4",           AType (ATInt (ITVec IT32 4)))
+  , ("Bits64x2",           AType (ATInt (ITVec IT64 2)))
+  ]
+ 
 constant :: IdrisParser Idris.Core.TT.Const
-constant =  do reserved "Integer";      return (AType (ATInt ITBig))
-        <|> do reserved "Int";          return (AType (ATInt ITNative))
-        <|> do reserved "Char";         return (AType (ATInt ITChar))
-        <|> do reserved "Float";        return (AType ATFloat)
-        <|> do reserved "String";       return StrType
-        <|> do reserved "Ptr";          return PtrType
-        <|> do reserved "ManagedPtr";   return ManagedPtrType
-        <|> do reserved "prim__UnsafeBuffer"; return BufferType
-        <|> do reserved "Bits8";  return (AType (ATInt (ITFixed IT8)))
-        <|> do reserved "Bits16"; return (AType (ATInt (ITFixed IT16)))
-        <|> do reserved "Bits32"; return (AType (ATInt (ITFixed IT32)))
-        <|> do reserved "Bits64"; return (AType (ATInt (ITFixed IT64)))
-        <|> do reserved "Bits8x16"; return (AType (ATInt (ITVec IT8 16)))
-        <|> do reserved "Bits16x8"; return (AType (ATInt (ITVec IT16 8)))
-        <|> do reserved "Bits32x4"; return (AType (ATInt (ITVec IT32 4)))
-        <|> do reserved "Bits64x2"; return (AType (ATInt (ITVec IT64 2)))
+constant = choice [ do reserved name; return ty | (name, ty) <- constants ]
         <|> do f <- try float;   return $ Fl f
         <|> do i <- natural; return $ BI i
         <|> do s <- verbatimStringLiteral; return $ Str s
@@ -1218,116 +1235,109 @@ TacticSeq ::=
 @
 -}
 
+-- | A specification of the arguments that tactics can take
+data TacticArg = NameTArg -- ^ Names: n1, n2, n3, ... n
+               | ExprTArg
+               | AltsTArg
+               | StringLitTArg
+
+-- The FIXMEs are Issue #1766 in the issue tracker.
+--     https://github.com/idris-lang/Idris-dev/issues/1766
+-- | A list of available tactics and their argument requirements
+tactics :: [([String], Maybe TacticArg, SyntaxInfo -> IdrisParser PTactic)]
+tactics = 
+  [ (["intro"], Nothing, const $ -- FIXME syntax for intro (fresh name)
+      do ns <- sepBy (spaced name) (lchar ','); return $ Intro ns)
+  , noArgs ["intros"] Intros
+  , (["refine"], Just ExprTArg, const $
+       do n <- spaced fnName
+          imps <- many imp
+          return $ Refine n imps)
+  , (["mrefine"], Just ExprTArg, const $
+       do n <- spaced fnName
+          return $ MatchRefine n)
+  , expressionTactic ["rewrite"] Rewrite
+  , expressionTactic ["case"] CaseTac
+  , expressionTactic ["induction"] Induction
+  , expressionTactic ["equiv"] Equiv
+  , (["let"], Nothing, \syn -> -- FIXME syntax for let
+       do n <- (indentPropHolds gtProp *> name)
+          (do indentPropHolds gtProp *> lchar ':'
+              ty <- indentPropHolds gtProp *> expr' syn
+              indentPropHolds gtProp *> lchar '='
+              t <- indentPropHolds gtProp *> expr syn
+              i <- get
+              return $ LetTacTy n (desugar syn i ty) (desugar syn i t))
+            <|> (do indentPropHolds gtProp *> lchar '='
+                    t <- indentPropHolds gtProp *> expr syn
+                    i <- get
+                    return $ LetTac n (desugar syn i t)))
+
+  , (["focus"], Just ExprTArg, const $
+       do n <- spaced name
+          return $ Focus n)
+  , expressionTactic ["exact"] Exact
+  , expressionTactic ["applyTactic"] ApplyTactic
+  , expressionTactic ["byReflection"] ByReflection
+  , expressionTactic ["reflect"] Reflect
+  , expressionTactic ["fill"] Fill
+  , (["try"], Just AltsTArg, \syn ->
+        do t <- spaced (tactic syn)
+           lchar '|'
+           t1 <- spaced (tactic syn)
+           return $ Try t t1)
+  , noArgs ["compute"] Compute
+  , noArgs ["trivial"] Trivial
+  , noArgs ["unify"] DoUnify
+  , (["search"], Nothing, const $
+      do depth <- option 10 natural
+         return (ProofSearch True True (fromInteger depth) Nothing []))
+  , noArgs ["instance"] TCInstance
+  , noArgs ["solve"] Solve
+  , noArgs ["attack"] Attack
+  , noArgs ["state"] ProofState
+  , noArgs ["term"] ProofTerm
+  , noArgs ["undo"] Undo
+  , noArgs ["qed"] Qed
+  , noArgs ["abandon", ":q"] Abandon
+  , noArgs ["skip"] Skip
+  , noArgs ["sourceLocation"] SourceFC
+  , expressionTactic [":e", ":eval"] TEval
+  , expressionTactic [":t", ":type"] TCheck
+  , expressionTactic [":search"] TSearch
+  , (["fail"], Just StringLitTArg, const $
+       do msg <- stringLiteral
+          return $ TFail [Idris.Core.TT.TextPart msg])
+  , ([":doc"], Just ExprTArg, const $
+       do whiteSpace
+          doc <- (Right <$> constant) <|> (Left <$> fnName)
+          eof
+          return (TDocStr doc))
+  ]
+  where
+  expressionTactic names tactic = (names, Just ExprTArg, \syn ->
+     do t <- spaced (expr syn)
+        i <- get
+        return $ tactic (desugar syn i t))
+  noArgs names tactic = (names, Nothing, const (return tactic))
+  spaced parser = indentPropHolds gtProp *> parser
+  imp :: IdrisParser Bool
+  imp = do lchar '?'; return False
+    <|> do lchar '_'; return True
+  
+
 tactic :: SyntaxInfo -> IdrisParser PTactic
-tactic syn = do reserved "intro"; ns <- sepBy (indentPropHolds gtProp *> name) (lchar ',')
-                return $ Intro ns
-          <|> do reserved "intros"; return Intros
-          <|> try (do reserved "refine"; n <- (indentPropHolds gtProp *> fnName)
-                      imps <- some imp
-                      return $ Refine n imps)
-          <|> do reserved "refine"; n <- (indentPropHolds gtProp *> fnName)
-                 i <- get
-                 return $ Refine n []
-          <|> do reserved "mrefine"; n <- (indentPropHolds gtProp *> fnName)
-                 i <- get
-                 return $ MatchRefine n
-          <|> do reserved "rewrite"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ Rewrite (desugar syn i t)
-          <|> do reserved "case"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ CaseTac (desugar syn i t)
-          <|> do reserved "induction"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ Induction (desugar syn i t)
-          <|> do reserved "equiv"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ Equiv (desugar syn i t)
-          <|> try (do reserved "let"; n <- (indentPropHolds gtProp *> name); (indentPropHolds gtProp *> lchar ':');
-                      ty <- (indentPropHolds gtProp *> expr' syn); (indentPropHolds gtProp *> lchar '='); t <- (indentPropHolds gtProp *> expr syn);
-                      i <- get
-                      return $ LetTacTy n (desugar syn i ty) (desugar syn i t))
-          <|> try (do reserved "let"; n <- (indentPropHolds gtProp *> name); (indentPropHolds gtProp *> lchar '=');
-                      t <- (indentPropHolds gtProp *> expr syn);
-                      i <- get
-                      return $ LetTac n (desugar syn i t))
-          <|> do reserved "focus"; n <- (indentPropHolds gtProp *> name)
-                 return $ Focus n
-          <|> do reserved "exact"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ Exact (desugar syn i t)
-          <|> do reserved "applyTactic"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ ApplyTactic (desugar syn i t)
-          <|> do reserved "byReflection"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ ByReflection (desugar syn i t)
-          <|> do reserved "reflect"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ Reflect (desugar syn i t)
-          <|> do reserved "fill"; t <- (indentPropHolds gtProp *> expr syn);
-                 i <- get
-                 return $ Fill (desugar syn i t)
-          <|> do reserved "try"; t <- (indentPropHolds gtProp *> tactic syn);
-                 lchar '|';
-                 t1 <- (indentPropHolds gtProp *> tactic syn)
-                 return $ Try t t1
+tactic syn = choice [ do choice (map reserved names); parser syn 
+                    | (names, _, parser) <- tactics ]
           <|> do lchar '{'
                  t <- tactic syn;
                  lchar ';';
                  ts <- sepBy1 (tactic syn) (lchar ';')
                  lchar '}'
                  return $ TSeq t (mergeSeq ts)
-          <|> do reserved "compute"; return Compute
-          <|> do reserved "trivial"; return Trivial
-          <|> do reserved "unify"; return DoUnify
-          <|> do reserved "search"
-                 depth <- option 10 natural
-                 return (ProofSearch True True (fromInteger depth) Nothing [])
-          <|> do reserved "instance"; return TCInstance
-          <|> do reserved "solve"; return Solve
-          <|> do reserved "attack"; return Attack
-          <|> do reserved "state"; return ProofState
-          <|> do reserved "term"; return ProofTerm
-          <|> do reserved "undo"; return Undo
-          <|> do reserved "qed"; return Qed
-          <|> do reserved "abandon"; return Abandon
-          <|> do reserved "skip"; return Skip
-          <|> do reserved "fail"
-                 msg <- stringLiteral
-                 return $ TFail [Idris.Core.TT.TextPart msg]
-          <|> do reserved "sourceLocation"; return SourceFC
-          <|> do lchar ':';
-                 (    (do reserved "q"; return Abandon)
-                  <|> (do (reserved "e" <|> reserved "eval");
-                          t <- (indentPropHolds gtProp *> expr syn);
-                          i <- get
-                          return $ TEval (desugar syn i t))
-                  <|> (do (reserved "t" <|> reserved "type");
-                          t <- (indentPropHolds gtProp *> expr syn);
-                          i <- get
-                          return $ TCheck (desugar syn i t))
-                  <|> try (do reserved "doc"
-                              whiteSpace
-                              c <- constant
-                              eof
-                              return (TDocStr (Right c)))
-                  <|> try (do reserved "doc"
-                              whiteSpace
-                              n <- fnName
-                              eof
-                              return (TDocStr (Left n)))
-                  <|> try (do reserved "search"
-                              whiteSpace
-                              t <- (indentPropHolds gtProp *> expr syn);
-                              i <- get
-                              return $ TSearch (desugar syn i t))
-                  <?> "prover command")
+          <|> ((lchar ':' >> empty) <?> "prover command")
           <?> "tactic"
   where
-    imp :: IdrisParser Bool
-    imp = do lchar '?'; return False
-      <|> do lchar '_'; return True
     mergeSeq :: [PTactic] -> PTactic
     mergeSeq [t]    = t
     mergeSeq (t:ts) = TSeq t (mergeSeq ts)

@@ -31,6 +31,8 @@ data ProofState = PS { thname   :: Name,
                        dontunify :: [Name], -- explicitly given by programmer, leave it
                        unified  :: (Name, [(Name, Term)]),
                        notunified :: [(Name, Term)],
+                       dotted   :: [(Name, [Name])], -- dot pattern holes + environment
+                                       -- either hole or something in env must turn up in the 'notunified' list during elaboration
                        solved   :: Maybe (Name, Term),
                        problems :: Fails,
                        injective :: [Name],
@@ -93,10 +95,12 @@ data Tactic = Attack
 -- Some utilites on proof and tactic states
 
 instance Show ProofState where
-    show (PS nm [] _ _ tm _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _)
-          = show nm ++ ": no more goals"
-    show (PS nm (h:hs) _ _ tm _ _ _ _ _ _ _ i _ _ _ ctxt _ _ _ _ _)
-          = let OK g = goal (Just h) tm
+    show ps | [] <- holes ps
+          = show (thname ps) ++ ": no more goals"
+    show ps | (h : hs) <- holes ps
+          = let tm = pterm ps
+                nm = thname ps
+                OK g = goal (Just h) tm
                 wkenv = premises g in
                 "Other goals: " ++ show hs ++ "\n" ++
                 showPs wkenv (reverse wkenv) ++ "\n" ++
@@ -118,10 +122,12 @@ instance Show ProofState where
                showG ps b = showEnv ps (binderTy b)
 
 instance Pretty ProofState OutputAnnotation where
-  pretty (PS nm [] _ _ trm _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =
-    pretty nm <+> colon <+> text " no more goals."
-  pretty p@(PS nm (h:hs) _ _ tm _ _ _ _ _ _ _ i _ _ _ ctxt _ _ _ _ _) =
-    let OK g  = goal (Just h) tm in
+  pretty ps | [] <- holes ps =
+    pretty (thname ps) <+> colon <+> text " no more goals."
+  pretty ps | (h : hs) <- holes ps =
+    let tm = pterm ps
+        OK g = goal (Just h) tm 
+        nm = thname ps in
     let wkEnv = premises g in
       text "Other goals" <+> colon <+> pretty hs <+>
       prettyPs wkEnv (reverse wkEnv) <+>
@@ -210,7 +216,7 @@ unify' ctxt env topx topy =
                      lift $ unify ctxt env topx topy inj (holes ps)
                                   (map fst (notunified ps)) while
       let notu = filter (\ (n, t) -> case t of
-                                        P _ _ _ -> False
+--                                         P _ _ _ -> False
                                         _ -> n `elem` dont) u
       traceWhen (unifylog ps)
             ("Unified " ++ show (topx, topy) ++ " without " ++ show dont ++
@@ -283,7 +289,7 @@ newProof :: Name -> Context -> Type -> ProofState
 newProof n ctxt ty = let h = holeName 0
                          ty' = vToP ty in
                          PS n [h] [] 1 (mkProofTerm (Bind h (Hole ty')
-                            (P Bound h ty'))) ty [] (h, []) []
+                            (P Bound h ty'))) ty [] (h, []) [] []
                             Nothing [] []
                             [] [] []
                             Nothing ctxt "" False False [] []
@@ -495,19 +501,27 @@ solve :: RunTactic
 solve ctxt env (Bind x (Guess ty val) sc)
    = do ps <- get
         let (uh, uns) = unified ps
-        case lookup x (notunified ps) of
-            Just tm -> -- trace ("NEED MATCH: " ++ show (x, tm, val) ++ "\nIN " ++ show (pterm ps)) $
-                         match_unify' ctxt env tm val
-            _ -> return []
+        dropdots <-
+             case lookup x (notunified ps) of
+                Just tm -> -- trace ("NEED MATCH: " ++ show (x, tm, val) ++ "\nIN " ++ show (pterm ps)) $
+                            do match_unify' ctxt env tm val
+                               return [x]
+                _ -> return []
         action (\ps -> ps { holes = traceWhen (unifylog ps) ("Dropping hole " ++ show x) $
                                        holes ps \\ [x],
                             solved = Just (x, val),
                             notunified = updateNotunified [(x,val)]
                                            (notunified ps),
                             recents = x : recents ps,
-                            instances = instances ps \\ [x] })
+                            instances = instances ps \\ [x],
+                            dotted = dropUnified dropdots (dotted ps) })
         let tm' = subst x val sc in
             return tm'
+  where dropUnified ddots [] = []
+        dropUnified ddots ((x, es) : ds)
+             | x `elem` ddots || any (\e -> e `elem` ddots) es
+                  = dropUnified ddots ds
+             | otherwise = (x, es) : dropUnified ddots ds
 solve _ _ h@(Bind x t sc)
    = do ps <- get
         case findType x sc of
@@ -570,7 +584,8 @@ patvar n ctxt env (Bind x (Hole t) sc) =
                            solved = Just (x, P Bound n t),
                            notunified = updateNotunified [(x,P Bound n t)]
                                           (notunified ps),
-                           injective = addInj n x (injective ps) })
+                           injective = addInj n x (injective ps)
+                         })
        return $ Bind n (PVar t) (subst x (P Bound n t) sc)
   where addInj n x ps | x `elem` ps = n : ps
                       | otherwise = ps
@@ -876,13 +891,13 @@ processTactic EndUnify ps
           ns' = map (\ (n, t) -> (n, updateSolvedTerm ns t)) ns
           (ns'', probs') = updateProblems ps ns' (problems ps)
           tm' = updateSolved ns'' (pterm ps) in
-          traceWhen (unifylog ps) ("Dropping holes: " ++ show (map fst ns'')) $
-            return (ps { pterm = tm',
-                         unified = (h, []),
-                         problems = probs',
-                         notunified = updateNotunified ns'' (notunified ps),
-                         recents = recents ps ++ map fst ns'',
-                         holes = holes ps \\ map fst ns'' }, "")
+             traceWhen (unifylog ps) ("Dropping holes: " ++ show (map fst ns'')) $
+              return (ps { pterm = tm',
+                           unified = (h, []),
+                           problems = probs',
+                           notunified = updateNotunified ns'' (notunified ps),
+                           recents = recents ps ++ map fst ns'',
+                           holes = holes ps \\ map fst ns'' }, "")
 processTactic UnifyAll ps
     = let tm' = updateSolved (notunified ps) (pterm ps) in
           return (ps { pterm = tm',
@@ -897,24 +912,24 @@ processTactic (ComputeLet n) ps
                               computeLet (context ps) n
                                          (getProofTerm (pterm ps)) }, "")
 processTactic UnifyProblems ps
-    = let (ns', probs') = updateProblems ps [] (problems ps)
-          pterm' = updateSolved ns' (pterm ps) in
-      traceWhen (unifylog ps) ("Dropping holes: " ++ show (map fst ns')) $
-        return (ps { pterm = pterm', solved = Nothing, problems = probs',
-                     previous = Just ps, plog = "",
-                     notunified = updateNotunified ns' (notunified ps),
-                     recents = recents ps ++ map fst ns',
-                     holes = holes ps \\ (map fst ns') }, plog ps)
+    = do let (ns', probs') = updateProblems ps [] (problems ps)
+             pterm' = updateSolved ns' (pterm ps)
+         traceWhen (unifylog ps) ("Dropping holes: " ++ show (map fst ns')) $
+          return (ps { pterm = pterm', solved = Nothing, problems = probs',
+                       previous = Just ps, plog = "",
+                       notunified = updateNotunified ns' (notunified ps),
+                       recents = recents ps ++ map fst ns',
+                       holes = holes ps \\ (map fst ns') }, plog ps)
 processTactic (MatchProblems all) ps
-    = let (ns', probs') = matchProblems all ps [] (problems ps)
-          (ns'', probs'') = matchProblems all ps ns' probs'
-          pterm' = updateSolved ns'' (pterm ps) in
-       traceWhen (unifylog ps) ("Dropping holes: " ++ show (map fst ns'')) $
-        return (ps { pterm = pterm', solved = Nothing, problems = probs'',
-                   previous = Just ps, plog = "",
-                   notunified = updateNotunified ns'' (notunified ps),
-                   recents = recents ps ++ map fst ns'',
-                   holes = holes ps \\ (map fst ns'') }, plog ps)
+    = do let (ns', probs') = matchProblems all ps [] (problems ps)
+             (ns'', probs'') = matchProblems all ps ns' probs'
+             pterm' = updateSolved ns'' (pterm ps)
+         traceWhen (unifylog ps) ("Dropping holes: " ++ show (map fst ns'')) $
+          return (ps { pterm = pterm', solved = Nothing, problems = probs'',
+                       previous = Just ps, plog = "",
+                       notunified = updateNotunified ns'' (notunified ps),
+                       recents = recents ps ++ map fst ns'',
+                       holes = holes ps \\ (map fst ns'') }, plog ps)
 processTactic t ps
     = case holes ps of
         [] -> fail "Nothing to fill in."

@@ -5,10 +5,10 @@ import System.IO
 import System.Environment
 import System.Exit
 import System.FilePath ((</>), addTrailingPathSeparator)
+import System.Directory
 
 import Data.Maybe
 import Data.Version
-import Control.Monad.Trans.Error ( ErrorT(..) )
 import Control.Monad.Trans.State.Strict ( execStateT, get, put )
 import Control.Monad ( when )
 
@@ -46,6 +46,7 @@ runIdris opts = do
        when (ShowIncs `elem` opts) $ runIO showIncs
        when (ShowLibs `elem` opts) $ runIO showLibs
        when (ShowLibdir `elem` opts) $ runIO showLibdir
+       when (ShowPkgs `elem` opts) $ runIO showPkgs
        case opt getClient opts of
            []    -> return ()
            (c:_) -> do setVerbose False
@@ -92,4 +93,9 @@ showLibdir = do dir <- getIdrisLibDir
 showIncs :: IO b
 showIncs = do incFlags <- getIncFlags
               putStrLn $ unwords incFlags
+              exitWith ExitSuccess
+
+-- | List idris packages installed
+showPkgs :: IO b
+showPkgs = do mapM putStrLn =<< installedPackages
               exitWith ExitSuccess

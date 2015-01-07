@@ -52,7 +52,7 @@ import Util.Pretty(pretty, text)
 
 elabInstance :: ElabInfo -> SyntaxInfo ->
                 ElabWhat -> -- phase
-                FC -> [PTerm] -> -- constraints
+                FC -> [(Name, PTerm)] -> -- constraints
                 Name -> -- the class
                 [PTerm] -> -- class parameters (i.e. instance)
                 PTerm -> -- full instance type
@@ -168,7 +168,7 @@ elabInstance info syn what fc cs n ps t expn ds = do
              let ty = addImpl i ty'
              ctxt <- getContext
              ((tyT, _, _), _) <-
-                   tclift $ elaborate ctxt iname (TType (UVal 0)) []
+                   tclift $ elaborate ctxt iname (TType (UVal 0)) initEState
                             (errAt "type of " iname (erun fc (build i info ERHS [] iname ty)))
              ctxt <- getContext
              (cty, _) <- recheckC fc [] tyT
@@ -195,9 +195,9 @@ elabInstance info syn what fc cs n ps t expn ds = do
     mkMethApp (n, _, _, ty)
           = lamBind 0 ty (papp fc (PRef fc n) (methArgs 0 ty))
     lamBind i (PPi (Constraint _ _) _ _ sc) sc'
-          = PLam (sMN i "meth") Placeholder (lamBind (i+1) sc sc')
+          = PLam fc (sMN i "meth") Placeholder (lamBind (i+1) sc sc')
     lamBind i (PPi _ n ty sc) sc'
-          = PLam (sMN i "meth") Placeholder (lamBind (i+1) sc sc')
+          = PLam fc (sMN i "meth") Placeholder (lamBind (i+1) sc sc')
     lamBind i _ sc = sc
     methArgs i (PPi (Imp _ _ _) n ty sc)
         = PImp 0 True [] n (PRef fc (sMN i "meth")) : methArgs (i+1) sc
@@ -225,10 +225,11 @@ elabInstance info syn what fc cs n ps t expn ds = do
 
     mkTyDecl (n, op, t, _) = PTy emptyDocstring [] syn fc op n t
 
-    conbind (ty : ns) x = PPi (constraint) -- { pstatic = Dynamic }) 
-                              (sMN 0 "class") ty (conbind ns x)
+    conbind :: [(Name, PTerm)] -> PTerm -> PTerm
+    conbind ((c,ty) : ns) x = PPi constraint c ty (conbind ns x)
     conbind [] x = x
 
+    coninsert :: [(Name, PTerm)] -> PTerm -> PTerm
     coninsert cs (PPi p@(Imp _ _ _) n t sc) = PPi p n t (coninsert cs sc)
     coninsert cs sc = conbind cs sc
 

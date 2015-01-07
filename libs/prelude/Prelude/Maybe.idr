@@ -2,7 +2,10 @@ module Prelude.Maybe
 
 import Builtins
 import Prelude.Algebra
+import Prelude.Basics
+import Prelude.Bool
 import Prelude.Cast
+import Prelude.Classes
 import Prelude.Foldable
 
 %access public
@@ -23,6 +26,10 @@ isNothing (Just j) = False
 isJust : Maybe a -> Bool
 isJust Nothing  = False
 isJust (Just j) = True
+
+||| Proof that some `Maybe` is actually `Just`
+data IsJust : Maybe a -> Type where
+  ItIsJust : IsJust (Just x)
 
 --------------------------------------------------------------------------------
 -- Misc

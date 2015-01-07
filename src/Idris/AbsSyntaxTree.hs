@@ -19,14 +19,13 @@ import System.Console.Haskeline
 import System.IO
 
 import Control.Monad.Trans.State.Strict
-import Control.Monad.Trans.Error
+import Control.Monad.Trans.Except
 
 import Data.Function (on)
 import Data.List hiding (group)
 import Data.Char
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
-import qualified Data.Map as M
 import Data.Either
 import qualified Data.Set as S
 import Data.Word (Word)
@@ -166,6 +165,9 @@ data IState = IState {
     idris_callgraph :: Ctxt CGInfo, -- name, args used in each pos
     idris_calledgraph :: Ctxt [Name],
     idris_docstrings :: Ctxt (Docstring DocTerm, [(Name, Docstring DocTerm)]),
+    idris_moduledocs :: Ctxt (Docstring DocTerm),
+    -- ^ module documentation is saved in a special MN so the context
+    -- mechanism can be used for disambiguation
     idris_tyinfodata :: Ctxt TIData,
     idris_fninfo :: Ctxt FnInfo,
     idris_transforms :: Ctxt [(Term, Term)],
@@ -187,7 +189,7 @@ data IState = IState {
     idris_libs :: [(Codegen, String)],
     idris_cgflags :: [(Codegen, String)],
     idris_hdrs :: [(Codegen, String)],
-    idris_imported :: [FilePath], -- ^ Imported ibc file names
+    idris_imported :: [(FilePath, Bool)], -- ^ Imported ibc file names, whether public
     proof_list :: [(Name, [String])],
     errSpan :: Maybe FC,
     parserWarnings :: [(FC, Err)],
@@ -215,9 +217,10 @@ data IState = IState {
     idris_whocalls :: Maybe (M.Map Name [Name]),
     idris_callswho :: Maybe (M.Map Name [Name]),
     idris_repl_defs :: [Name], -- ^ List of names that were defined in the repl, and can be re-/un-defined
+    elab_stack :: [Name], -- ^ Stack of names currently being elaborated
+    idris_symbols :: M.Map Name Name -- ^ Symbol table (preserves sharing of names)
     lhs_projections :: Ctxt (PDecl, Name, Name, Name),
     guarded_renames :: [(Name, Name)], -- ^ Names of declarations that have a guarded counterpart
-    guarded_boxing :: [(Name, (Name, Name))] -- ^ (Type, (BoxingFun, UnboxingFun))
    }
 
 -- Required for parsers library, and therefore trifecta
@@ -262,7 +265,7 @@ data IBCWrite = IBCFix FixDecl
               | IBCMetavar Name
               | IBCSyntax Syntax
               | IBCKeyword String
-              | IBCImport FilePath
+              | IBCImport (Bool, FilePath) -- True = import public
               | IBCImportDir FilePath
               | IBCObj Codegen FilePath
               | IBCLib Codegen String
@@ -287,23 +290,25 @@ data IBCWrite = IBCFix FixDecl
               | IBCPostulate Name
               | IBCTotCheckErr FC String
               | IBCParsedRegion FC
+              | IBCModDocs Name -- ^ The name is the special name used to track module docs
   deriving Show
 
 -- | The initial state for the compiler
 idrisInit :: IState
-idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
+idrisInit = IState initContext [] []
+                   emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
                    [] [] [] defaultOpts 6 [] [] [] [] emptySyntaxRules [] [] [] [] [] [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
-                   AutomaticWidth S.empty Nothing Nothing [] emptyContext [] []
+                   AutomaticWidth S.empty Nothing Nothing [] [] M.empty emptyContext []
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).
 --type Idris = WriterT [Either String (IO ())] (State IState a))
-type Idris = StateT IState (ErrorT Err IO)
+type Idris = StateT IState (ExceptT Err IO)
 
 -- Commands in the REPL
 
@@ -315,6 +320,9 @@ data Codegen = Via String
 --              | ViaLLVM
              | Bytecode
     deriving (Show, Eq)
+{-!
+deriving instance NFData Codegen
+!-}
 
 -- | REPL commands
 data Command = Quit
@@ -349,7 +357,7 @@ data Command = Quit
              | DynamicLink FilePath
              | ListDynamic
              | Pattelab PTerm
-             | Search PTerm
+             | Search [String] PTerm
              | CaseSplitAt Bool Int Name
              | AddClauseFrom Bool Int Name
              | AddProofClauseFrom Bool Int Name
@@ -367,7 +375,7 @@ data Command = Quit
              | ColourOff
              | ListErrorHandlers
              | SetConsoleWidth ConsoleWidth
-             | Apropos String
+             | Apropos [String] String
              | WhoCalls Name
              | CallsWho Name
              | MakeDoc String                      -- IdrisDoc
@@ -390,6 +398,7 @@ data Opt = Filename String
          | ShowLibs
          | ShowLibdir
          | ShowIncs
+         | ShowPkgs
          | NoBasePkgs
          | NoPrelude
          | NoBuiltins -- only for the really primitive stuff!
@@ -416,6 +425,7 @@ data Opt = Filename String
          | PkgREPL String
          | PkgMkDoc String     -- IdrisDoc
          | PkgTest String
+         | PkgIndex FilePath
          | WarnOnly
          | Pkg String
          | BCAsm String
@@ -560,14 +570,14 @@ data PDecl' t
    | PRecord  (Docstring (Either Err PTerm)) SyntaxInfo FC Name t DataOpts (Docstring (Either Err PTerm)) Name t  -- ^ Record declaration
    | PCorecord (Docstring (Either Err PTerm)) [(Name, (Docstring (Either Err PTerm)))] SyntaxInfo SyntaxInfo FC DataOpts (PCorecord' t)  -- ^ Corecord declaration.
    | PClass   (Docstring (Either Err PTerm)) SyntaxInfo FC
-              [t] -- constraints
+              [(Name, t)] -- constraints
               Name
               [(Name, t)] -- parameters
               [(Name, Docstring (Either Err PTerm))] -- parameter docstrings
               [PDecl' t] -- declarations
               -- ^ Type class: arguments are documentation, syntax info, source location, constraints,
               -- class name, parameters, method declarations
-   | PInstance SyntaxInfo FC [t] -- constraints
+   | PInstance SyntaxInfo FC [(Name, t)] -- constraints
                              Name -- class
                              [t] -- parameters
                              t -- full instance type
@@ -589,7 +599,14 @@ deriving instance NFData PDecl'
 !-}
 
 -- For elaborator state
-type ElabD a = Elab' [PDecl] a
+data EState = EState {
+                  case_decls :: [PDecl],
+                  delayed_elab :: [Elab' EState ()]
+              }
+
+initEState = EState [] []
+
+type ElabD a = Elab' EState a
 
 -- | One clause of a top-level definition. Term arguments to constructors are:
 --
@@ -725,9 +742,9 @@ data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level langua
            | PRef FC Name -- ^ A reference to a variable
            | PInferRef FC Name -- ^ A name to be defined later
            | PPatvar FC Name -- ^ A pattern variable
-           | PLam Name PTerm PTerm -- ^ A lambda abstraction
+           | PLam FC Name PTerm PTerm -- ^ A lambda abstraction
            | PPi  Plicity Name PTerm PTerm -- ^ (n : t1) -> t2
-           | PLet Name PTerm PTerm PTerm -- ^ A let binding
+           | PLet FC Name PTerm PTerm PTerm -- ^ A let binding
            | PTyped PTerm PTerm -- ^ Term with explicit type
            | PApp FC PTerm [PArg] -- ^ e.g. IO (), List Char, length x
            | PAppBind FC PTerm [PArg] -- ^ implicitly bound application
@@ -740,6 +757,7 @@ data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level langua
            | PRewrite FC PTerm PTerm (Maybe PTerm) -- ^ "rewrite" syntax, with optional result type
            | PPair FC PunInfo PTerm PTerm -- ^ A pair (a, b) and whether it's a product type or a pair (solved by elaboration)
            | PDPair FC PunInfo PTerm PTerm PTerm -- ^ A dependent pair (tm : a ** b) and whether it's a sigma type or a pair that inhabits one (solved by elaboration)
+           | PAs FC Name PTerm -- ^ @-pattern, valid LHS only
            | PAlternative Bool [PTerm] -- ^ True if only one may work. (| A, B, C|)
            | PHidden PTerm -- ^ Irrelevant or hidden pattern
            | PType -- ^ 'Type' type
@@ -771,9 +789,9 @@ deriving instance NFData PTerm
 
 mapPT :: (PTerm -> PTerm) -> PTerm -> PTerm
 mapPT f t = f (mpt t) where
-  mpt (PLam n t s) = PLam n (mapPT f t) (mapPT f s)
+  mpt (PLam fc n t s) = PLam fc n (mapPT f t) (mapPT f s)
   mpt (PPi p n t s) = PPi p n (mapPT f t) (mapPT f s)
-  mpt (PLet n ty v s) = PLet n (mapPT f ty) (mapPT f v) (mapPT f s)
+  mpt (PLet fc n ty v s) = PLet fc n (mapPT f ty) (mapPT f v) (mapPT f s)
   mpt (PRewrite fc t s g) = PRewrite fc (mapPT f t) (mapPT f s)
                                  (fmap (mapPT f) g)
   mpt (PApp fc t as) = PApp fc (mapPT f t) (map (fmap (mapPT f)) as)
@@ -947,6 +965,7 @@ data FnInfo = FnInfo { fn_params :: [Int] }
     deriving Show
 {-!
 deriving instance Binary FnInfo
+deriving instance NFData FnInfo
 !-}
 
 data OptInfo = Optimise { inaccessible :: [(Int,Name)],  -- includes names for error reporting
@@ -1195,6 +1214,12 @@ eqParamDoc = [(n "A", annotCode (const (Left $ Msg "")) . parseDocstring . T.pac
 
 eqOpts = []
 
+-- | The special name to be used in the module documentation context -
+-- not for use in the main definition context. The namespace around it
+-- will determine the module to which the docs adhere.
+modDocName :: Name
+modDocName = sMN 0 "ModuleDocs"
+
 -- Defined in builtins.idr
 sigmaTy   = sNS (sUN "Sigma") ["Builtins"]
 existsCon = sNS (sUN "MkSigma") ["Builtins"]
@@ -1280,8 +1305,10 @@ pprintPTerm :: PPOption -- ^^ pretty printing options
             -> [FixDecl] -- ^^ Fixity declarations
             -> PTerm -- ^^ the term to pretty-print
             -> Doc OutputAnnotation
-pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
+pprintPTerm ppo bnd docArgs infixes = prettySe startPrec bnd
   where
+    startPrec = 0
+    funcAppPrec = 10
     prettySe :: Int -> [(Name, Bool)] -> PTerm -> Doc OutputAnnotation
     prettySe p bnd (PQuote r) =
         text "![" <> pretty r <> text "]"
@@ -1290,22 +1317,22 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
       | Just str <- slist p bnd e = str
       | Just n <- snat p e = annotate (AnnData "Nat" "") (text (show n))
     prettySe p bnd (PRef fc n) = prettyName True (ppopt_impl ppo) bnd n
-    prettySe p bnd (PLam n ty sc) =
-      bracket p 2 . group . align . hang 2 $
+    prettySe p bnd (PLam fc n ty sc) =
+      bracket p startPrec . group . align . hang 2 $
       text "\\" <> bindingOf n False <+> text "=>" <$>
-      prettySe 10 ((n, False):bnd) sc
-    prettySe p bnd (PLet n ty v sc) =
-      bracket p 2 . group . align $
-      kwd "let" <+> (group . align . hang 2 $ bindingOf n False <+> text "=" <$> prettySe 10 bnd v) </>
-      kwd "in" <+> (group . align . hang 2 $ prettySe 10 ((n, False):bnd) sc)
+      prettySe startPrec ((n, False):bnd) sc
+    prettySe p bnd (PLet fc n ty v sc) =
+      bracket p startPrec . group . align $
+      kwd "let" <+> (group . align . hang 2 $ bindingOf n False <+> text "=" <$> prettySe startPrec bnd v) </>
+      kwd "in" <+> (group . align . hang 2 $ prettySe startPrec ((n, False):bnd) sc)
     prettySe p bnd (PPi (Exp l s _) n ty sc)
       | n `elem` allNamesIn sc || ppopt_impl ppo || n `elem` docArgs =
-          bracket p 2 . group $
-          enclose lparen rparen (group . align $ bindingOf n False <+> colon <+> prettySe 10 bnd ty) <+>
-          st <> text "->" <$> prettySe 10 ((n, False):bnd) sc
+          bracket p startPrec . group $
+          enclose lparen rparen (group . align $ bindingOf n False <+> colon <+> prettySe startPrec bnd ty) <+>
+          st <> text "->" <$> prettySe startPrec ((n, False):bnd) sc
       | otherwise                      =
-          bracket p 2 . group $
-          group (prettySe 1 bnd ty <+> st) <> text "->" <$> group (prettySe 10 ((n, False):bnd) sc)
+          bracket p startPrec . group $
+          group (prettySe (startPrec + 1) bnd ty <+> st) <> text "->" <$> group (prettySe startPrec ((n, False):bnd) sc)
       where
         st =
           case s of
@@ -1313,22 +1340,22 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
             _      -> empty
     prettySe p bnd (PPi (Imp l s _) n ty sc)
       | ppopt_impl ppo =
-          bracket p 2 $
-          lbrace <> bindingOf n True <+> colon <+> prettySe 10 bnd ty <> rbrace <+>
-          st <> text "->" </> prettySe 10 ((n, True):bnd) sc
-      | otherwise = prettySe 10 ((n, True):bnd) sc
+          bracket p startPrec $
+          lbrace <> bindingOf n True <+> colon <+> prettySe startPrec bnd ty <> rbrace <+>
+          st <> text "->" </> prettySe startPrec ((n, True):bnd) sc
+      | otherwise = prettySe startPrec ((n, True):bnd) sc
       where
         st =
           case s of
             Static -> text "[static]" <> space
             _      -> empty
     prettySe p bnd (PPi (Constraint _ _) n ty sc) =
-      bracket p 2 $
-      prettySe 10 bnd ty <+> text "=>" </> prettySe 10 ((n, True):bnd) sc
+      bracket p startPrec $
+      prettySe (startPrec + 1) bnd ty <+> text "=>" </> prettySe startPrec ((n, True):bnd) sc
     prettySe p bnd (PPi (TacImp _ _ s) n ty sc) =
-      bracket p 2 $
-      lbrace <> kwd "tacimp" <+> pretty n <+> colon <+> prettySe 10 bnd ty <>
-      rbrace <+> text "->" </> prettySe 10 ((n, True):bnd) sc
+      bracket p startPrec $
+      lbrace <> kwd "tacimp" <+> pretty n <+> colon <+> prettySe startPrec bnd ty <>
+      rbrace <+> text "->" </> prettySe startPrec ((n, True):bnd) sc
     prettySe p bnd (PApp _ (PRef _ f) args) -- normal names, no explicit args
       | UN nm <- basename f
       , not (ppopt_impl ppo) && null (getShowArgs args) =
@@ -1341,50 +1368,48 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
         (not (ppopt_impl ppo)) && (not $ isAlpha (thead nm)) =
           case getShowArgs args of
             [] -> opName True
-            [x] -> group (opName True <$> group (prettySe 0 bnd (getTm x)))
-            [l,r] -> let precedence = fromMaybe 20 (fmap prec f)
+            [x] -> group (opName True <$> group (prettySe startPrec bnd (getTm x)))
+            [l,r] -> let precedence = maybe (startPrec - 1) prec f
                      in bracket p precedence $ inFix (getTm l) (getTm r)
             (l@(PExp _ _ _ _) : r@(PExp _ _ _ _) : rest) -> 
-                   bracket p 1 $
+                   bracket p funcAppPrec $
                           enclose lparen rparen (inFix (getTm l) (getTm r)) <+>
                           align (group (vsep (map (prettyArgS bnd) rest)))
             as -> opName True <+> align (vsep (map (prettyArgS bnd) as))
           where opName isPrefix = prettyName isPrefix (ppopt_impl ppo) bnd op
                 f = getFixity (opStr op)
-                left l = case f of
-                           Nothing -> prettySe (-1) bnd l
-                           Just (Infixl p') -> prettySe p' bnd l
-                           Just f' -> prettySe (prec f'-1) bnd l
-                right r = case f of
-                            Nothing -> prettySe (-1) bnd r
-                            Just (Infixr p') -> prettySe p' bnd r
-                            Just f' -> prettySe (prec f'-1) bnd r
+                left = case f of
+                           Nothing -> funcAppPrec + 1
+                           Just (Infixl p') -> p'
+                           Just f' -> prec f' + 1
+                right = case f of
+                            Nothing -> funcAppPrec + 1
+                            Just (Infixr p') -> p'
+                            Just f' -> prec f' + 1
                 inFix l r = align . group $
-                              (left l <+> opName False) <$> group (right r)
+                  (prettySe left bnd l <+> opName False) <$> 
+                    group (prettySe right bnd r)
     prettySe p bnd (PApp _ hd@(PRef fc f) [tm]) -- symbols, like 'foo
       | PConstant (Idris.Core.TT.Str str) <- getTm tm,
         f == sUN "Symbol_" = annotate (AnnType ("'" ++ str) ("The symbol " ++ str)) $
-                               char '\'' <> prettySe 10 bnd (PRef fc (sUN str))
+                               char '\'' <> prettySe startPrec bnd (PRef fc (sUN str))
     prettySe p bnd (PApp _ f as) = -- Normal prefix applications
       let args = getShowArgs as
-          fp   = prettySe 1 bnd f
+          fp   = prettySe (startPrec + 1) bnd f
+          shownArgs = if ppopt_impl ppo then as else args
       in
-        bracket p 1 . group $
-          if ppopt_impl ppo
-            then if null as
-                   then fp
-                   else fp <+> align (vsep (map (prettyArgS bnd) as))
-            else if null args
-                   then fp
-                   else fp <+> align (vsep (map (prettyArgS bnd) args))
+        bracket p funcAppPrec . group $
+            if null shownArgs
+              then fp
+              else fp <+> align (vsep (map (prettyArgS bnd) shownArgs))
     prettySe p bnd (PCase _ scr cases) =
-      align $ kwd "case" <+> prettySe 10 bnd scr <+> kwd "of" <$>
+      align $ kwd "case" <+> prettySe startPrec bnd scr <+> kwd "of" <$>
       indent 2 (vsep (map ppcase cases))
       where
-        ppcase (l, r) = nest nestingSize $
-                          prettySe 10 ([(n, False) | n <- vars l] ++ bnd) l <+>
-                          text "=>" <+>
-                          prettySe 10 ([(n, False) | n <- vars l] ++ bnd) r
+        ppcase (l, r) = let prettyCase = prettySe startPrec 
+                                         ([(n, False) | n <- vars l] ++ bnd)
+                        in nest nestingSize $
+                             prettyCase l <+> text "=>" <+> prettyCase r
         -- Warning: this is a bit of a hack. At this stage, we don't have the
         -- global context, so we can't determine which names are constructors,
         -- which are types, and which are pattern variables on the LHS of the
@@ -1399,7 +1424,7 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
         noNS (NS _ _) = False
         noNS _ = True
 
-    prettySe p bnd (PHidden tm) = text "." <> prettySe 0 bnd tm
+    prettySe p bnd (PHidden tm) = text "." <> prettySe funcAppPrec bnd tm
     prettySe p bnd (PRefl _ _) = annName eqCon $ text "Refl"
     prettySe p bnd (PResolveTC _) = text "resolvetc"
     prettySe p bnd (PTrue _ IsType) = annName unitTy $ text "()"
@@ -1407,7 +1432,7 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
     prettySe p bnd (PTrue _ TypeOrTerm) = text "()"
     prettySe p bnd (PEq _ lt rt l r)
       | ppopt_impl ppo =
-          bracket p 1 $
+          bracket p eqPrec $
             enclose lparen rparen eq <+>
             align (group (vsep (map (prettyArgS bnd)
                                     [PImp 0 False [] (sUN "A") lt,
@@ -1415,47 +1440,42 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
                                      PExp 0 [] (sUN "x") l,
                                      PExp 0 [] (sUN "y") r])))
       | otherwise =
-          bracket p 2 . align . group $
-            prettySe 10 bnd l <+> eq <$> group (prettySe 10 bnd r)
+          bracket p eqPrec . align . group $
+            prettyTerm l <+> eq <$> group (prettyTerm r)
       where eq = annName eqTy (text "=")
+            eqPrec = startPrec
+            prettyTerm = prettySe (eqPrec + 1) bnd
     prettySe p bnd (PRewrite _ l r _) =
-      bracket p 2 $
-      text "rewrite" <+> prettySe 10 bnd l <+> text "in" <+> prettySe 10 bnd r
+      bracket p startPrec $
+      text "rewrite" <+> prettySe (startPrec + 1) bnd l <+> text "in" <+> prettySe startPrec bnd r
     prettySe p bnd (PTyped l r) =
-      lparen <> prettySe 10 bnd l <+> colon <+> prettySe 10 bnd r <> rparen
+      lparen <> prettySe startPrec bnd l <+> colon <+> prettySe startPrec bnd r <> rparen
     prettySe p bnd pair@(PPair _ pun _ _) -- flatten tuples to the right, like parser
       | Just elts <- pairElts pair = enclose (ann lparen) (ann rparen) .
                                      align . group . vsep . punctuate (ann comma) $
-                                     map (prettySe 10 bnd) elts
+                                     map (prettySe startPrec bnd) elts
         where ann = case pun of
                       TypeOrTerm -> id
                       IsType -> annName pairTy
                       IsTerm -> annName pairCon
-    prettySe p bnd (PDPair _ TypeOrTerm l t r) =
-      lparen <> prettySe 10 bnd l <+> text "**" <+> prettySe 10 bnd r <> rparen
-    prettySe p bnd (PDPair _ IsType (PRef _ n) t r) =
-      annName sigmaTy lparen <>
-      bindingOf n False <+>
-      annName sigmaTy (text "**") <+>
-      prettySe 10 ((n, False):bnd) r <>
-      annName sigmaTy rparen
-    prettySe p bnd (PDPair _ IsType l t r) =
-      annName sigmaTy lparen <>
-      prettySe 10 bnd l <+>
-      annName sigmaTy (text "**") <+>
-      prettySe 10 bnd r <>
-      annName sigmaTy rparen
-    prettySe p bnd (PDPair _ IsTerm l t r) =
-      annName existsCon lparen <>
-      prettySe 10 bnd l <+>
-      annName existsCon (text "**") <+>
-      prettySe 10 bnd r <>
-      annName existsCon rparen
+    prettySe p bnd (PDPair _ pun l t r) =
+      annotated lparen <>
+      left <+>
+      annotated (text "**") <+>
+      prettySe startPrec (addBinding bnd) r <>
+      annotated rparen
+      where annotated = case pun of
+              IsType -> annName sigmaTy
+              IsTerm -> annName existsCon
+              TypeOrTerm -> id
+            (left, addBinding) = case (l, pun) of
+              (PRef _ n, IsType) -> (bindingOf n False,        ((n, False) :))
+              _ ->                  (prettySe startPrec bnd l, id            )
     prettySe p bnd (PAlternative a as) =
       lparen <> text "|" <> prettyAs <> text "|" <> rparen
         where
           prettyAs =
-            foldr (\l -> \r -> l <+> text "," <+> r) empty $ map (prettySe 10 bnd) as
+            foldr (\l -> \r -> l <+> text "," <+> r) empty $ map (prettySe startPrec bnd) as
     prettySe p bnd PType = annotate (AnnType "Type" "The type of types") $ text "Type"
     prettySe p bnd (PUniverse u) = annotate (AnnType (show u) "The type of unique types") $ text (show u) 
     prettySe p bnd (PConstant c) = annotate (AnnConst c) (text (show c))
@@ -1483,10 +1503,10 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
     prettyArgS bnd (PConstraint _ _ _ tm) = prettyArgSc bnd tm
     prettyArgS bnd (PTacImplicit _ _ n _ tm) = prettyArgSti bnd (n, tm)
 
-    prettyArgSe bnd arg = prettySe 0 bnd arg
-    prettyArgSi bnd (n, val) = lbrace <> pretty n <+> text "=" <+> prettySe 10 bnd val <> rbrace
-    prettyArgSc bnd val = lbrace <> lbrace <> prettySe 10 bnd val <> rbrace <> rbrace
-    prettyArgSti bnd (n, val) = lbrace <> kwd "auto" <+> pretty n <+> text "=" <+> prettySe 10 bnd val <> rbrace
+    prettyArgSe bnd arg = prettySe (funcAppPrec + 1) bnd arg
+    prettyArgSi bnd (n, val) = lbrace <> pretty n <+> text "=" <+> prettySe startPrec bnd val <> rbrace
+    prettyArgSc bnd val = lbrace <> lbrace <> prettySe startPrec bnd val <> rbrace <> rbrace
+    prettyArgSti bnd (n, val) = lbrace <> kwd "auto" <+> pretty n <+> text "=" <+> prettySe startPrec bnd val <> rbrace
 
     annName :: Name -> Doc OutputAnnotation -> Doc OutputAnnotation
     annName n = annotate (AnnName n Nothing Nothing Nothing)
@@ -1543,7 +1563,7 @@ pprintPTerm ppo bnd docArgs infixes = prettySe 10 bnd
     snat _ _ = Nothing
 
     bracket outer inner doc
-      | inner > outer = lparen <> doc <> rparen
+      | outer > inner = lparen <> doc <> rparen
       | otherwise     = doc
 
     kwd = annotate AnnKeyword . text
@@ -1697,9 +1717,9 @@ showTmImpls = flip (displayS . renderCompact . prettyImp verbosePPOption) ""
 instance Sized PTerm where
   size (PQuote rawTerm) = size rawTerm
   size (PRef fc name) = size name
-  size (PLam name ty bdy) = 1 + size ty + size bdy
+  size (PLam fc name ty bdy) = 1 + size ty + size bdy
   size (PPi plicity name ty bdy) = 1 + size ty + size bdy
-  size (PLet name ty def bdy) = 1 + size ty + size def + size bdy
+  size (PLet fc name ty def bdy) = 1 + size ty + size def + size bdy
   size (PTyped trm ty) = 1 + size trm + size ty
   size (PApp fc name args) = 1 + size args
   size (PAppBind fc name args) = 1 + size args
@@ -1744,7 +1764,7 @@ allNamesIn tm = nub $ ni [] tm
     ni env (PApp _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
     ni env (PAppBind _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
     ni env (PCase _ c os)  = ni env c ++ concatMap (ni env) (map snd os)
-    ni env (PLam n ty sc)  = ni env ty ++ ni (n:env) sc
+    ni env (PLam fc n ty sc)  = ni env ty ++ ni (n:env) sc
     ni env (PPi p n ty sc) = niTacImp env p ++ ni env ty ++ ni (n:env) sc
     ni env (PHidden tm)    = ni env tm
     ni env (PEq _ _ _ l r)     = ni env l ++ ni env r
@@ -1769,8 +1789,8 @@ boundNamesIn tm = nub $ ni tm
     ni (PApp _ f as)   = ni f ++ concatMap (ni) (map getTm as)
     ni (PAppBind _ f as)   = ni f ++ concatMap (ni) (map getTm as)
     ni (PCase _ c os)  = ni c ++ concatMap (ni) (map snd os)
-    ni (PLam n ty sc)  = n : (ni ty ++ ni sc)
-    ni (PLet n ty val sc)  = n : (ni ty ++ ni val ++ ni sc)
+    ni (PLam fc n ty sc)  = n : (ni ty ++ ni sc)
+    ni (PLet fc n ty val sc)  = n : (ni ty ++ ni val ++ ni sc)
     ni (PPi p n ty sc) = niTacImp p ++ (n : (ni ty ++ ni sc))
     ni (PEq _ _ _ l r)     = ni l ++ ni r
     ni (PRewrite _ l r _) = ni l ++ ni r
@@ -1806,7 +1826,7 @@ implicitNamesIn uvars ist tm = nub $ ni [] tm
     -- names in 'os', not counting the names bound in the cases
                                 (nub (concatMap (ni env) (map snd os))
                                      \\ nub (concatMap (ni env) (map fst os)))
-    ni env (PLam n ty sc)  = ni env ty ++ ni (n:env) sc
+    ni env (PLam fc n ty sc)  = ni env ty ++ ni (n:env) sc
     ni env (PPi p n ty sc) = ni env ty ++ ni (n:env) sc
     ni env (PEq _ _ _ l r)     = ni env l ++ ni env r
     ni env (PRewrite _ l r _) = ni env l ++ ni env r
@@ -1836,7 +1856,7 @@ namesIn uvars ist tm = nub $ ni [] tm
     -- names in 'os', not counting the names bound in the cases
                                 (nub (concatMap (ni env) (map snd os))
                                      \\ nub (concatMap (ni env) (map fst os)))
-    ni env (PLam n ty sc)  = ni env ty ++ ni (n:env) sc
+    ni env (PLam fc n ty sc)  = ni env ty ++ ni (n:env) sc
     ni env (PPi p n ty sc) = niTacImp env p ++ ni env ty ++ ni (n:env) sc
     ni env (PEq _ _ _ l r)     = ni env l ++ ni env r
     ni env (PRewrite _ l r _) = ni env l ++ ni env r
@@ -1867,7 +1887,7 @@ usedNamesIn vars ist tm = nub $ ni [] tm
     ni env (PApp _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
     ni env (PAppBind _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
     ni env (PCase _ c os)  = ni env c ++ concatMap (ni env) (map snd os)
-    ni env (PLam n ty sc)  = ni env ty ++ ni (n:env) sc
+    ni env (PLam fc n ty sc)  = ni env ty ++ ni (n:env) sc
     ni env (PPi p n ty sc) = niTacImp env p ++ ni env ty ++ ni (n:env) sc
     ni env (PEq _ _ _ l r)     = ni env l ++ ni env r
     ni env (PRewrite _ l r _) = ni env l ++ ni env r
