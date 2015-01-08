@@ -64,6 +64,11 @@ applyCompose a b av f arg =
   do composeF <- composeRef
      return $ App (App (App (App (App composeF a) b) av) f) arg
 
+applyCompose' :: Type -> Type -> Term -> Term -> Idris Term
+applyCompose' a b f arg =
+  do now <- nowRef
+     applyCompose a b now f arg 
+
 pattern Compose compose a b av f arg = App (App (App (App (App compose a) b) av) f) arg
 
 unapplyCompose :: Term -> Maybe (Type, Type, Term, Term, Term)
@@ -454,28 +459,28 @@ guardExactNamesIn n t = do gn <- getGuardedName n
 -- |boxingFunction n gn as creates the postulates:
 -- |  boxn : gn -> n
 -- |  unboxn: n -> gn                           
-boxingFunctions :: Name -> Name -> [PTerm] -> Idris ()
-boxingFunctions n gn as = do let a = PApp emptyFC (PRef emptyFC n ) (map pexp as)
-                             let b = PApp emptyFC (PRef emptyFC gn) (map pexp as)
-                             let syn = withGuardedNS defaultSyntax
-                             let box = pi b a
-                             let boxN = inNSs guardedNS (boxName n)
-                             let unbox = pi a b
-                             let unboxN = inNSs guardedNS (unboxName n)
-                             elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] boxN box
-                             elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] unboxN unbox
-                             i <- getIState
-                             iLOG $ "(Un)boxing functions created for " ++ show n
-                             putIState (i { guarded_boxing = (n, (boxN, unboxN)) : (guarded_boxing i) })
+-- boxingFunctions :: Name -> Name -> [PTerm] -> Idris ()
+-- boxingFunctions n gn as = do let a = PApp emptyFC (PRef emptyFC n ) (map pexp as)
+--                              let b = PApp emptyFC (PRef emptyFC gn) (map pexp as)
+--                              let syn = withGuardedNS defaultSyntax
+--                              let box = pi b a
+--                              let boxN = inNSs guardedNS (boxName n)
+--                              let unbox = pi a b
+--                              let unboxN = inNSs guardedNS (unboxName n)
+--                              elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] boxN box
+--                              elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] unboxN unbox
+--                              i <- getIState
+--                              iLOG $ "(Un)boxing functions created for " ++ show n
+--                              putIState (i { guarded_boxing = (n, (boxN, unboxN)) : (guarded_boxing i) })
                              
-  where
-    pi :: PTerm -> PTerm -> PTerm
-    pi = PPi (Exp [] Dynamic False) (sUN "__pi_arg")
+--   where
+--     pi :: PTerm -> PTerm -> PTerm
+--     pi = PPi (Exp [] Dynamic False) (sUN "__pi_arg")
 
-    boxName :: Name -> Name
-    boxName = prefixName "box"
-    unboxName :: Name -> Name
-    unboxName = prefixName "unbox"
+--     boxName :: Name -> Name
+--     boxName = prefixName "box"
+--     unboxName :: Name -> Name
+--     unboxName = prefixName "unbox"
 
 -- |Checks if a type constructor is simply typed.
 -- |Only binders and types are allowed.

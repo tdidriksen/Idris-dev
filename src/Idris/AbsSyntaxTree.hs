@@ -218,9 +218,9 @@ data IState = IState {
     idris_callswho :: Maybe (M.Map Name [Name]),
     idris_repl_defs :: [Name], -- ^ List of names that were defined in the repl, and can be re-/un-defined
     elab_stack :: [Name], -- ^ Stack of names currently being elaborated
-    idris_symbols :: M.Map Name Name -- ^ Symbol table (preserves sharing of names)
+    idris_symbols :: M.Map Name Name, -- ^ Symbol table (preserves sharing of names)
     lhs_projections :: Ctxt (PDecl, Name, Name, Name),
-    guarded_renames :: [(Name, Name)], -- ^ Names of declarations that have a guarded counterpart
+    guarded_renames :: [(Name, Name)] -- ^ Names of declarations that have a guarded counterpart
    }
 
 -- Required for parsers library, and therefore trifecta

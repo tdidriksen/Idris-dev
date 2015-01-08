@@ -453,15 +453,15 @@ subst subs t = mapPT (subst' subs) t
     subst' subs t@(PRef _ n)
       | Just t' <- lookup n subs = t'
       | otherwise = t
-    subst' subs t@(PLam x ty body)
+    subst' subs t@(PLam fc x ty body)
       | isJust $ lookup x subs = t
-      | otherwise = PLam x (subst' subs ty) (subst' subs body)
+      | otherwise = PLam fc x (subst' subs ty) (subst' subs body)
     subst' subs t@(PPi pl n a b)
       | isJust $ lookup n subs = t
       | otherwise = PPi pl n (subst' subs a) (subst' subs b)
-    subst' subs t@(PLet x ty e b)
+    subst' subs t@(PLet fc x ty e b)
       | isJust $ lookup x subs = t
-      | otherwise = PLet x (subst' subs ty) (subst' subs e) (subst' subs b)
+      | otherwise = PLet fc x (subst' subs ty) (subst' subs e) (subst' subs b)
     subst' _ t = t 
 
 

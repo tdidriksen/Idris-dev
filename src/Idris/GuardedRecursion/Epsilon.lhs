@@ -85,28 +85,50 @@ epsilonCheck clock recName env tm@(Bind n binder sc) a
 epsilonCheck Open recName env t@(App f x) a | Just a' <- unapplyLater a, Just _ <- unapplyLater a' =
   do t' <- epsilonCheck Open recName env t a'
      applyNext t'
-epsilonCheck Open recName env t@(App f x) b | Just b' <- unapplyLater b, Nothing <- unapplyLater b' =
-  do epsLog "Tensor infer" t b
+epsilonCheck Open recName env t@(App f x) b' | Just b <- unapplyLater b', Nothing <- unapplyLater b =
+  do epsLog "Tensor infer" t b'
      fTypeM <- typeOfMaybe f env
-     fType <- case fTypeM of
-               Just ty -> return ty
-               Nothing -> epsFail f "Function does not have a type"
-     delayedFType <- delayBy b fType
-     distDelayedFType <- distributeLater delayedFType
-     -- iLOG $ "fType : " ++ show fType
-     -- iLOG $ "delayedFType : " ++ show delayedFType
-     -- iLOG $ "distDelayedFType : " ++ show distDelayedFType
-     let xTy = head $ map snd (getArgTys distDelayedFType)
-     -- iLOG $ "f : " ++ show f
-     -- iLOG $ "x : " ++ show x
-     -- iLOG $ "xTy : " ++ show xTy
-     -- iLOG $ "b : " ++ show b
-     fEps <- epsilonCheck Open recName env f delayedFType
-     xEps <- epsilonCheck Open recName env x xTy
-     -- iLOG $ "fEps : " ++ show fEps
-     -- iLOG $ "xEps : " ++ show xEps
-     now <- nowRef
-     applyCompose delayedFType xTy now fEps xEps
+     atob <- case fTypeM of
+              Just ty -> return ty
+              Nothing -> epsFail f "Function does not have a type"
+     let argTypes = map snd (getArgTys atob)
+     let a = head argTypes
+     -- (a, b) <- case debind atob of
+     --            Just (ax,bx) -> return (ax,bx)
+     --            Nothing      -> epsFail f "Function does not have function type"
+     iLOG $ "atob : " ++ show atob
+     iLOG $ "a : " ++ show a
+     iLOG $ "b : " ++ show b
+     iLOG $ "b' : " ++ show b'
+     iLOG $ "f : " ++ show f
+     iLOG $ "x : " ++ show x
+     epsF <- epsilonCheck Open recName env f =<< applyLater' atob
+     epsX <- epsilonCheck Open recName env x =<< applyLater' a
+     iLOG $ "epsF : " ++ show epsF
+     iLOG $ "epsX : " ++ show epsX
+     applyCompose' a b epsF epsX
+  -- where
+  --   debind :: Type -> Maybe (Type, Type)
+  --   debind (Bind n (Pi ty kind) sc) = Just (ty, sc)
+  --   debind _ = Nothing
+     
+
+  --    delayedFType <- delayBy b fType
+  --    distDelayedFType <- distributeLater delayedFType
+  --    -- iLOG $ "fType : " ++ show fType
+  --    -- iLOG $ "delayedFType : " ++ show delayedFType
+  --    -- iLOG $ "distDelayedFType : " ++ show distDelayedFType
+  --    let xTy = head $ map snd (getArgTys distDelayedFType)
+  --    -- iLOG $ "f : " ++ show f
+  --    -- iLOG $ "x : " ++ show x
+  --    -- iLOG $ "xTy : " ++ show xTy
+  --    -- iLOG $ "b : " ++ show b
+  --    fEps <- epsilonCheck Open recName env f delayedFType
+  --    xEps <- epsilonCheck Open recName env x xTy
+  --    -- iLOG $ "fEps : " ++ show fEps
+  --    -- iLOG $ "xEps : " ++ show xEps
+  --    now <- nowRef
+  --    applyCompose delayedFType xTy now fEps xEps
 
 -- Tensor error cases
 epsilonCheck Closed recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
