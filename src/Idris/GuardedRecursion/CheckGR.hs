@@ -44,7 +44,8 @@ checkFunction name ty clauses =
      forM_ gClauses $ \(lhs, rhs) ->
        do iLOG $ show ("GR_LHS_EPS: " ++ show lhs)
           iLOG $ show ("GR_RHS_EPS: " ++ show rhs)
-     --checkRhsSeq <- forM gClauses $ \(_,rhs) -> checkGR [] (gName, gTy) rhs gTy
+     checkRhsSeq <- forM gClauses $ \(lhs,rhs) -> checkGR (buildEnv lhs) (gName, gTy) rhs gTy
+     iLOG $ show checkRhsSeq
      return $ Partial NotProductive
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
 

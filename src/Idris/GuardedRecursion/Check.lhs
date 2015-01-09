@@ -1,6 +1,10 @@
-\documentclass{article}
+\documentclass{minimal}
 %include polycode.fmt
 \long\def\ignore#1{}
+
+\usepackage{listings}
+\lstnewenvironment{code}{\lstset{language=Haskell,basicstyle=\small}}{}
+
 \begin{document}
 
 \ignore{
@@ -27,71 +31,115 @@ checkGR = check Closed
 }
 \begin{code}
 check :: Clock -> Env -> (Name, Type) -> Term -> Type -> Idris Totality
-check Open g (n, ty) (recursiveRef n -> Extracted t) a =
-  do a' <- laterThan g ty a
-     check Open g (n, ty) t a
-check _ _ (n, ty) (recursiveRef n -> _) _ = return $ Partial NotProductive
+
+check Open g (n, (forallK -> Extracted ty)) (causalRecursiveRef n -> Extracted t) a =
+  (ty `laterThan` a) g
+     
+check Open g (n, ty) (acausalRecursiveRef n -> Extracted t) a =
+  (ty `laterThan` a) g
+     
 \end{code}
-\[\frac { \sqcup ;\Gamma \quad \vdash \quad A\quad :\quad Type\quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \quad \vdash \quad \forall \kappa .A\quad :\quad Type }\]
-\begin{code}
-check Closed g n (forallK -> Extracted a) t@(TType _)
-  = check Open g n a t
-\end{code}
+\hrulefill 
 \[
-\frac { \sqcup ;\Gamma \quad \vdash \quad A\quad :\quad Type }{ \sqcup ;\Gamma \quad \vdash \quad \rhd A\quad :\quad Type }
+\frac { \sqcup ;\Gamma \, \vdash \, A\, :\, Type\quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \, \vdash \, \forall \kappa .A\, : \, Type }
 \]
 \begin{code}
-check Open g n (later -> Extracted a) t@(TType _)
-  = check Open g n a t
+
+check Closed g n (forallK -> Extracted a) t@(TType _) =
+  requires
+    (nofc n g)
+    (check Open g n a t)
+
+     
 \end{code}
+\hrulefill 
 \[
-\frac { \sqcup ;\Gamma \quad \vdash \quad t\quad :\quad A }{ \sqcup ;\Gamma \quad \vdash \quad next\quad (t)\quad :\quad \rhd A }
+\frac { \sqcup ;\Gamma \, \vdash \, A\, :\, Type }{ \sqcup ;\Gamma \, \vdash \, \rhd A\, : \, Type }
 \]
 \begin{code}
-check Open g n (next -> Extracted t) (later -> Extracted a) 
-  = check Open g n t a
+
+check Open g n (later -> Extracted a) t@(TType _) =
+  check Open g n a t
+  
 \end{code}
+\hrulefill 
 \[
-\frac { \sqcup ;\Gamma \quad \vdash \quad t\quad :\quad \rhd (A\quad \rightarrow \quad B)\quad \quad \sqcup ;\Gamma \quad \vdash \quad u\quad :\quad \rhd A }{ \sqcup ;\Gamma \quad \vdash \quad t\quad \circledast \quad u\quad :\quad \rhd B }
+\frac { \sqcup ;\Gamma \, \vdash \, t\, : \, A }{ \sqcup ;\Gamma \, \vdash \, next\quad (t)\, : \, \rhd A }
 \]
 \begin{code}
-check Open g n (tensor -> Extracted (t, u)) (later -> Extracted b) =
-  do ty <- typeOf t g
-     atob <- unlater ty
-     a <- debind atob
-     check Open g n u =<< laterK a
-     check Open g n t =<< laterK atob
+
+check Open g n (next -> Extracted t) (later -> Extracted a) =
+  check Open g n t a
+  
 \end{code}
+\hrulefill 
 \[
-\frac { \sqcup ;\Gamma \quad \vdash \quad A\quad :\quad Type\quad \quad \sqcap ;\Gamma ,\Gamma '\quad \vdash \quad t\quad :\quad \forall \kappa .A\quad \quad nofc(\Gamma ) }{ \sqcup ;\Gamma ,\Gamma '\quad \vdash \quad apply\quad (t)\quad :\quad A }
+\frac { \sqcup ;\Gamma \, \vdash \, t\, : \, \rhd (A\, \rightarrow \, B)\quad \quad \sqcup ;\Gamma \, \vdash \, u\, : \, \rhd A }{ \sqcup ;\Gamma \, \vdash \, t\quad \circledast \quad u\, : \, \rhd B }
 \]
 \begin{code}
-check Open g n (apply -> Extracted t) a
-  = do aTy <- typeOf a g
-       case aTy of
-         (TType _) -> do forallA <- forall a
-                         check Closed g n t forallA
-         _ -> return $ Partial NotProductive
+
+check Open g n (tensor -> Extracted (t, u, a, b')) (later -> Extracted b) =
+  do iLOG $ "Tensor a " ++ show a
+       iLOG $ "Tensor b' " ++ show b'
+     iLOG $ "Tensor b " ++ show b
+     aToB <- (a `to` b') g
+      -- eq b and b'
+     requires
+       (check Open g n u =<< laterK a)
+       (check Open g n t =<< laterK aToB)
+     
 \end{code}
+\hrulefill 
 \[
-\frac { \sqcup ;\Gamma \quad \vdash \quad t\quad :\quad A\quad \quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \quad \vdash \quad \Lambda \kappa .t\quad :\quad \forall \kappa .A } 
+\frac { \sqcup ;\Gamma \, \vdash \, A\, : \, Type\quad \quad \sqcap ;\Gamma ,\Gamma '\, \vdash \, t\, : \, \forall \kappa .A\quad \quad nofc(\Gamma ) }{ \sqcup ;\Gamma ,\Gamma '\, \vdash \, apply\quad (t)\, : \, A }
 \]
 \begin{code}
-check Closed g n (lambdaKappa -> Extracted t) (forallK -> Extracted a) 
-  = check Open g n t a
--- Not GR
+
+check Open g n (apply -> Extracted t) a =
+  do aTy <- typeOf a g
+     case aTy of
+       (TType _) -> do forallA <- forall a
+                       requires
+                         (nofc n g)
+                         (check Closed g n t forallA)
+       _ -> do iLOG $ "Expected " ++ show aTy ++ " to be of type type"
+               return $ Partial NotProductive
+\end{code}
+\hrulefill 
+\[
+\frac { \sqcup ;\Gamma \, \vdash \, t\, : \, A\quad \quad \quad nofc(\Gamma ) }{ \sqcap ;\Gamma \, \vdash \, \Lambda \kappa .t\, : \, \forall \kappa .A } 
+\]
+\begin{code}
+
+check Closed g n (lambdaKappa -> Extracted t) (forallK -> Extracted a) =
+  requires
+    (nofc n g)
+    (check Open g n t a)
+\end{code}
+\hrulefill
+Not Guarded Recursion:
+\begin{code}
 check d g n (App t t') b =
   do ty <- typeOf t g
-     a <- debind ty
-     check d g n t ty
-     check d g n t' a
+     (a,_) <- debind ty
+     requires
+       (check d g n t ty)
+       (check d g n t' a)
 check d g n (Bind n' b t) a =
   check d ((n', b) : g) n t a
-check d g n (P _ _ ty) a =
-  ifM (cEq g ty a)
-      (return $ Total [])
-      (return $ Partial NotProductive)
-check _ _ _ t a = do iLOG $ "Guarded recursion catch all hit with \n" ++ show t ++ "\n of type \n" ++ show a
+check d g (n, _) (P _ n' ty) a
+  | n /= n' =
+    do c <- (cEq g ty a)
+       if c then
+         (do c' <- clockedType ty
+             if (not c || isOpen d)
+                   then (return $ Total [])
+                   else (do iLOG $ "Not productive. \n c: " ++ show c' ++ " \n ty: " ++ show ty ++ " \n d: " ++ show (isOpen d)
+                            return $ Partial NotProductive))
+         else
+         (do iLOG $ "Not productive because \n" ++ show ty ++ "\n and\n " ++ show a ++ "\n were not equal. cEq was " ++ show c
+             return $ Partial NotProductive)
+check _ _ _ t a = do iLOG $ "Catch all..." ++ show t ++ " and " ++ show a
                      return $ Partial NotProductive
 \end{code}
 \ignore{
@@ -111,11 +159,8 @@ unlater _ = translateError Undefined
 laterK :: Type -> Idris Type
 laterK = applyLater'
 
-tensor :: Term -> Extract (Term, Term)
-tensor (unApply -> (f, as))
-  | isCompose f = do let t = head (tail as)
-                     let u = head as
-                     return (t, u)
+tensor :: Term -> Extract (Term, Term, Type, Type)
+tensor (unapplyCompose -> Just(a, b, _, t, u)) = Extracted(t, u, a, b)
 tensor _ = Nope
 
 apply :: Term -> Extract Term
@@ -135,7 +180,7 @@ forall = applyForall
 
 fix :: Term -> Extract (Term, Term)
 fix = undefined
-
+{-
 expectsClock :: TT Name -> Bool
 expectsClock t
   = isLater'  t ||
@@ -145,7 +190,7 @@ expectsClock t
     isCompose t ||
     isApply   t ||
     isLambdaKappa t
-
+-}
 guardedType :: Type -> Idris Bool
 guardedType (P Ref n (TType _)) =
   do ist <- get
@@ -153,13 +198,11 @@ guardedType (P Ref n (TType _)) =
 guardedType _ = return False
 
 -- 
-checkFix :: Env -> Type -> Term -> Term -> Idris ()
-checkFix = undefined
-
-debind :: Type -> Idris Type
-debind (Bind n b t) = return $ binderTy b
+debind :: Type -> Idris (Type, Type)
+debind (Bind n b t) = return $ (binderTy b, t)
 debind _ = translateError Undefined
 
+{-
 debind' :: Type -> Type -> Env -> Idris Type
 debind' (Bind n b t) ty env =
   ifM (cEq env t ty)
@@ -167,7 +210,7 @@ debind' (Bind n b t) ty env =
       (do rest <- debind' t ty env
           return $ Bind n b rest)
 debind' _ _ _ = translateError Undefined  
-
+-}
 cEq :: Env -> Type -> Type -> Idris Bool
 cEq env ty ty' =
   do ctxt <- getContext
@@ -176,7 +219,8 @@ cEq env ty ty' =
      case LazyState.evalStateT (convertsC ctxt env ty ty') (0, ucs) of
       tc -> case tc of
               OK () -> return True
-              _ -> return False
+              Error e -> do iLOG $ "cEq err: " ++ show e
+                            return False
 
 tyEq :: Env -> Type -> Type -> Idris ()
 tyEq env ty ty' =
@@ -188,18 +232,63 @@ tyEq env ty ty' =
               OK _ -> return ()
               Error e -> translateError $ Misc (show e)
   
-ifM :: Monad m => m Bool -> m a -> m a -> m a
-ifM = liftM3 (\c l r -> if c then l else r)
-
-recursiveRef :: Name -> Term -> Extract Term
-recursiveRef n (unapplyNext -> Just t@(P Ref n' _))
+causalRecursiveRef :: Name -> Term -> Extract Term
+causalRecursiveRef n (unapplyNext >=> unapplyApply -> Just t@(P Ref n' _))
   | n == n' = return t
-recursiveRef _ _ = Nope
+causalRecursiveRef _ _ = Nope
 
-laterThan :: Env -> Type -> Type -> Idris Type
-laterThan env ty (unapplyLater -> Just ty') = do tyEq env ty ty'
-                                                 return ty'
+acausalRecursiveRef :: Name -> Term -> Extract Term
+acausalRecursiveRef n (unapplyNext -> Just t@(P Ref n' _))
+  | n == n' = return t
+acausalRecursiveRef _ _ = Nope              
 
+
+laterThan :: Type -> Type -> Env -> Idris Totality
+laterThan ty (unapplyLater -> Just ty') env = do c <- cEq env ty ty'
+                                                 if c
+                                                   then (return $ Total [])
+                                                   else (do iLOG $ "laterThan failed because \n" ++ show ty ++ "\n and\n " ++ show ty' ++ "\n were not equal."
+                                                            return $ Partial NotProductive)
+
+requires :: Idris Totality -> Idris Totality -> Idris Totality
+requires t1 t2 = do t  <- t1
+                    t' <- t2
+                    return $ mergeTotal t t'
+
+mergeTotal :: Totality -> Totality -> Totality
+mergeTotal (Total _) t = t
+mergeTotal t (Total _) = t
+
+requires3 :: Idris Totality -> Idris Totality -> Idris Totality -> Idris Totality
+requires3 t1 t2 t3 = requires t1 (requires t2 t3)
+
+nofc :: (Name, Type) -> Env -> Idris Totality
+nofc n env =
+  do tos <- mapM (c n) env
+     return $ foldr mergeTotal (Total []) tos
+  where
+    c :: (Name, Type) -> (Name, Binder (TT Name)) -> Idris Totality
+    c r (n, b) = check Closed [] r (P Bound n (binderTy b)) (binderTy b)
+
+clockedType :: Type -> Idris Bool
+clockedType (Bind _ _ sc) = clockedType sc
+clockedType (unApply -> (P _ n _, _)) =
+  do i <- get
+     return $ n `elem` (map snd (guarded_renames i))
+clockedType _ = return False     
+
+isOpen :: Clock -> Bool
+isOpen Open = True
+isOpen _ = False
+
+to :: Type -> Type -> Env -> Idris Type
+to a b env = do aK <- typeOf a env
+                bK <- typeOf b env
+                c <- cEq env aK bK
+                iLOG $ show c
+                iLOG $ show aK
+                iLOG $ show bK
+                return $ Bind (sUN "__pi_arg") (Pi a aK) b
 \end{code}
 }
 \end{document}

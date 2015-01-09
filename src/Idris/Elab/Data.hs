@@ -126,7 +126,7 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
          --  We can build a guarded recursive definition
          when (codata && guardableTC cty')
                -- Create a syntaxinfo with a guarded namespace
-           (do let gsyn = withGuardedNS syn
+           (do let gsyn = syn
                -- Reuse the data options, but without codata.
                -- We do not want the guarded recursive definition
                -- to be elaborated as Codata.

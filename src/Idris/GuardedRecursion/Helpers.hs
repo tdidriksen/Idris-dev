@@ -415,7 +415,7 @@ applyPTLaterFC fc t = PApp fc (laterPTRefFC fc) [pexp t]
 -- |where gn is the guarded name of n
 elabGuardedPostulate :: (Name, PTerm) -> Idris ()
 elabGuardedPostulate (n, ty) = do gn <- getGuardedName n
-                                  let syn = withGuardedNS defaultSyntax
+                                  let syn = defaultSyntax
                                   logLvl 3 $ "Created postulate " ++ show gn ++ " with type " ++ show ty ++ " from " ++ show n ++ " for checking for guarded recursion."
                                   elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] gn ty
 
