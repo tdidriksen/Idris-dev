@@ -228,7 +228,7 @@ idrisStyle = IdentifierStyle _styleName _styleStart _styleLetter _styleReserved 
         _styleLetter = satisfy isAlphaNum <|> oneOf "_'."
         _styleReserved = HS.fromList ["let", "in", "data", "codata", "record", "Type", "corecord",
                                       "do", "dsl", "import", "impossible", "constructor",
-                                      "case", "of", "total", "partial", "mutual",
+                                      "case", "of", "total", "partial", "causal", "mutual",
                                       "infix", "infixl", "infixr", "rewrite",
                                       "where", "with", "syntax", "proof", "postulate",
                                       "using", "namespace", "class", "instance", "parameters",

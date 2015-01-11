@@ -514,7 +514,7 @@ tacimpl t = TacImp [] Dynamic t
 
 data FnOpt = Inlinable -- always evaluate when simplifying
            | TotalFn | PartialFn | CoveringFn
-           | Coinductive | AssertTotal
+           | Coinductive | AssertTotal | CausalFn
            | Dictionary -- type class dictionary, eval only when
                         -- a function argument, and further evaluation resutls
            | Implicit -- implicit coercion

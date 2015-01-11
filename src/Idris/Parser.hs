@@ -422,6 +422,7 @@ fnOpts opts
         = do reserved "total"; fnOpts (TotalFn : opts)
       <|> do reserved "partial"; fnOpts (PartialFn : (opts \\ [TotalFn]))
       <|> do reserved "covering"; fnOpts (CoveringFn : (opts \\ [TotalFn]))
+      <|> do reserved "causal"; fnOpts (CausalFn : opts)
       <|> do try (lchar '%' *> reserved "export"); c <- stringLiteral;
                   fnOpts (CExport c : opts)
       <|> do try (lchar '%' *> reserved "no_implicit");
