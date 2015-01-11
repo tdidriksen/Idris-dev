@@ -36,10 +36,13 @@ checkFunction name ty clauses =
   do let expTy = explicitNames ty
      let expClauses = flip map clauses $ \(pvs, lhs, rhs) -> (pvs, explicitNames lhs, explicitNames rhs)
      gName <- getGuardedNameSoft name
-     gTy <- guardedType expTy
+     modality <- modalityOf name
+     iLOG $ show gName ++ " is " ++ show modality
+     gTy <- guardedType expTy modality
+     iLOG $ "gTy : " ++ show gTy
      ist <- get
      ctxt <- getContext
-     gClauses <- forM expClauses $ \clause -> guardedRecursiveClause gName gTy clause
+     gClauses <- forM expClauses $ \clause -> guardedRecursiveClause gName gTy clause modality
      iLOG $ show "Guarded type: " ++ showTT gTy
      forM_ gClauses $ \(lhs, rhs) ->
        do iLOG $ show ("GR_LHS_EPS: " ++ show lhs)
@@ -49,35 +52,35 @@ checkFunction name ty clauses =
      return $ Partial NotProductive
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
 
-guardedType :: Type -> Idris Type
-guardedType ty =
+guardedType :: Type -> Modality -> Idris Type
+guardedType ty modality =
   do gTy <- guardedTT' ty
-     universallyQuantify gTy
+     universallyQuantify modality gTy
 
-universallyQuantify :: Type -> Idris Type
-universallyQuantify (Bind n binder@(Pi (unapplyForall -> Just ty) kind) sc) =
-  do quantifiedSc <- universallyQuantify sc
+universallyQuantify :: Modality -> Type -> Idris Type
+universallyQuantify NonCausal (Bind n binder@(Pi (unapplyForall -> Just ty) kind) sc) =
+  do quantifiedSc <- universallyQuantify NonCausal sc
      return $ Bind n binder quantifiedSc
-universallyQuantify (Bind n (Pi ty@(unapplyForall -> Nothing) kind) sc) =
-  do quantifiedSc <- universallyQuantify sc
+universallyQuantify NonCausal (Bind n (Pi ty@(unapplyForall -> Nothing) kind) sc) =
+  do quantifiedSc <- universallyQuantify NonCausal sc
      forallTy <- applyForall ty
      return $ Bind n (Pi forallTy kind) quantifiedSc
-universallyQuantify ty = applyForall ty
+universallyQuantify _ ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term
 guardedLHS = guardedTT'
 
-guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Idris (Term, Term)
-guardedRecursiveClause _ _ (_, lhs, Impossible) = return (lhs, Impossible)
-guardedRecursiveClause name ty (_, lhs, rhs) =
-  do rhsTy <- typeOf rhs []
-     gRhsTy <- guardedType (explicitNames rhsTy)
+guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Modality -> Idris (Term, Term)
+guardedRecursiveClause _ _ (_, lhs, Impossible) _ = return (lhs, Impossible)
+guardedRecursiveClause name ty (_, lhs, rhs) modality =
+  do ctxt <- getContext
+     rhsTy <- typeOf rhs (buildEnv lhs)
+     gRhsTy <- guardedType rhsTy modality
      ist <- get
-     ctxt <- getContext
-     put $ ist { tt_ctxt = addTyDecl name Ref gRhsTy ctxt }
+     put $ ist { tt_ctxt = addTyDecl name Ref ty ctxt }
      glhs <- guardedLHS lhs
      iLOG $ "Guarded LHS: " ++ show glhs
-     grhs <- epsilon name (explicitNames rhs) gRhsTy (buildEnv glhs)
+     grhs <- epsilon modality name rhs gRhsTy (buildEnv glhs)
      return (glhs, grhs)
      
 

@@ -79,9 +79,9 @@ check Open g n (next -> Extracted t) (later -> Extracted a) =
 \begin{code}
 
 check Open g n (tensor -> Extracted (t, u, a, b')) (later -> Extracted b) =
-  do iLOG $ "Tensor a " ++ show a
-       iLOG $ "Tensor b' " ++ show b'
-     iLOG $ "Tensor b " ++ show b
+  do --iLOG $ "Tensor a " ++ show a
+     --  iLOG $ "Tensor b' " ++ show b'
+     -- iLOG $ "Tensor b " ++ show b
      aToB <- (a `to` b') g
       -- eq b and b'
      requires

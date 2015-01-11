@@ -121,12 +121,12 @@ par (Delay x) = x
 namespace GuardedRecursion
   ||| A computation that is available later.
   data Later' : Type -> Type where
-    Next  : a -> Later' a
+    Next : {a : Type} -> a -> Later' a
 
   data Forall : Type -> Type where
-    LambdaKappa : a -> Forall a
+    LambdaKappa : {a : Type} -> a -> Forall a
  
-  apply : Forall a -> a
+  apply : {a : Type} -> Forall a -> a
   apply (LambdaKappa a) = a 
 
   data Availability = Now | Tomorrow Availability
@@ -142,7 +142,7 @@ namespace GuardedRecursion
             Later (Tomorrow n) b
   compose {n = Now} t u = compose' t u
     where
-     compose' : Later' (a -> b) -> Later' a -> Later' b
+     compose' : {a, b : Type} -> Later' (a -> b) -> Later' a -> Later' b
      compose' (Next t) (Next u) = Next (t u)
   compose {n = Tomorrow n'} (Next t) (Next u) = Next (compose {n = n'} t u)
   

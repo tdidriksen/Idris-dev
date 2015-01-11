@@ -51,13 +51,23 @@ instance Monad Extract where
   return = Extracted
   fail _ = Nope
 
-applyApply :: Term -> Idris Term
-applyApply tm =
+data Modality = Causal | NonCausal deriving Show
+
+modalityOf :: Name -> Idris Modality
+modalityOf n = do i <- get
+                  case lookupCtxt n (idris_flags i) of
+                   [fnOpts] -> if CausalFn `elem` fnOpts then return Causal else return NonCausal
+                   _ -> return NonCausal
+
+applyApply :: Term -> Type -> Idris Term
+applyApply ty tm =
   do apply <- applyRef
-     return $ App apply tm
+     return $ App (App apply ty) tm
 
 unapplyApply :: Term -> Maybe Term
-unapplyApply tm = unapplyRef applyName tm
+unapplyApply (App (App apply ty) tm)
+  | isApply apply = Just tm
+unapplyApply _ = Nothing
 
 applyCompose :: Type -> Type -> Term -> Term -> Term -> Idris Term
 applyCompose a b av f arg =
@@ -153,21 +163,25 @@ collectLater ty = return ty
      
      
 
-applyLambdaKappa :: Term -> Idris Term
-applyLambdaKappa tm =
+applyLambdaKappa :: Type -> Term -> Idris Term
+applyLambdaKappa ty tm =
   do lambdaKappa <- lambdaKappaRef
-     return $ App lambdaKappa tm
+     return $ App (App lambdaKappa ty) tm
 
 unapplyLambdaKappa :: Term -> Maybe Term
-unapplyLambdaKappa tm = unapplyDataConstructor lambdaKappaName tm
+unapplyLambdaKappa (App (App lambdaKappa ty) tm)
+  | isLambdaKappa lambdaKappa = Just tm
+unapplyLambdaKappa _ = Nothing
 
-applyNext :: Term -> Idris Term
-applyNext t =
+applyNext :: Type -> Term -> Idris Term
+applyNext ty tm =
   do next <- nextRef
-     return $ App next t
+     return $ App (App next ty) tm
 
 unapplyNext :: Term -> Maybe Term
-unapplyNext tm = unapplyDataConstructor nextName tm
+unapplyNext (App (App next _) tm)
+  | isNext next = Just tm
+unapplyNext _ = Nothing
 
 isApply :: Term -> Bool
 isApply (P Ref (NS (UN apply) [gr]) _)
@@ -175,7 +189,7 @@ isApply (P Ref (NS (UN apply) [gr]) _)
 isApply _ = False                                                          
 
 isLater' :: Type -> Bool
-isLater' (P (DCon _ _ _) (n@(NS (UN later) [gr])) ty)
+isLater' (P (TCon _ _) (n@(NS (UN later) [gr])) ty)
   | later == txt later'Str && gr == txt guardedRecursion = True
 isLater' _ = False
 
@@ -190,7 +204,7 @@ isForall (P (TCon _ _) (NS (UN forall) [gr]) _)
 isForall _ = False                                                            
 
 isNext :: Term -> Bool
-isNext (P Ref (NS (UN next) [gr]) _)
+isNext (P (DCon _ _ _) (NS (UN next) [gr]) _)
   | next == txt nextStr && gr == txt guardedRecursion = True
 isNext _ = False                                                         
 
@@ -208,7 +222,7 @@ isLazyCodata (P _ (UN lazyCodata) _) | lazyCodata == txt lazyCodataStr = True
 isLazyCodata _ = False
 
 isLambdaKappa :: Term -> Bool
-isLambdaKappa (P Ref (NS (UN lambdaKappa) [gr]) _)
+isLambdaKappa (P (DCon _ _ _) (NS (UN lambdaKappa) [gr]) _)
   | lambdaKappa == txt lambdaKappaStr && gr == txt guardedRecursion = True
 isLambdaKappa _ = False                                                                      
 
@@ -313,7 +327,7 @@ unapplyType tyName (TConApp _ _ n _ x)
   | n == tyName = Just x
 unapplyType _ _ = Nothing
 
-unapplyForall :: Term -> Maybe Term
+unapplyForall :: Type -> Maybe Type
 unapplyForall ty = unapplyType forallName ty
 
 unapplyDataConstructor :: Name -> Term -> Maybe Term
@@ -600,9 +614,16 @@ compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Just _) = GT
 compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Nothing) = EQ
 compareAvailability (unapplyLater -> Just a) (unapplyLater -> Just b) = compareAvailability a b
 
-fixRecursiveRef :: Name -> Term -> Idris Term
-fixRecursiveRef recName t = mapMTT fixRecRef t
+fixRecursiveRef :: Modality -> Name -> Term -> Idris Term
+fixRecursiveRef modality recName t = flip mapMTT t $ fixRecRef modality
   where
-    fixRecRef :: Term -> Idris Term
-    fixRecRef p@(P Ref n _) | n == recName = applyNext =<< applyApply p
-    fixRecRef tm = return tm
+    fixRecRef :: Modality -> Term -> Idris Term
+    fixRecRef Causal p@(P Ref n recTy) | n == recName =
+      do appliedRecTy <- case unapplyForall recTy of
+                          Just ty -> return ty
+                          Nothing -> ifail "Recursive reference of causal function does not have Forall type"
+         applyRec <- applyApply appliedRecTy p
+         applyNext appliedRecTy applyRec
+    fixRecRef NonCausal p@(P Ref n recTy) | n == recName =
+      applyNext recTy p                      
+    fixRecRef _ tm = return tm
