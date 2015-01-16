@@ -19,8 +19,8 @@ import Idris.Core.Typecheck hiding (check)
 
 import Idris.AbsSyntax
 
-import Idris.GuardedRecursion.Error
 import Idris.GuardedRecursion.Helpers
+import Idris.GuardedRecursion.Error
 
 import Control.Monad.State.Lazy as LazyState hiding (fix)
 
@@ -33,10 +33,14 @@ checkGR = check Closed
 check :: Clock -> Env -> (Name, Type) -> Term -> Type -> Idris Totality
 
 check Open g (n, (forallK -> Extracted ty)) (causalRecursiveRef n -> Extracted t) a =
-  (ty `laterThan` a) g
+  do iLOG $ "Recursive ref " ++ show t
+     iLOG $ "Type of rec: " ++ show ty
+     iLOG $ "Type wanted: " ++ show a
+     (a `laterThan` ty) g
      
 check Open g (n, ty) (acausalRecursiveRef n -> Extracted t) a =
-  (ty `laterThan` a) g
+  do iLOG $ "Recursive ref " ++ show t
+     (a `laterThan` ty) g
      
 \end{code}
 \hrulefill 
@@ -45,11 +49,11 @@ check Open g (n, ty) (acausalRecursiveRef n -> Extracted t) a =
 \]
 \begin{code}
 
-check Closed g n (forallK -> Extracted a) t@(TType _) =
-  requires
-    (nofc n g)
-    (check Open g n a t)
-
+check Closed g n (forallK -> Extracted a) ty@(TType _) =
+  do iLOG $ "Forall type: " ++ show a
+     requires
+       (nofc n g)
+       (check Open g n a ty)
      
 \end{code}
 \hrulefill 
@@ -59,7 +63,8 @@ check Closed g n (forallK -> Extracted a) t@(TType _) =
 \begin{code}
 
 check Open g n (later -> Extracted a) t@(TType _) =
-  check Open g n a t
+  do iLOG $ "Later type: " ++ show a
+     check Open g n a t
   
 \end{code}
 \hrulefill 
@@ -69,7 +74,8 @@ check Open g n (later -> Extracted a) t@(TType _) =
 \begin{code}
 
 check Open g n (next -> Extracted t) (later -> Extracted a) =
-  check Open g n t a
+  do iLOG $ "Next rule: " ++ show t ++ " and " ++ show a
+     check Open g n t a
   
 \end{code}
 \hrulefill 
@@ -79,14 +85,14 @@ check Open g n (next -> Extracted t) (later -> Extracted a) =
 \begin{code}
 
 check Open g n (tensor -> Extracted (t, u, a, b')) (later -> Extracted b) =
-  do --iLOG $ "Tensor a " ++ show a
-     --  iLOG $ "Tensor b' " ++ show b'
-     -- iLOG $ "Tensor b " ++ show b
-     aToB <- (a `to` b') g
-      -- eq b and b'
-     requires
-       (check Open g n u =<< laterK a)
-       (check Open g n t =<< laterK aToB)
+  do --c <- cEq g b' b
+     if True
+       then (do aToB <- (a `to` b) g
+                requires
+                  (check Open g n t =<< laterK aToB)
+                  (check Open g n u =<< laterK a))
+       else (do iLOG $ "Tensor not equal: " ++ show b' ++ " \n and \n " ++ show b
+                return $ Partial NotProductive)
      
 \end{code}
 \hrulefill 
@@ -96,12 +102,14 @@ check Open g n (tensor -> Extracted (t, u, a, b')) (later -> Extracted b) =
 \begin{code}
 
 check Open g n (apply -> Extracted t) a =
-  do aTy <- typeOf a g
+  do iLOG $ "apply rule " ++ show t ++ "\n and \n" ++ show a
+     aTy <- typeOfMaybe a g
+     iLOG $ "aTy " ++ show aTy
      case aTy of
-       (TType _) -> do forallA <- forall a
-                       requires
-                         (nofc n g)
-                         (check Closed g n t forallA)
+       Just(TType _) -> do forallA <- forall a
+                           requires
+                             (nofc n g)
+                             (check Closed g n t forallA)
        _ -> do iLOG $ "Expected " ++ show aTy ++ " to be of type type"
                return $ Partial NotProductive
 \end{code}
@@ -112,9 +120,10 @@ check Open g n (apply -> Extracted t) a =
 \begin{code}
 
 check Closed g n (lambdaKappa -> Extracted t) (forallK -> Extracted a) =
-  requires
-    (nofc n g)
-    (check Open g n t a)
+  do iLOG $ "LambdaK " ++ show t ++ "\n and \n" ++ show a
+     requires
+       (nofc n g)
+       (check Open g n t a)
 \end{code}
 \hrulefill
 Not Guarded Recursion:
@@ -132,7 +141,7 @@ check d g (n, _) (P _ n' ty) a
     do c <- (cEq g ty a)
        if c then
          (do c' <- clockedType ty
-             if (not c || isOpen d)
+             if (not c' || isOpen d)
                    then (return $ Total [])
                    else (do iLOG $ "Not productive. \n c: " ++ show c' ++ " \n ty: " ++ show ty ++ " \n d: " ++ show (isOpen d)
                             return $ Partial NotProductive))
@@ -178,60 +187,11 @@ forallK _ = Nope
 forall :: Type -> Idris Type
 forall = applyForall
 
-fix :: Term -> Extract (Term, Term)
-fix = undefined
-{-
-expectsClock :: TT Name -> Bool
-expectsClock t
-  = isLater'  t ||
-    isLater   t ||
-    isForall  t ||
-    isNext    t ||
-    isCompose t ||
-    isApply   t ||
-    isLambdaKappa t
--}
-guardedType :: Type -> Idris Bool
-guardedType (P Ref n (TType _)) =
-  do ist <- get
-     return $ n `elem` (map snd (guarded_renames ist))
-guardedType _ = return False
-
 -- 
 debind :: Type -> Idris (Type, Type)
-debind (Bind n b t) = return $ (binderTy b, t)
+debind (Bind _ b t) = return $ (binderTy b, t)
 debind _ = translateError Undefined
 
-{-
-debind' :: Type -> Type -> Env -> Idris Type
-debind' (Bind n b t) ty env =
-  ifM (cEq env t ty)
-      (return $ binderTy b)
-      (do rest <- debind' t ty env
-          return $ Bind n b rest)
-debind' _ _ _ = translateError Undefined  
--}
-cEq :: Env -> Type -> Type -> Idris Bool
-cEq env ty ty' =
-  do ctxt <- getContext
-     ist <- get
-     let ucs = map fst (idris_constraints ist)
-     case LazyState.evalStateT (convertsC ctxt env ty ty') (0, ucs) of
-      tc -> case tc of
-              OK () -> return True
-              Error e -> do iLOG $ "cEq err: " ++ show e
-                            return False
-
-tyEq :: Env -> Type -> Type -> Idris ()
-tyEq env ty ty' =
-  do ctxt <- getContext
-     ist <- get
-     let ucs = map fst (idris_constraints ist)
-     case LazyState.evalStateT (convertsC ctxt env ty ty') (0, ucs) of
-      tc -> case tc of
-              OK _ -> return ()
-              Error e -> translateError $ Misc (show e)
-  
 causalRecursiveRef :: Name -> Term -> Extract Term
 causalRecursiveRef n (unapplyNext >=> unapplyApply -> Just t@(P Ref n' _))
   | n == n' = return t
@@ -244,23 +204,17 @@ acausalRecursiveRef _ _ = Nope
 
 
 laterThan :: Type -> Type -> Env -> Idris Totality
-laterThan ty (unapplyLater -> Just ty') env = do c <- cEq env ty ty'
+laterThan (unapplyLater -> Just ty') ty env = do c <- cEq env ty ty'
                                                  if c
                                                    then (return $ Total [])
                                                    else (do iLOG $ "laterThan failed because \n" ++ show ty ++ "\n and\n " ++ show ty' ++ "\n were not equal."
                                                             return $ Partial NotProductive)
+laterThan _ _ _ = return $ Partial NotProductive                                                        
 
 requires :: Idris Totality -> Idris Totality -> Idris Totality
 requires t1 t2 = do t  <- t1
                     t' <- t2
                     return $ mergeTotal t t'
-
-mergeTotal :: Totality -> Totality -> Totality
-mergeTotal (Total _) t = t
-mergeTotal t (Total _) = t
-
-requires3 :: Idris Totality -> Idris Totality -> Idris Totality -> Idris Totality
-requires3 t1 t2 t3 = requires t1 (requires t2 t3)
 
 nofc :: (Name, Type) -> Env -> Idris Totality
 nofc n env =
@@ -268,27 +222,8 @@ nofc n env =
      return $ foldr mergeTotal (Total []) tos
   where
     c :: (Name, Type) -> (Name, Binder (TT Name)) -> Idris Totality
-    c r (n, b) = check Closed [] r (P Bound n (binderTy b)) (binderTy b)
+    c r (n', b) = check Closed [] r (P Bound n' (binderTy b)) (binderTy b)
 
-clockedType :: Type -> Idris Bool
-clockedType (Bind _ _ sc) = clockedType sc
-clockedType (unApply -> (P _ n _, _)) =
-  do i <- get
-     return $ n `elem` (map snd (guarded_renames i))
-clockedType _ = return False     
-
-isOpen :: Clock -> Bool
-isOpen Open = True
-isOpen _ = False
-
-to :: Type -> Type -> Env -> Idris Type
-to a b env = do aK <- typeOf a env
-                bK <- typeOf b env
-                c <- cEq env aK bK
-                iLOG $ show c
-                iLOG $ show aK
-                iLOG $ show bK
-                return $ Bind (sUN "__pi_arg") (Pi a aK) b
 \end{code}
 }
 \end{document}

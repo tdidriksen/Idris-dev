@@ -14,13 +14,14 @@ import Idris.Core.TT hiding (nextName)
 import Idris.Core.Typecheck hiding (isType)
 
 import Idris.GuardedRecursion.Constants
+import Idris.GuardedRecursion.Error
 
 import Control.Applicative
 
 import Data.Maybe
 import Data.List
 
-import Data.Traversable as Tr
+import Data.Traversable as Tr hiding (mapM)
 
 import Control.Monad
 import Control.Monad.State.Lazy as LazyState
@@ -666,6 +667,35 @@ fixRecursiveRef modality recName t = flip mapMTT t $ fixRecRef modality
     fixRecRef NonCausal p@(P Ref n recTy) | n == recName =
       applyNext recTy p                      
     fixRecRef _ tm = return tm
+
+to :: Type -> Type -> Env -> Idris Type
+to a b env = do aK <- typeOfMaybe a env
+                bK <- typeOfMaybe b env
+                case (aK, bK) of
+                  (Just(akind), Just(bkind)) -> do c <- cEq env akind bkind
+                                                   if c
+                                                     then return $ Bind (sUN "__pi_arg") (Pi a akind) b
+                                                     else do iLOG $ "kind of " ++ show a ++ " and " ++ show b ++ " were not equal."
+                                                             translateError Undefined
+                  _ -> do iLOG $ "Couldn't get kind of " ++ show a
+                          translateError Undefined
+
+mergeTotal :: Totality -> Totality -> Totality
+mergeTotal (Total _) t = t
+mergeTotal t (Total _) = t
+mergeTotal t _ = t
+
+clockedType :: Type -> Idris Bool
+clockedType (Bind _ _ sc) = clockedType sc
+clockedType (unApply -> (P _ n _, _)) =
+  do i <- get
+     return $ n `elem` (map snd (guarded_renames i))
+clockedType _ = return False     
+
+isOpen :: Clock -> Bool
+isOpen Open = True
+isOpen _ = False
+
 
 -- parameters :: Name -> Context -> [(Int, Name)]
 -- parameters n ctxt
