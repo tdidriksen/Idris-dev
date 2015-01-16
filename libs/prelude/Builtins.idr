@@ -134,6 +134,10 @@ namespace GuardedRecursion
   Later : Availability -> Type -> Type
   Later Now a = a
   Later (Tomorrow n) a = Later' (Later n a)
+  
+  laterDist : Later' (a -> b) -> (Later' a -> Later' b)
+  laterDist (Next f) = \a => case a of
+                               (Next a') => Next (f a')
 
   compose : {a, b : Type} -> 
             {n : Availability} -> 
@@ -145,7 +149,8 @@ namespace GuardedRecursion
      compose' : {a, b : Type} -> Later' (a -> b) -> Later' a -> Later' b
      compose' (Next t) (Next u) = Next (t u)
   compose {n = Tomorrow n'} (Next t) (Next u) = Next (compose {n = n'} t u)
-  
+
+    
 
 ||| Assert to the totality checker that y is always structurally smaller than
 ||| x (which is typically a pattern argument)

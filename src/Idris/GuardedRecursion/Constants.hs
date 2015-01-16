@@ -9,7 +9,7 @@ import Idris.Error
 
 -- STRINGS
 
-guardedRecursion, guardedPrefix, laterStr, later'Str, nextStr, composeStr, availStr, nowStr, tomorrowStr, forallStr, lambdaKappaStr, applyStr, delayStr, lazyCodataStr :: String
+guardedRecursion, guardedPrefix, laterStr, later'Str, nextStr, composeStr, availStr, nowStr, tomorrowStr, forallStr, lambdaKappaStr, applyStr, delayStr, lazyCodataStr, forceStr, lazy'Str :: String
 guardedRecursion = "GuardedRecursion"
 guardedPrefix = "guarded_"
 laterStr = "Later"
@@ -24,6 +24,8 @@ lambdaKappaStr = "LambdaKappa"
 applyStr = "apply"
 delayStr = "Delay"
 lazyCodataStr = "LazyCodata"
+forceStr = "Force"
+lazy'Str = "Lazy'"
 
 -- NAMES
 

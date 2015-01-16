@@ -93,12 +93,28 @@ unapplyDelay (Delay delay lazyType _ tm)
   | isDelay delay && isLazyCodata lazyType = Just tm
 unapplyDelay _ = Nothing
 
-removeDelay :: Term -> Term
-removeDelay t = mapTT withoutDelay t
+pattern Force force lazyType forceType tm = App (App (App force lazyType) forceType) tm
+
+unapplyForce :: Term -> Maybe Term
+unapplyForce (Force force lazyType _ tm)
+  | isForce force && isLazyCodata lazyType = Just tm
+unapplyForce _ = Nothing
+
+pattern Lazy' lazy' lazyType ty = App (App lazy' lazyType) ty
+
+unapplyLazy' :: Type -> Maybe Type
+unapplyLazy' (Lazy' lazy' lazyType ty)
+  | isLazy' lazy' && isLazyCodata lazyType = Just ty
+unapplyLazy' _ = Nothing
+
+removeLaziness :: Term -> Term
+removeLaziness t = mapTT withoutLazyOps t
   where
-    withoutDelay :: Term -> Term
-    withoutDelay (unapplyDelay -> Just tm) = tm
-    withoutDelay tm = tm
+    withoutLazyOps :: Term -> Term
+    withoutLazyOps (unapplyDelay -> Just tm) = tm
+    withoutLazyOps (unapplyForce -> Just tm) = tm
+    withoutLazyOps (unapplyLazy' -> Just ty) = ty
+    withoutLazyOps tm = tm
 
 applyForall :: Type -> Idris Type
 applyForall ty =
@@ -217,9 +233,17 @@ isDelay :: Term -> Bool
 isDelay (P _ (UN delay) _) | delay == txt delayStr = True
 isDelay _ = False
 
+isForce :: Term -> Bool
+isForce (P _ (UN force) _) | force == txt forceStr = True
+isForce _ = False
+
 isLazyCodata :: Term -> Bool
 isLazyCodata (P _ (UN lazyCodata) _) | lazyCodata == txt lazyCodataStr = True
 isLazyCodata _ = False
+
+isLazy' :: Term -> Bool
+isLazy' (P _ (UN lazy') _) | lazy' == txt lazy'Str = True
+isLazy' _ = False
 
 isLambdaKappa :: Term -> Bool
 isLambdaKappa (P (DCon _ _ _) (NS (UN lambdaKappa) [gr]) _)
@@ -244,28 +268,43 @@ guardedDataConstructor = undefined
 typeOfMaybe :: Term -> Env -> Idris (Maybe Type)
 typeOfMaybe t env = idrisCatch (typeOf t env >>= \t' -> return $ Just t') (\_ -> return Nothing)
 
+typeOf' :: Term -> Env -> Idris Term -> Idris Term
+typeOf' t env err =
+  do ty' <- typeOfMaybe t env
+     case ty' of
+      Just ty -> return ty
+      Nothing -> err 
+
 typeOf :: Term -> Env -> Idris Type
 typeOf t env =
-  do ctxt <- getContext
+  do -- iLOG $ "Checking type of term : " ++ showTT t
+     ctxt <- getContext
      case check ctxt env (forget t) of
       OK (_,t') -> return (explicitNames t')
       Error e -> ierror e
 
 checkGoal :: Term -> Type -> Env -> Idris Bool
 checkGoal tm goal env =
-  do tmType <- typeOf tm env
-     iLOG $ "Conversion checking " ++ showTT tmType ++ " and " ++ showTT goal
-     ctxt <- getContext
+  do tmType' <- typeOfMaybe tm env
+     case tmType' of
+      Just tmType ->
+        do iLOG $ "Conversion checking " ++ show tmType ++ " and " ++ show goal
+           cEq env tmType goal
+      Nothing ->
+        do iLOG $ "Conversion checking : no type"
+           return False
+
+cEq :: Env -> Type -> Type -> Idris Bool
+cEq env ty ty' =
+  do ctxt <- getContext
      ist <- get
-     -- let ucs = map fst (idris_constraints ist)
-     case convEq' ctxt (map fst (filter isHole env)) tmType goal of
+     let ucs = map fst (idris_constraints ist)
+     case LazyState.evalStateT (convertsC ctxt env ty ty') (0, ucs) of
       tc -> case tc of
-             OK True -> do iLOG $ "Conversion check succeeded"; return True
-             _ -> do iLOG $ "Conversion check failed"; return False
-     -- catchError (LazyState.evalStateT (convertsC ctxt env tmType goal) (0, ucs)) of
-     --  tc -> case tc of
-     --          OK () -> return True
-     --          _ -> return False
+              OK () -> return True
+              Error e -> do iLOG $ "cEq err: " ++ show e
+                            return False
+
 
 debindFirstArg :: Type -> Maybe Type
 debindFirstArg (Bind _ (Pi t _) _) = Just t
@@ -627,3 +666,20 @@ fixRecursiveRef modality recName t = flip mapMTT t $ fixRecRef modality
     fixRecRef NonCausal p@(P Ref n recTy) | n == recName =
       applyNext recTy p                      
     fixRecRef _ tm = return tm
+
+-- parameters :: Name -> Context -> [(Int, Name)]
+-- parameters n ctxt
+--   | isDConName n ctxt,
+--     Just ty <- lookupTyExact n ctxt = findParameterIndices ty 0 [] []
+--   | isFnName n ctxt = []
+--   | otherwise = []
+--   where
+--     findParameterIndices :: Type -> Int -> [(Int, Name)] -> [(Int, Name)]-> [(Int, Name)]
+--     findParameterIndices (Bind n (Pi piTy kind) sc) i constrArgs params =
+--       findParameterIndices sc (i+1) ((i, n):constrArgs) params
+--     findParameterIndices (App t (P Bound pn _)) i constrArgs params
+--       | Just (i',pn') <- find (\(_,m) -> m == pn) constrArgs =
+--           findParameterIndices t i constrArgs ((i',pn'):params)
+--     findParameterIndices (App t _) i constrArgs params = findParameterIndices t i constrArgs params
+--     findParameterIndices (P (TCon _ _) n' _) i constrArgs params = params
+--     findParameterIndices _ _ _ params = params

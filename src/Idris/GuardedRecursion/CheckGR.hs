@@ -12,6 +12,8 @@ import Idris.GuardedRecursion.Helpers
 import Idris.GuardedRecursion.Epsilon (epsilon)
 import Idris.GuardedRecursion.Check (checkGR)
 
+import Data.List
+
 import Control.Monad
 import Control.Monad.State
 
@@ -27,7 +29,11 @@ checkGuardedRecursive n =
              _ <- case lookupTyExact n ctxt of
                    Just nty -> checkFunction n nty clauses
                    Nothing -> checkFunction n ty clauses
-             
+             -- i <- get
+             -- case lookupCtxt n (idris_flags i) of
+             --  [fnOpts] -> setFlags n (fnOpts \\ [CausalFn])
+             --  _ -> return ()
+
              return $ Partial NotProductive
         _ -> return $ Partial NotProductive
 
@@ -75,7 +81,7 @@ guardedRecursiveClause _ _ (_, lhs, Impossible) _ = return (lhs, Impossible)
 guardedRecursiveClause name ty (_, lhs, rhs) modality =
   do ctxt <- getContext
      rhsTy <- typeOf rhs (buildEnv lhs)
-     gRhsTy <- guardedType rhsTy modality
+     gRhsTy <- guardedType (removeLaziness rhsTy) modality
      ist <- get
      put $ ist { tt_ctxt = addTyDecl name Ref ty ctxt }
      glhs <- guardedLHS lhs
