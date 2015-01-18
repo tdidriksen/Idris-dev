@@ -21,7 +21,11 @@ import Data.Maybe
 import Data.List
 import Data.Traversable as Tr hiding (mapM)
 
+import Data.Foldable (foldr')
+import qualified Data.Foldable as F
+
 import Control.Applicative
+
 import Control.Monad
 import Control.Monad.State.Lazy as LazyState
 
@@ -302,6 +306,13 @@ unapplyLazy' (Lazy' lazy' lazyType ty)
   | isLazy' lazy' && isLazyCodata lazyType = Just ty
 unapplyLazy' _ = Nothing
 
+normaliseLater :: Type -> Idris Type
+normaliseLater (unapplyLater -> Just ty) =
+  applyLater' =<< normaliseLater ty
+normaliseLater (App (App later now) ty)
+  | isLater later && isNow now = return ty
+normaliseLater ty = return ty
+
 ---- TERM (UN)APPLICATIONS ----
                            
 applyApply :: Term -> Type -> Idris Term
@@ -378,6 +389,11 @@ isApply :: Term -> Bool
 isApply (P Ref (NS (UN apply) [gr]) _)
   | apply == txt applyStr && gr == txt guardedRecursion = True
 isApply _ = False
+
+isNow :: Term -> Bool
+isNow (P (DCon _ _ _) (NS (UN now) [gr]) _)
+  | now == txt nowStr && gr == txt guardedRecursion = True
+isNow _ = False                                                         
 
 isCompose :: Term -> Bool
 isCompose (P Ref (NS (UN compose) [gr]) _)
@@ -527,22 +543,6 @@ availabilityTerm :: Availability -> Idris Term
 availabilityTerm Now = nowRef
 availabilityTerm (Tomorrow n) =
   liftM2 App tomorrowRef (availabilityTerm n)
-
----- MISC ----
-
-fixRecursiveRef :: Modality -> Name -> Term -> Idris Term
-fixRecursiveRef modality recName t = flip mapMTT t $ fixRecRef modality
-  where
-    fixRecRef :: Modality -> Term -> Idris Term
-    fixRecRef Causal p@(P Ref n recTy) | n == recName =
-      do appliedRecTy <- case unapplyForall recTy of
-                          Just ty -> return ty
-                          Nothing -> ifail "Recursive reference of causal function does not have Forall type"
-         applyRec <- applyApply appliedRecTy p
-         applyNext appliedRecTy applyRec
-    fixRecRef NonCausal p@(P Ref n recTy) | n == recName =
-      applyNext recTy p                      
-    fixRecRef _ tm = return tm
   
 -- |Checks if a type constructor is simply typed.
 -- |Only binders and types are allowed.
@@ -615,7 +615,7 @@ mapMTT f (P nameType n ty) =
      f (P nameType n ty')
 mapMTT f (Bind n binder sc) =
   do sc' <- mapMTT f sc
-     binder' <- Tr.forM binder f
+     binder' <- Tr.forM binder (mapMTT f)
      f (Bind n binder' sc')
 mapMTT f (App a b) =
   do a' <- mapMTT f a
@@ -628,7 +628,7 @@ mapMTT f tm = f tm
       
 mapTT :: (TT n -> TT n) -> TT n -> TT n
 mapTT f (P nt n ty) = f (P nt n (mapTT f ty))
-mapTT f (Bind n binder sc) = f (Bind n (fmap f binder) (mapTT f sc))
+mapTT f (Bind n binder sc) = f (Bind n (fmap (mapTT f) binder) (mapTT f sc))
 mapTT f (App t t') = f (App (mapTT f t) (mapTT f t'))
 mapTT f (Proj t i) = f (Proj (mapTT f t) i)
 mapTT f t = f t
@@ -704,6 +704,167 @@ mergeTotal (Total _) t = t
 mergeTotal t (Total _) = t
 mergeTotal t _ = t
 
+
+----------------------------------------------
+------- Recursive references -----------------
+----------------------------------------------
+
+
+fixRecursiveRef :: Modality -> Env -> [Term] -> Name -> Term -> Idris Term
+fixRecursiveRef modality lhsEnv params recName t = fixRecRef modality t
+  where
+    fixRecRef :: Modality -> Term -> Idris Term
+    fixRecRef Causal (unapplyRecRef recName -> Just (p@(P Ref n (unapplyForall -> Just recTy)), args)) =
+      do appliedRec <- applyApply recTy p
+         iLOG $ "appliedRec : " ++ show appliedRec
+         let withParams = mkApp appliedRec params
+         iLOG $ "withParams : " ++ show withParams
+         iLOG $ "params : " ++ show params
+         iLOG $ "args : " ++ show args
+         nextTy' <- typeOfMaybe withParams lhsEnv
+         nextTy <- case nextTy' of
+                    Just ty -> return ty
+                    Nothing -> ifail "Applying parameters on causal recursive reference makes it ill-typed."
+         recRef <- applyNext nextTy withParams
+         return $ mkApp recRef (drop (length params) args)
+    fixRecRef NonCausal (unapplyRecRef recName -> Just (p@(P Ref n recTy), args)) =
+      do let withParams = mkApp p params
+         nextTy' <- typeOfMaybe withParams lhsEnv
+         nextTy <- case nextTy' of
+                    Just ty -> return ty
+                    Nothing -> ifail "Applying parameters on causal recursive reference makes it ill-typed."         
+         recRef <- applyNext nextTy withParams
+         return $ mkApp recRef (drop (length params) args)
+    fixRecRef modality p@(P nt n ty) = return p
+    fixRecRef modality (Bind n binder ty) =
+      -- Recursive ref is never in type, so no recursion there
+      liftM (\b -> Bind n b ty) (Tr.forM binder (fixRecRef modality))
+    fixRecRef modality (App f x) =
+      liftM2 App (fixRecRef modality f) (fixRecRef modality x)
+    fixRecRef modality (Proj tm i) =
+      liftM (\t -> Proj t i) (fixRecRef modality tm)
+    fixRecRef _ tm = return tm
+    
+
+-- fixRecursiveRef modality lhsEnv params recName t = flip mapMTT t $ fixRecRef modality
+--   where
+--     fixRecRef :: Modality -> Term -> Idris Term
+--     fixRecRef Causal (unapplyRecRef recName -> Just (p@(P Ref n (unapplyForall -> Just recTy)), args)) =
+--       do     
+-- --    fixRecRef Causal p@(P Ref n recTy) | n == recName =
+--          -- appliedRecTy <- case unapplyForall recTy of
+--          --                  Just ty -> return ty
+--          --                  Nothing -> ifail "Recursive reference of causal function does not have Forall type"
+--          appliedRec <- applyApply recTy p
+--          iLOG $ "appliedRec : " ++ show appliedRec
+--          let withParams = mkApp appliedRec params
+--          iLOG $ "withParams : " ++ show withParams
+--          let withArgs = mkApp withParams (drop (length params) args)
+--          iLOG $ "params : " ++ show params
+--          iLOG $ "args : " ++ show args
+--          iLOG $ "withArgs : " ++ show withArgs
+--          nextTy' <- typeOfMaybe withArgs lhsEnv
+--          nextTy <- case nextTy' of
+--                     Just ty -> return ty
+--                     Nothing -> ifail "Applying parameters on causal recursive reference makes it ill-typed."
+--          applyNext nextTy withArgs
+--     fixRecRef NonCausal (unapplyRecRef recName -> Just (p@(P Ref n recTy), args)) =
+--       do let withParams = mkApp p params
+--          let withArgs = mkApp withParams (drop (length params) args)
+--          nextTy' <- typeOfMaybe withArgs lhsEnv
+--          nextTy <- case nextTy' of
+--                     Just ty -> return ty
+--                     Nothing -> ifail "Applying parameters on causal recursive reference makes it ill-typed."         
+--          applyNext nextTy withArgs
+--     fixRecRef _ tm = return tm
+
+unapplyRecRef :: Name -> Term -> Maybe (Term, [Term])
+unapplyRecRef recName (unApply -> unapp@((P Ref n _), _)) | n == recName = Just unapp
+unapplyRecRef _ _ = Nothing
+
+-- parameters :: Name -> Context -> [(Int, Name)]
+-- parameters n ctxt
+--   | isDConName n ctxt,
+--     Just ty <- lookupTyExact n ctxt = findParameterIndices ty 0 [] []
+--   | isFnName n ctxt = []
+--   | otherwise = []
+--   where
+--     findParameterIndices :: Type -> Int -> [(Int, Name)] -> [(Int, Name)]-> [(Int, Name)]
+--     findParameterIndices (Bind n (Pi piTy kind) sc) i constrArgs params =
+--       findParameterIndices sc (i+1) ((i, n):constrArgs) params
+--     findParameterIndices (App t (P Bound pn _)) i constrArgs params
+--       | Just (i',pn') <- find (\(_,m) -> m == pn) constrArgs =
+--           findParameterIndices t i constrArgs ((i',pn'):params)
+--     findParameterIndices (App t _) i constrArgs params = findParameterIndices t i constrArgs params
+--     findParameterIndices (P (TCon _ _) n' _) i constrArgs params = params
+--     findParameterIndices _ _ _ params = params
+
+-- parameters :: Type -> [(Int, Name)]
+-- parameters ty = (reverse . (nubBy (\(i,_) (j,_) -> i == j))) $ params ty False 0 []
+--   where
+--     params :: Type -> Bool -> Int -> [(Int,Name)] -> [(Int,Name)]
+--     params (Bind n (
+--     params (App f x) False i ps = let fParams = params f True i ps
+--                                       xParams = params x True i ps
+--                                   in fParams ++ xParams
+--     params False i ps (App t t') = params True ps (App t t')
+--     params True i ps (P Bound n ty) = 
+
+-- pa
+
+-- foldTT :: (TT n -> b -> b) -> b -> TT n -> b
+-- foldTT f z (P nt n ty) = f (P nt n ty) (foldTT f z ty)
+-- foldTT f z (Bind n binder sc) = f (Bind n binder sc) (F.foldr' f (foldTT f z sc) binder)
+-- foldTT f z (App t t') = foldTT f (foldTT f z t') t
+-- foldTT f z (Proj tm i) = f (Proj tm i) (foldTT f z tm)
+-- foldTT f z tm = f tm z
+
+foldTT :: (TT n -> b -> b) -> b -> TT n -> b
+foldTT f z (P nt n ty) = f (P nt n ty) (foldTT f z ty)
+foldTT f z (Bind n binder sc) = f (Bind n binder sc) (F.foldr' f (foldTT f z sc) binder)
+foldTT f z (App t t') = f (App t t') (foldTT f (foldTT f z t') t)
+foldTT f z (Proj tm i) = f (Proj tm i) (foldTT f z tm)
+foldTT f z tm = f tm z
+
+boundVars :: TT n -> [(TT n, Int)]
+boundVars tm = boundVars' tm 0 [] -- foldTT boundVars' [] tm
+  where
+    boundVars' :: TT n -> Int -> [(TT n, Int)] -> [(TT n, Int)]
+    boundVars' p@(P Bound _ _) i vars = (p,i) : vars
+    boundVars' (P nt _ ty) i vars | nt /= Bound = boundVars' ty i vars
+    boundVars' (Bind n binder sc) i vars =
+      (F.foldr' (\t acc -> boundVars' t i acc) (boundVars' sc (i+1) vars) binder)
+    boundVars' (App t t') i vars = boundVars' t i (boundVars' t' i vars)
+    boundVars' (Proj tm _) i vars = boundVars' tm i vars
+    boundVars' _ _ vars = vars
+
+parameters :: Type -> [(Int, Name)]
+parameters ty = let pBounds = boundVars ty
+                    argNames = map fst $ getArgTys ty
+                    pNames = mapMaybe boundName pBounds
+                    paramIndices = mapMaybe (\(pn, i) -> lastIndexOf pn (take i argNames)) pNames --findIndices (\n -> n `elem` pNames)argNames
+                    params = filter (\(i, _) -> i `elem` paramIndices) (zip [0..] argNames)
+                in  nubBy (\(i,_) (j,_) -> i == j) params
+  where
+    boundName :: (Term, Int) -> Maybe (Name, Int)
+    boundName ((P Bound n _), i) = Just (n, i)
+    boundName _ = Nothing
+
+    lastIndexOf :: Eq a => a -> [a] -> Maybe Int
+    lastIndexOf a xs = lastIndexOf' a xs 0 Nothing
+      where
+        lastIndexOf' :: Eq a => a -> [a] -> Int -> Maybe Int -> Maybe Int
+        lastIndexOf' a (x:xs) p i = if a == x
+                                    then lastIndexOf' a xs (p+1) (Just p)
+                                    else lastIndexOf' a xs (p+1) i
+        lastIndexOf' a [] _ i = i
+
+parameterArgs :: Term -> Type -> [Term]
+parameterArgs lhs ty = let paramIndices = map fst $ parameters ty
+                           lhsArgs = snd $ unApply lhs
+                       in  map (lhsArgs !!) paramIndices
+
+
 ----------------------------------------------
 ----------------- NOT IN USE -----------------
 ----------------------------------------------
@@ -720,7 +881,6 @@ collectLater b@(Bind _ (Pi (unapplyLater -> Just ty) _) sc) =
     collectLater' (unapplyLater -> Just ty) = return ty
     collectLater' (unapplyLater -> Nothing) = ifail "Unable to collect later from argument."
 collectLater ty = return ty
-
 
 availability :: Type -> Idris Availability
 availability ty = liftM snd (unapplyLater ty)

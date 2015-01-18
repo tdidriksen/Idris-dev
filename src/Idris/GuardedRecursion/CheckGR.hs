@@ -44,6 +44,7 @@ checkFunction name ty clauses =
      gName <- getGuardedNameSoft name
      modality <- modalityOf name
      iLOG $ show gName ++ " is " ++ show modality
+     iLOG $ "expTy : " ++ showTT expTy
      gTy <- guardedType expTy modality
      iLOG $ "gTy : " ++ show gTy
      ist <- get
@@ -86,7 +87,11 @@ guardedRecursiveClause name ty (_, lhs, rhs) modality =
      put $ ist { tt_ctxt = addTyDecl name Ref ty ctxt }
      glhs <- guardedLHS lhs
      iLOG $ "Guarded LHS: " ++ show glhs
-     grhs <- epsilon modality name rhs gRhsTy (buildEnv glhs)
+     let appliedType = case unapplyForall ty of
+                        Just ty' -> ty'
+                        Nothing -> ty
+     iLOG $ "appliedType : " ++ show appliedType
+     grhs <- epsilon modality name rhs gRhsTy (parameterArgs glhs appliedType) (buildEnv glhs)
      return (glhs, grhs)
      
 

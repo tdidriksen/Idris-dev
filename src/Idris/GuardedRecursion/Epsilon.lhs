@@ -32,10 +32,12 @@ epsLogInfer rule tm Nothing goalty = iLOG $ show rule ++ ": Term" ++ showTT tm +
 \end{code}
 
 \begin{code}
-epsilon :: Modality -> Name -> Term -> Type -> Env -> Idris Term
-epsilon modality recName t a env =
+epsilon :: Modality -> Name -> Term -> Type -> [Term] -> Env -> Idris Term
+epsilon modality recName t a params env =
   do t' <- guardedTT' (removeLaziness t)
-     fixed <- fixRecursiveRef modality recName t'
+     iLOG $ "params : " ++ intercalate ", " (map show params)
+     iLOG $ "Before fixing : " ++ showTT t'
+     fixed <- fixRecursiveRef modality env params recName t'
      iLOG $ "Epsilon start"
      iLOG $ "Trying to infer that term " ++ show recName ++ ":\n" ++ show fixed ++ "\nhas type:\n" ++ show a
      case modality of
@@ -44,10 +46,11 @@ epsilon modality recName t a env =
 
 epsilonCheck :: Modality -> Clock -> Name -> Env -> Term -> Type -> Idris Term
 
-epsilonCheck Causal Open recName env recRef@(unapplyNext >=> unapplyApply -> Just (P Ref n _)) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
+epsilonCheck Causal Open recName env recRef@(unapplyNext -> Just (unApply -> ((unapplyApply -> Just (P Ref n _),_)))) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
   do iLOG "Found recursive ref (causal)"
+--     epsLog "Recursive ref (causal" recRef
      return recRef
-epsilonCheck NonCausal Open recName env recRef@(unapplyNext -> Just (P Ref n _)) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
+epsilonCheck NonCausal Open recName env recRef@(unapplyNext -> Just (unApply -> ((P Ref n _), _))) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
   do iLOG "Found recursive ref"
      return recRef
 
@@ -104,7 +107,7 @@ epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b
                           ok <- checkGoal tensor b' env
                           if ok
                              then return tensor
-                             else do iLOG $ "tensor: " ++ show tensor
+                             else do iLOG $ "tensor: " ++ showTT tensor
                                      iLOG $ "Tensor inference failed"
                                      return t)
   where
@@ -117,7 +120,11 @@ epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b
          case appTy' of
           Just _  -> inferTensor (App f x) args
           Nothing -> 
-           do atob <- typeOf f env
+           do atob' <- typeOf f env >>= normaliseLater
+              let atob = case unapplyLater atob' of
+                          Just ty -> ty
+                          Nothing -> atob'
+              iLOG $ "atob' : " ++ show atob'             
               iLOG $ "atob : " ++ show atob
               (a, b) <- debind atob
               iLOG $ "a : " ++ show a

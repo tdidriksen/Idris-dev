@@ -192,6 +192,26 @@ debind :: Type -> Idris (Type, Type)
 debind (Bind _ b t) = return $ (binderTy b, t)
 debind _ = translateError Undefined
 
+{-
+debind' :: Type -> Type -> Env -> Idris Type
+debind' (Bind n b t) ty env =
+  ifM (cEq env t ty)
+      (return $ binderTy b)
+      (do rest <- debind' t ty env
+          return $ Bind n b rest)
+debind' _ _ _ = translateError Undefined  
+-}
+
+tyEq :: Env -> Type -> Type -> Idris ()
+tyEq env ty ty' =
+  do ctxt <- getContext
+     ist <- get
+     let ucs = map fst (idris_constraints ist)
+     case LazyState.evalStateT (convertsC ctxt env ty ty') (0, ucs) of
+      tc -> case tc of
+              OK _ -> return ()
+              Error e -> translateError $ Misc (show e)
+
 causalRecursiveRef :: Name -> Term -> Extract Term
 causalRecursiveRef n (unapplyNext >=> unapplyApply -> Just t@(P Ref n' _))
   | n == n' = return t
