@@ -101,15 +101,16 @@ epsilonCheck modality Open recName env t@(App f x) a | Just a' <- unapplyLater a
 epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b', Nothing <- unapplyLater b =
   do epsLog "Tensor infer" t b'
      idrisCatch (applyNext b =<< epsilonCheck modality Open recName env t b)
-                (\_ -> do iLOG "Inferring tensor"
-                          let (f, args) = unApply t
-                          tensor <- inferTensor f args
-                          ok <- checkGoal tensor b' env
-                          if ok
-                             then return tensor
-                             else do iLOG $ "tensor: " ++ showTT tensor
-                                     iLOG $ "Tensor inference failed"
-                                     return t)
+                (\err -> do iLOG $ "Error : " ++ show err
+                            iLOG "Inferring tensor"
+                            let (f, args) = unApply t
+                            tensor <- inferTensor f args
+                            ok <- checkGoal tensor b' env
+                            if ok
+                               then return tensor
+                               else do iLOG $ "tensor: " ++ showTT tensor
+                                       iLOG $ "Tensor inference failed"
+                                       return t)
   where
     inferTensor :: Term -> [Term] -> Idris Term
     inferTensor f (x:args) =
@@ -120,33 +121,34 @@ epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b
          case appTy' of
           Just _  -> inferTensor (App f x) args
           Nothing -> 
-           do atob' <- typeOf f env >>= normaliseLater
-              let atob = case unapplyLater atob' of
+           do fType' <- typeOf f env
+              let fType = case unapplyLater fType' of
                           Just ty -> ty
-                          Nothing -> atob'
-              iLOG $ "atob' : " ++ show atob'             
+                          Nothing -> fType'
+              iLOG $ "fType' : " ++ show fType'             
+              iLOG $ "fType : " ++ show fType
+              (a, b, atob) <- debindType fType
               iLOG $ "atob : " ++ show atob
-              (a, b) <- debind atob
               iLOG $ "a : " ++ show a
               iLOG $ "b : " ++ show b
-              laterA <- a `availableWith` b'
-              iLOG $ "laterA : " ++ show laterA
               laterAtoB <- atob `availableWith` b'
               iLOG $ "laterAtoB : " ++ show laterAtoB
-              --epsF <- epsilonCheck modality Open recName env f laterAtoB
-              --iLOG $ "epsF : " ++ show epsF
+              epsF <- epsilonCheck modality Open recName env f laterAtoB
+              iLOG $ "epsF : " ++ show epsF
+              laterA <- a `availableWith` b'
+              iLOG $ "laterA : " ++ show laterA
               epsX <- epsilonCheck modality Open recName env x laterA
               iLOG $ "epsX : " ++ show epsX
-              tensorFX <- applyCompose' a b f epsX
+              tensorFX <- applyCompose' a b epsF epsX
               iLOG $ "tensorFX : " ++ show tensorFX
               inferTensor tensorFX args
     inferTensor f [] = return f
          
-    debind :: Type -> Idris (Type, Type)
-    debind (unapplyLater -> Just ty) = debind ty
-    debind (unapplyForall -> Just ty) = debind ty
-    debind (Bind n (Pi ty kind) sc) = return (ty, sc)
-    debind ty = ifail $ "Cannot debind non-function type: " ++ show ty
+    -- debind :: Type -> Idris (Type, Type, Type)
+    -- debind (unapplyLater -> Just ty) = debind ty
+    -- debind (unapplyForall -> Just ty) = debind ty
+    -- debind atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
+    -- debind ty = ifail $ "Cannot debind non-function type: " ++ show ty
          
     availableWith :: Type -> Type -> Idris Type
     availableWith (unapplyLater -> Just a) (unapplyLater -> Just b) =
@@ -421,18 +423,27 @@ epsilonCheck modality clock recName env app@(App _ _) a =
      let (f, args) = unApply app
      iLOG $ "f : " ++ show f
      fType <- typeOf' f env (ifail $ "Function " ++ show f ++ " has no type.")
-     epsF <- epsilonCheck modality Open recName env f fType
-     epsApp epsF args
+     let fTyBinders = binders fType
+     let fEpsTy = bindAll fTyBinders a
+     iLOG $ "fEpsTy : " ++ show fEpsTy
+     epsF <- epsilonCheck modality Open recName env f fEpsTy
+     epsFX <- epsApp epsF args
+     ok <- checkGoal epsFX a env
+     if ok
+        then return epsFX
+        else epsFail app "Ill-typed function application."
   where
     epsApp :: Term -> [Term] -> Idris Term
     epsApp f (x:args) =
       do iLOG "epsApp"
          iLOG $ "f : " ++ show f
-         iLOG $ "x : " ++ show x
+         iLOG $ "x : " ++ showTT x
          fType' <- typeOfMaybe f env
          fType <- case fType' of
                     Just ty -> return ty
-                    Nothing -> epsFail f $ "Function " ++ show f ++ " has no type."
+                    Nothing -> epsFail f $ "Function has no type."
+         -- (xTy, b, atob) <- debindType fType
+         -- epsF <- epsilonCheck modality clock recName env f atob
          let argTys = map snd $ getArgTys fType
          xTy <- if not $ null argTys
                    then return $ head argTys
@@ -440,6 +451,10 @@ epsilonCheck modality clock recName env app@(App _ _) a =
          epsX <- epsilonCheck modality clock recName env x =<< delayBy a xTy
          epsApp (App f epsX) args
     epsApp f [] = return f
+
+    binders :: TT n -> [(n, Binder (TT n))]
+    binders (Bind n binder sc) = (n,binder) : binders sc
+    binders _ = []
  
   --     do epsLog "App recurse" app a
   --        (g, gTy, args) <- appType app []
@@ -510,8 +525,8 @@ epsilonCheck modality Open recName env tm@(unapplyApply -> Nothing) a@(unapplyFo
   do tmTyMaybe <- typeOfMaybe tm env
      case tmTyMaybe of
       Just tmTy -> case unapplyForall tmTy of
-                     Just _ -> do epsLog "Apply infer" tm a
-                                  applyApply tmTy tm
+                     Just appliedTy -> do epsLog "Apply infer" tm a
+                                          applyApply appliedTy tm
                      Nothing -> do iLOG $ "No apply necessary"
                                    return tm
       Nothing -> return tm

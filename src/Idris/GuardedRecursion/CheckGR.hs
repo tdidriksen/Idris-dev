@@ -23,8 +23,8 @@ checkGuardedRecursive n =
      case lookupDef n ctxt of
         [CaseOp _ ty _ _ clauses _] ->
           do forM_ clauses $ \(pvs, lhs, rhs) ->
-               do iLOG $ show ("GR_LHS: " ++ show lhs)
-                  iLOG $ show ("GR_RHS: " ++ show rhs)
+               do iLOG $ show ("GR_LHS: " ++ showTT lhs)
+                  iLOG $ show ("GR_RHS: " ++ showTT rhs)
              ctxt <- getContext
              _ <- case lookupTyExact n ctxt of
                    Just nty -> checkFunction n nty clauses
@@ -53,7 +53,9 @@ checkFunction name ty clauses =
      iLOG $ show "Guarded type: " ++ showTT gTy
      forM_ gClauses $ \(lhs, rhs) ->
        do iLOG $ show ("GR_LHS_EPS: " ++ show lhs)
+          iLOG $ show ("GR_LHS_EPS_AST: " ++ showTT lhs)
           iLOG $ show ("GR_RHS_EPS: " ++ show rhs)
+          iLOG $ show ("GR_RHS_EPS_AST: " ++ showTT rhs)
      checkRhsSeq <- forM gClauses $ \(lhs,rhs) -> checkGR (buildEnv lhs) (gName, gTy) rhs gTy
      iLOG $ show checkRhsSeq
      return $ Partial NotProductive
@@ -75,14 +77,14 @@ universallyQuantify NonCausal (Bind n (Pi ty@(unapplyForall -> Nothing) kind) sc
 universallyQuantify _ ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term
-guardedLHS = guardedTT'
+guardedLHS lhs = guardedTT' (removeLaziness lhs)
 
 guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Modality -> Idris (Term, Term)
 guardedRecursiveClause _ _ (_, lhs, Impossible) _ = return (lhs, Impossible)
 guardedRecursiveClause name ty (_, lhs, rhs) modality =
   do ctxt <- getContext
      rhsTy <- typeOf rhs (buildEnv lhs)
-     gRhsTy <- guardedType (removeLaziness rhsTy) modality
+     gRhsTy <- guardedType rhsTy modality
      ist <- get
      put $ ist { tt_ctxt = addTyDecl name Ref ty ctxt }
      glhs <- guardedLHS lhs

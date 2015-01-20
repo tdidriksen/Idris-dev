@@ -259,6 +259,13 @@ guardExactNamesIn n t = do gn <- getGuardedName n
 ----------------- TT -----------------
 --------------------------------------
 
+debindType :: Type -> Idris (Type, Type, Type)
+debindType (unapplyLater -> Just ty) = debindType ty
+debindType (unapplyForall -> Just ty) = debindType ty
+debindType atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
+debindType ty = ifail $ "Cannot debind non-function type: " ++ show ty
+
+
 ---- TYPE (UN)APPLICATIONS ----
 
 applyForall :: Type -> Idris Type
@@ -466,6 +473,9 @@ checkGoal tm goal env =
            cEq env tmType goal
       Nothing ->
         do iLOG $ "Conversion checking : no type"
+           iLOG $ "Goal : " ++ show goal
+           iLOG $ "env : " ++ intercalate ", " (map show env)
+           _ <- typeOf tm env
            return False
 
 -- | typeOf t env attempts to get the type of
@@ -475,7 +485,7 @@ typeOf :: Term -> Env -> Idris Type
 typeOf t env =
   do ctxt <- getContext
      case check ctxt env (forget t) of
-      OK (_,t') -> return (explicitNames t')
+      OK (_,t') -> normaliseLater (explicitNames t')
       Error e -> ierror e
 
 -- | typeOf' t env ty gets the type of
