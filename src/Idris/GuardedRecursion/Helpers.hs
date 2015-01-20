@@ -503,7 +503,7 @@ typeOf' t env err =
 typeOfMaybe :: Term -> Env -> Idris (Maybe Type)
 typeOfMaybe t env = idrisCatch (typeOf t env >>= \t' -> return $ Just t') (\_ -> return Nothing)
 
----- LATER ----
+--- LATER ----
 
 compareAvailability :: Type -> Type -> Ordering
 compareAvailability (unapplyLater -> Just _) (unapplyLater -> Nothing) = LT
@@ -536,7 +536,13 @@ distributeLater (unapplyLater -> Just b@(Bind _ (Pi _ _) _)) =
          laterSc <- applyLaters sc
          return $ Bind n (Pi laterPiTy kind) laterSc
     applyLaters ty = applyLater' ty
-distributeLater ty = return ty     
+distributeLater ty = return ty
+
+findNameRef :: Name -> [Term] -> Maybe Term
+findNameRef n (t@(P Ref n' _) : rest)
+  | n == n' = Just t
+findNameRef n (_ : rest) = findNameRef n rest
+findNameRef _ [] = Nothing
 
 nowType :: Type -> Type
 nowType    (unapplyLater -> Just ty) = nowType ty
@@ -709,9 +715,13 @@ isOpen _ = False
 
 -- | Merges two totalities. If one is
 -- not total it is chosen.
+-- Is specific for guarded recursion.
 mergeTotal :: Totality -> Totality -> Totality
 mergeTotal (Total _) t = t
 mergeTotal t (Total _) = t
+mergeTotal (Partial (NotGuardedRecursive rs)) (Partial (NotGuardedRecursive rs')) = Partial (NotGuardedRecursive (rs ++ rs'))
+mergeTotal t@(Partial (NotGuardedRecursive _)) _ = t
+mergeTotal _ t@(Partial (NotGuardedRecursive _)) = t
 mergeTotal t _ = t
 
 
@@ -847,6 +857,16 @@ boundVars tm = boundVars' tm 0 [] -- foldTT boundVars' [] tm
     boundVars' (App t t') i vars = boundVars' t i (boundVars' t' i vars)
     boundVars' (Proj tm _) i vars = boundVars' tm i vars
     boundVars' _ _ vars = vars
+
+withoutParams :: Type -> Type
+withoutParams ty = wp (map fst $ parameters ty) 0 ty
+  where                   
+    wp :: [Int] -> Int -> Type -> Type
+    wp xs i (Bind n b sc)
+      | i `elem` xs = wp xs (i+1) sc
+      | otherwise   = Bind n b (wp xs (i+1) sc)
+    wp _ _ t = t                      
+        
 
 parameters :: Type -> [(Int, Name)]
 parameters ty = let pBounds = boundVars ty

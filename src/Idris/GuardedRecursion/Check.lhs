@@ -85,14 +85,14 @@ check Open g n (next -> Extracted t) (later -> Extracted a) =
 \begin{code}
 
 check Open g n (tensor -> Extracted (t, u, a, b')) (later -> Extracted b) =
-  do --c <- cEq g b' b
-     if True
+  do c <- cEq g b' b
+     if c
        then (do aToB <- (a `to` b) g
                 requires
                   (check Open g n t =<< laterK aToB)
                   (check Open g n u =<< laterK a))
        else (do iLOG $ "Tensor not equal: " ++ show b' ++ " \n and \n " ++ show b
-                return $ Partial NotProductive)
+                return $ Partial (NotGuardedRecursive [(TensorTypeMismatch b b')]))
      
 \end{code}
 \hrulefill 
@@ -111,7 +111,7 @@ check Open g n (apply -> Extracted t) a =
                              (nofc n g)
                              (check Closed g n t forallA)
        _ -> do iLOG $ "Expected " ++ show aTy ++ " to be of type type"
-               return $ Partial NotProductive
+               return $ Partial (NotGuardedRecursive [ApplyWithoutType])
 \end{code}
 \hrulefill 
 \[
@@ -130,7 +130,8 @@ Not Guarded Recursion:
 \begin{code}
 check d g n (App t t') b =
   do ty <- typeOf t g
-     (a,_) <- debind ty
+     (a,b') <- debind ty
+     -- eq b b'
      requires
        (check d g n t ty)
        (check d g n t' a)
@@ -144,12 +145,12 @@ check d g (n, _) (P _ n' ty) a
              if (not c' || isOpen d)
                    then (return $ Total [])
                    else (do iLOG $ "Not productive. \n c: " ++ show c' ++ " \n ty: " ++ show ty ++ " \n d: " ++ show (isOpen d)
-                            return $ Partial NotProductive))
+                            return $ Partial (NotGuardedRecursive [OpenClockNeeded ty])))
          else
          (do iLOG $ "Not productive because \n" ++ show ty ++ "\n and\n " ++ show a ++ "\n were not equal. cEq was " ++ show c
-             return $ Partial NotProductive)
+             return $ Partial (NotGuardedRecursive [TypeMismatch ty a]))
 check _ _ _ t a = do iLOG $ "Catch all..." ++ show t ++ " and " ++ show a
-                     return $ Partial NotProductive
+                     return $ Partial (NotGuardedRecursive [Misc t a])
 \end{code}
 \ignore{
 \begin{code}
@@ -160,10 +161,6 @@ next _ = Nope
 later :: Type -> Extract Type
 later (unapplyLater -> Just a) = return a
 later _ = Nope
-
-unlater :: Type -> Idris Type
-unlater (unapplyLater -> Just a) = return a
-unlater _ = translateError Undefined
 
 laterK :: Type -> Idris Type
 laterK = applyLater'
@@ -187,49 +184,32 @@ forallK _ = Nope
 forall :: Type -> Idris Type
 forall = applyForall
 
--- 
 debind :: Type -> Idris (Type, Type)
 debind (Bind _ b t) = return $ (binderTy b, t)
 debind _ = translateError Undefined
 
-{-
-debind' :: Type -> Type -> Env -> Idris Type
-debind' (Bind n b t) ty env =
-  ifM (cEq env t ty)
-      (return $ binderTy b)
-      (do rest <- debind' t ty env
-          return $ Bind n b rest)
-debind' _ _ _ = translateError Undefined  
--}
-
-tyEq :: Env -> Type -> Type -> Idris ()
-tyEq env ty ty' =
-  do ctxt <- getContext
-     ist <- get
-     let ucs = map fst (idris_constraints ist)
-     case LazyState.evalStateT (convertsC ctxt env ty ty') (0, ucs) of
-      tc -> case tc of
-              OK _ -> return ()
-              Error e -> translateError $ Misc (show e)
+unapp :: Term -> Maybe Term
+unapp (unapplyApply -> Just t) = Just t
+unapp (App t t') = unapp t
+unapp _ = Nothing
 
 causalRecursiveRef :: Name -> Term -> Extract Term
-causalRecursiveRef n (unapplyNext >=> unapplyApply -> Just t@(P Ref n' _))
-  | n == n' = return t
+causalRecursiveRef n (unapplyNext >=> unapp -> Just t@(P Ref n' _))
+  | n == n' = Extracted t
 causalRecursiveRef _ _ = Nope
 
 acausalRecursiveRef :: Name -> Term -> Extract Term
-acausalRecursiveRef n (unapplyNext -> Just t@(P Ref n' _))
+acausalRecursiveRef n (unapplyNext -> Just (unApply -> (t@(P Ref n' _),_)))
   | n == n' = return t
 acausalRecursiveRef _ _ = Nope              
-
 
 laterThan :: Type -> Type -> Env -> Idris Totality
 laterThan (unapplyLater -> Just ty') ty env = do c <- cEq env ty ty'
                                                  if c
                                                    then (return $ Total [])
                                                    else (do iLOG $ "laterThan failed because \n" ++ show ty ++ "\n and\n " ++ show ty' ++ "\n were not equal."
-                                                            return $ Partial NotProductive)
-laterThan _ _ _ = return $ Partial NotProductive                                                        
+                                                            return $ Partial (NotGuardedRecursive [WrongRecRefType]))
+laterThan _ _ _ = return $ Partial (NotGuardedRecursive [WrongRecRefType])
 
 requires :: Idris Totality -> Idris Totality -> Idris Totality
 requires t1 t2 = do t  <- t1

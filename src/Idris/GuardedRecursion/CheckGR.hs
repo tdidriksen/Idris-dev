@@ -56,7 +56,8 @@ checkFunction name ty clauses =
           iLOG $ show ("GR_LHS_EPS_AST: " ++ showTT lhs)
           iLOG $ show ("GR_RHS_EPS: " ++ show rhs)
           iLOG $ show ("GR_RHS_EPS_AST: " ++ showTT rhs)
-     checkRhsSeq <- forM gClauses $ \(lhs,rhs) -> checkGR (buildEnv lhs) (gName, gTy) rhs gTy
+     checkRhsSeq <- forM gClauses $ \(lhs,rhs) -> guardedRecursiveCheck gName gTy lhs rhs -- checkGR (buildEnv lhs) (gName, rTy) rhs gTy
+     iLOG $ "Checked: " ++ show name
      iLOG $ show checkRhsSeq
      return $ Partial NotProductive
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
@@ -78,6 +79,17 @@ universallyQuantify _ ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term
 guardedLHS lhs = guardedTT' (removeLaziness lhs)
+
+guardedRecursiveCheck :: Name -> Type -> Term -> Term -> Idris Totality
+guardedRecursiveCheck recName ty lhs rhs =
+  do let env = buildEnv lhs
+     let appliedType = case unapplyForall ty of
+                         Just ty' -> ty'
+                         Nothing -> ty
+     recTy <- applyForall $ withoutParams appliedType
+     iLOG $ "New recursive " ++ show recTy
+     checkGR env (recName, recTy) rhs ty
+                         
 
 guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Modality -> Idris (Term, Term)
 guardedRecursiveClause _ _ (_, lhs, Impossible) _ = return (lhs, Impossible)

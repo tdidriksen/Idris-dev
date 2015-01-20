@@ -4,7 +4,7 @@
 module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC, normaliseAll,
                 rt_simplify, simplify, specialise, hnf, convEq, convEq',
                 Def(..), CaseInfo(..), CaseDefs(..),
-                Accessibility(..), Totality(..), PReason(..), MetaInformation(..),
+                Accessibility(..), Totality(..), PReason(..), GRReason(..), MetaInformation(..),
                 Context, initContext, ctxtAlist, uconstraints, next_tvar,
                 addToCtxt, setAccess, setTotal, setMetaInformation, addCtxtDef, addTyDecl,
                 addDatatype, addCasedef, simplifyCasedef, addOperator,
@@ -742,7 +742,13 @@ deriving instance NFData Totality
 
 -- | Reasons why a function may not be total
 data PReason = Other [Name] | Itself | NotCovering | NotPositive | UseUndef Name
-             | ExternalIO | BelieveMe | Mutual [Name] | NotProductive
+             | ExternalIO | BelieveMe | Mutual [Name] | NotProductive | NotGuardedRecursive [GRReason]
+    deriving (Show, Eq)
+
+-- | Reasons why a function may not be guarded recursive
+data GRReason = TensorTypeMismatch Type Type | ApplyWithoutType | TypeMismatch Type Type
+              | OpenClockNeeded Type | ExpectedLater Type | ExpectedBinder Type | WrongRecRefType
+              | Misc Term Type
     deriving (Show, Eq)
 {-!
 deriving instance NFData PReason
@@ -761,6 +767,7 @@ instance Show Totality where
     show (Partial (Other ns)) = "possibly not total due to: " ++ showSep ", " (map show ns)
     show (Partial (Mutual ns)) = "possibly not total due to recursive path " ++
                                  showSep " --> " (map show ns)
+    show (Partial (NotGuardedRecursive rs)) = "possibly not total due to guarded recursion: " ++ show rs                                 
 
 {-!
 deriving instance Binary Accessibility
