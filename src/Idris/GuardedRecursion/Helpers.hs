@@ -265,6 +265,11 @@ debindType (unapplyForall -> Just ty) = debindType ty
 debindType atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
 debindType ty = ifail $ "Cannot debind non-function type: " ++ show ty
 
+binders :: TT n -> [(n, Binder (TT n))]
+binders (Bind n binder sc) = (n,binder) : binders sc
+binders _ = []
+
+
 
 ---- TYPE (UN)APPLICATIONS ----
 

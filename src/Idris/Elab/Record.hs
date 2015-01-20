@@ -276,7 +276,7 @@ mkProjAndUpdate info syn fc tyn cn cty_in
          let implBinds = getImplB id cty'
 
          -- Register projections as available left-hand side projections
-         let projNames = map (expandNS syn) (map fst ptys_u)
+         let projNames = map (expandNS syn) (map fst ptys)
          logLvl 1 $ "projNames: " ++ intercalate ", " (map show projNames)
          -- let projInfo = zip projNames [0..]
          let projTypes = map head proj_decls
@@ -291,7 +291,7 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                                    implBinds (length nonImp)) (zip nonImp [0..])
          mapM_ (rec_elabDecl info EAll info) (concat proj_decls)
          logLvl 3 $ show update_decls
-         mapM_ (tryElabSetter info) update_decls
+         -- mapM_ (tryElabSetter info) update_decls
   where
     getBoundImpls (PPi (Imp _ _ _) n ty sc) = (n, ty) : getBoundImpls sc
     getBoundImpls _ = []
@@ -396,7 +396,7 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                         [pexp (PApp fc (PRef fc cn) iargs)]
              let rhs = PRef fc (mkp pn_in)
              let pclause = PClause fc pn lhs [] rhs []
-             return [pfnTy, PClauses fc [] pn [pclause]]
+             return [pfnTy, PClauses fc [CausalFn] pn [pclause]]
 
     implicitise (pa, t) = pa { getTm = t }
 

@@ -13,6 +13,7 @@ import Idris.GuardedRecursion.Epsilon (epsilon)
 import Idris.GuardedRecursion.Check (checkGR)
 
 import Data.List
+import qualified Data.Map as M
 
 import Control.Monad
 import Control.Monad.State
@@ -20,22 +21,31 @@ import Control.Monad.State
 checkGuardedRecursive :: Name -> Idris Totality
 checkGuardedRecursive n =
   do ctxt <- getContext
-     case lookupDef n ctxt of
-        [CaseOp _ ty _ _ clauses _] ->
-          do forM_ clauses $ \(pvs, lhs, rhs) ->
-               do iLOG $ show ("GR_LHS: " ++ showTT lhs)
-                  iLOG $ show ("GR_RHS: " ++ showTT rhs)
-             ctxt <- getContext
-             _ <- case lookupTyExact n ctxt of
-                   Just nty -> checkFunction n nty clauses
-                   Nothing -> checkFunction n ty clauses
-             -- i <- get
-             -- case lookupCtxt n (idris_flags i) of
-             --  [fnOpts] -> setFlags n (fnOpts \\ [CausalFn])
-             --  _ -> return ()
+     skip <- isLhsProj n
+     if skip
+        then return $ Partial NotProductive
+        else do case lookupDef n ctxt of
+                 [CaseOp _ ty _ _ clauses _] ->
+                   do forM_ clauses $ \(pvs, lhs, rhs) ->
+                        do iLOG $ show ("GR_LHS: " ++ showTT lhs)
+                           iLOG $ show ("GR_RHS: " ++ showTT rhs)
+                      ctxt <- getContext
+                      _ <- case lookupTyExact n ctxt of
+                            Just nty -> checkFunction n nty clauses
+                            Nothing -> checkFunction n ty clauses
+                      -- i <- get
+                      -- case lookupCtxt n (idris_flags i) of
+                      --  [fnOpts] -> setFlags n (fnOpts \\ [CausalFn])
+                      --  _ -> return ()
 
-             return $ Partial NotProductive
-        _ -> return $ Partial NotProductive
+                      return $ Partial NotProductive
+                 _ -> return $ Partial NotProductive
+
+isLhsProj :: Name -> Idris Bool
+isLhsProj name = do i <- get
+                    case M.lookup name (lhs_projections i) of
+                     Just _ -> return True
+                     Nothing -> return False
 
 checkFunction :: Name -> Type -> [([Name], Term, Term)] -> Idris Totality
 checkFunction name ty clauses =
