@@ -1,4 +1,4 @@
-xb\documentclass{article}
+\documentclass{article}
 %include polycode.fmt
 \begin{document}
 
@@ -44,94 +44,80 @@ epsilon modality recName t a params env =
       Causal    -> epsilonCheck Causal Closed recName env fixed a
       NonCausal -> epsilonCheck NonCausal Open recName env fixed a
 
-epsilonCheck :: Modality -> Clock -> Name -> Env -> Term -> Type -> Idris Term
+epsilonCheck :: Modality -> Clock -> Name -> Env -> Term -> Term -> Idris Term
+epsilonCheck modality clock recName env t a =
+  do ok <- checkGoal t a env
+     if ok
+        then return t
+        else infer
+             --(\err -> epsFail t "Top-level conversion check failed.")
+  where infer = epsilonInfer modality clock recName env t a
 
-epsilonCheck Causal Open recName env recRef@(unapplyNext -> Just (unApply -> ((unapplyApply -> Just (P Ref n _),_)))) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
+epsilonInfer :: Modality -> Clock -> Name -> Env -> Term -> Type -> Idris Term
+epsilonInfer Causal Open recName env recRef@(unapplyNext >=> unapplyApply -> Just (P Ref n _)) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
   do iLOG "Found recursive ref (causal)"
 --     epsLog "Recursive ref (causal" recRef
      return recRef
-epsilonCheck NonCausal Open recName env recRef@(unapplyNext -> Just (unApply -> ((P Ref n _), _))) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
+epsilonInfer Causal Open recName env recRef@(unapplyNext >=> unapplyApply -> Just (P Ref n _)) (unapplyLater -> Just a@(unapplyLater -> Just _)) | n == recName =
+  do iLOG "Found later recursive ref (causal)"
+     applyNext a =<< epsilonCheck Causal Open recName env recRef a
+epsilonInfer NonCausal Open recName env recRef@(unapplyNext -> Just (unApply -> ((P Ref n _), _))) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
   do iLOG "Found recursive ref"
      return recRef
-
--- Check fix (by nexting recursive reference)
--- epsilonCheck Open recName env p@(P Ref refn pty) ty@(unapplyLater -> Just a) | refn == recName =
---   do epsLog "Recursive ref check" p ty
---      recRef <- epsilonCheck Open recName env p a
---      applyNext recRef
--- -- Fix error cases
--- epsilonCheck Closed recName env p@(P Ref refn pty) (unapplyLater -> Just a) | refn == recName =
---   epsFail p "Accessing recursive reference with empty clock context."
--- epsilonCheck Closed recName env p@(P Ref refn (unapplyForall -> Just _)) (unapplyForall -> Just _) | refn == recName =
---   return p 
---epsilonCheck _ recName env p@(P Ref refn pty) (unapplyLater -> Nothing) | refn == recName =
---  epsFail p "Recursive reference not expected to be available later."
-
+epsilonInfer NonCausal Open recName env recRef@(unapplyNext -> Just (unApply -> ((P Ref n _), _))) (unapplyLater -> Just a@(unapplyLater -> Just _)) | n == recName =
+  do iLOG "Found later recursive ref"
+     applyNext a =<< epsilonCheck NonCausal Open recName env recRef a
+     
 -- Binders
-epsilonCheck modality clock recName env tm@(Bind n (Let letty letval) sc) a =
+epsilonInfer modality clock recName env tm@(Bind n (Let letty letval) sc) a =
   do epsLog "Let binder check" tm a
      gLetTy <- guardedTT letty
      gLetVal <- epsilonCheck modality clock recName env letval gLetTy
      let gBinder = Let gLetTy gLetVal
      bindEps <- epsilonCheck modality clock recName ((n, gBinder):env) sc a
      return $ Bind n gBinder sc
-epsilonCheck modality clock recName env tm@(Bind n binder sc) ty@(debindFirstArg -> Just a)
+epsilonInfer modality clock recName env tm@(Bind n binder sc) ty@(debindFirstArg -> Just a)
   | Just _ <- debindFirstArg $ binderTy binder =
       do epsLog "Function arg binder check" tm ty
          bindEps <- epsilonCheck modality clock recName ((n, binder):env) sc a
          return $ Bind n binder bindEps
-epsilonCheck modality clock recName env tm@(Bind n binder sc) a
+epsilonInfer modality clock recName env tm@(Bind n binder sc) a
   | Nothing <- debindFirstArg $ binderTy binder =
       do epsLog "Other binder check" tm a
          bindEps <- epsilonCheck modality clock recName ((n, binder):env) sc a
          return $ Bind n binder bindEps
 
--- Check tensor
--- epsilonCheck Open recName env tm@(unapplyCompose -> Just (a, b, av, f, arg)) ty@(unapplyLater -> Just b') =
---   do epsLog "Tensor check" tm ty
---      (Just fType) <- typeOfMaybe f env
---      laterA <- applyLater' a
---      fChecked <- epsilonCheck Open recName env f fType
---      argChecked <- epsilonCheck Open recName env arg laterA
---      applyCompose a b av fChecked argChecked
 -- Infer tensor
-epsilonCheck modality Open recName env t@(App f x) a | Just a' <- unapplyLater a, Just _ <- unapplyLater a' =
-  do t' <- epsilonCheck modality Open recName env t a'
-     applyNext a' t'
-epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b', Nothing <- unapplyLater b =
+-- epsilonInfer modality Open recName env t@(App f x) a | Just a' <- unapplyLater a, Just _ <- unapplyLater a' =
+--   do epsLog "App Later-Later" t a
+--      t' <- epsilonCheck modality Open recName env t a'
+--      applyNext a' t'
+epsilonInfer modality Open recName env t@(App _ _) b'@(unapplyLater -> Just b) =
   do epsLog "Tensor infer" t b'
-     idrisCatch (applyNext b =<< epsilonCheck modality Open recName env t b)
+     iLOG $ "Tensor term " ++ showTT t
+     idrisCatch (applyWhenAvailable (epsilonCheck modality Open recName env) t b')  --(applyNext b =<< epsilonCheck modality Open recName env t b)
                 (\err -> do iLOG $ "Error : " ++ show err
-                            iLOG "Inferring tensor"
+                            epsLog "Inferring tensor" t b'
                             --let (f, args) = unApply t
-                            (prefix, remainingArgs) <- nextPrefix t b
+                            (prefix, remainingArgs) <- nextPrefix t b'
                             tensor <- inferTensor prefix remainingArgs
                             ok <- checkGoal tensor b' env
                             if ok
                                then return tensor
-                               else do iLOG $ "tensor: " ++ showTT tensor
+                               else do iLOG $ "tensor: " ++ show tensor
                                        iLOG $ "Tensor inference failed"
-                                       return t)
-                    
-     
-     -- idrisCatch (applyNext b =<< epsilonCheck modality Open recName env t b)
-     --            (\err -> do iLOG $ "Error : " ++ show err
-     --                        iLOG "Inferring tensor"
-     --                        let (f, args) = unApply t
-     --                        -- fType' <- typeOfMaybe f env
-     --                        -- fType <- case fType of
-     --                        --            Just ty -> return ty
-     --                        --            Nothing -> epsFail t $ "Function " ++ show f ++ " has no type"
-     --                        -- epsF <- epsilonCheck modality Open recName env f =<< fType `availableWith` b'
-     --                        tensor <- inferTensor epsF args
-     --                        ok <- checkGoal tensor b' env
-     --                        if ok
-     --                           then return tensor
-     --                           else do iLOG $ "tensor: " ++ showTT tensor
-     --                                   iLOG $ "Tensor inference failed"
-     --                                   return t)
+                                       epsFail t "Tensor inference can never be well-typed")
   where
     nextPrefix :: Term -> Type -> Idris (Term, [Term])
+    nextPrefix f laterGoal@(unapplyLater -> Just goal) =
+      do (prefix,remainingArgs) <- nextPrefix f goal
+         prefixTy <- typeOf prefix env
+         prefixRetTy <- distributeLater prefixTy >>= \ty -> return $ getRetTy ty
+         nextedPrefix <- case compareAvailability prefixRetTy laterGoal of
+                          LT -> applyNext prefixTy prefix
+                          _ -> return prefix
+         iLOG $ "Returning prefix : " ++ show nextedPrefix
+         return (nextedPrefix, remainingArgs)
     nextPrefix (unApply -> (f, args)) b =
       do fType <- typeOf f env --(ifail $ "Function " ++ show f ++ " has no type.")
          let fTyBinders = binders fType
@@ -150,11 +136,8 @@ epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b
          appType <- typeOfMaybe (App f x) env
          case appType of
           Just _ -> nextPrefix' (App f x) args
-          Nothing -> do fTy <- typeOf f env
-                        case unapplyLater fTy of
-                         Just _ -> return (f, x:args)
-                         Nothing -> do f' <- applyNext fTy f
-                                       return (f', x:args)
+          Nothing -> return (f, x:args)
+    
          -- fType' <- typeOfMaybe f env
          -- fType <- case fType' of
          --            Just ty -> return ty
@@ -175,72 +158,40 @@ epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b
 
     inferTensor :: Term -> [Term] -> Idris Term
     inferTensor f (x:args) =
-      do fType' <- typeOfMaybe f env
-         fType <- case fType' of
-                   Just ty -> return ty
-                   Nothing -> epsFail f "Function has no type"
-         -- let fType = case unapplyLater fType' of
-         --             Just ty -> ty
-         --             Nothing -> fType'
-         -- iLOG $ "fType' : " ++ show fType'             
+      do -- Get type of function
+         fType'' <- typeOfMaybe f env
+         fType' <- case fType'' of
+                    Just ty -> return ty
+                    Nothing -> epsFail f "Function has no type"
+         -- Distribute laters in function type
+         fType <- distributeLater fType'  -- fType' `whenNow` b'
+         iLOG $ "fType' : " ++ show fType'
          iLOG $ "fType : " ++ show fType
-         (a, b, atob) <- debindType fType
-
-         iLOG $ "atob : " ++ show atob
-         iLOG $ "a : " ++ show a
-         iLOG $ "b : " ++ show b
-         laterAtoB <- atob `availableWith` b'
-         iLOG $ "laterAtoB : " ++ show laterAtoB
-         epsF <- epsilonCheck modality Open recName env f laterAtoB
-         iLOG $ "epsF : " ++ show epsF
-         laterA <- a `availableWith` b'
-         iLOG $ "laterA : " ++ show laterA
-         epsX <- epsilonCheck modality Open recName env x laterA
-         iLOG $ "epsX : " ++ show epsX
-         tensorFX <- applyCompose' a b epsF epsX
-         iLOG $ "tensorFX : " ++ show tensorFX
-         inferTensor tensorFX args
+         -- Conversion check with goal
+         ok <- cEq env (getRetTy fType) b'
+         if ok
+            then do (composeA, composeB, _) <- debindType (fType' `whenNow` b')
+                    iLOG $ "composeA : " ++ show composeA
+                    iLOG $ "composeB : " ++ show composeB
+                    (a,b,_) <- debindType fType
+                    --iLOG $ "atob : " ++ show atob
+                    iLOG $ "a : " ++ show a
+                    iLOG $ "b : " ++ show b
+                    --laterAtoB <- delayBy b' atob --atob `availableWith` b'
+                    --iLOG $ "laterAtoB : " ++ show laterAtoB
+                    --epsF <- epsilonCheck modality Open recName env f laterAtoB
+                    --iLOG $ "epsF : " ++ show epsF
+                    --laterA <- delayBy b' a -- a `availableWith` b'
+                    --iLOG $ "laterA : " ++ show laterA
+                    epsX <- epsilonCheck modality Open recName env x a
+                    iLOG $ "epsX : " ++ show epsX
+                    avB' <- tensorAvailabilityOf (b' `whenNow` composeB)
+                    iLOG $ "avB' " ++ show avB'
+                    tensorFX <- applyCompose composeA composeB avB' f epsX
+                    iLOG $ "tensorFX : " ++ show tensorFX
+                    inferTensor tensorFX args
+            else ifail $ "Return type " ++ show (getRetTy fType) ++ " of function " ++ show f ++ " can never be part of a well-typed type with type " ++ show b'  
     inferTensor f [] = return f
-
-      
-    -- inferTensor :: Term -> [Term] -> Idris Term
-    -- inferTensor (unapplyNext -> Just f) (x:args) =
-    --   do iLOG "inferTensor"
-    --      iLOG $ "f : " ++ show f
-    --      iLOG $ "x : " ++ show x
-    --      appTy' <- typeOfMaybe (App f x) env
-    --      case appTy' of
-    --       Just _  -> inferTensor (App f x) args
-    --       Nothing -> 
-    --        do fType' <- typeOf f env
-    --           let fType = case unapplyLater fType' of
-    --                       Just ty -> ty
-    --                       Nothing -> fType'
-    --           iLOG $ "fType' : " ++ show fType'             
-    --           iLOG $ "fType : " ++ show fType
-    --           (a, b, atob) <- debindType fType
-              
-    --           iLOG $ "atob : " ++ show atob
-    --           iLOG $ "a : " ++ show a
-    --           iLOG $ "b : " ++ show b
-    --           laterAtoB <- atob `availableWith` b'
-    --           iLOG $ "laterAtoB : " ++ show laterAtoB
-    --           epsF <- epsilonCheck modality Open recName env f laterAtoB
-    --           iLOG $ "epsF : " ++ show epsF
-    --           laterA <- a `availableWith` b'
-    --           iLOG $ "laterA : " ++ show laterA
-    --           epsX <- epsilonCheck modality Open recName env x laterA
-    --           iLOG $ "epsX : " ++ show epsX
-    --           tensorFX <- applyCompose' a b epsF epsX
-    --           iLOG $ "tensorFX : " ++ show tensorFX
-    --           inferTensor tensorFX args
-    -- inferTensor f [] = return f
-         
-    -- debind :: Type -> Idris (Type, Type, Type)
-    -- debind (unapplyLater -> Just ty) = debind ty
-    -- debind (unapplyForall -> Just ty) = debind ty
-    -- debind atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
-    -- debind ty = ifail $ "Cannot debind non-function type: " ++ show ty
          
     availableWith :: Type -> Type -> Idris Type
     availableWith (unapplyLater -> Just a) (unapplyLater -> Just b) =
@@ -253,231 +204,28 @@ epsilonCheck modality Open recName env t@(App _ _) b' | Just b <- unapplyLater b
       return a
      
      
-  --    let (f, args) = unApply t
-  --    fTy <- typeOf f env
-  --    laterFTy <- fTy `availableWith` b'
-  --    epsF <- epsilonCheck modality Open recName env laterFTy
-  --    distFTy <- distributeLater laterFTy
-  --    let laterArgTys = map snd $ getArgTys distFTy
-  --    epsArgs <- forM (zip args laterArgTys) $ \(arg, argTy) ->
-  --                 epsilonCheck modality Open recName env arg =<< argTy `availableWith` b'
-     
-  --    atob' <- typeOfMaybe f env
-     
-  -- where
-  --   inferCompose :: Maybe Type -> Idris Term
-  --   inferCompose (Just atob) =
-  --     do iLOG "Tensor Just"
-  --        let argTys = map snd $ getArgTys atob
-  --        let a = head argTypes
-  --        iLOG $ "a : " ++ show a
-  --        epsF <- epsilonCheck modality Open recName env f =<< atob `availableWith` b'
-  --        epsX <- epsilonCheck modality Open recName env x =<< a `availableWith` b'
-  --        iLOG $ "epsF : " ++ show epsF
-  --        iLOG $ "epsX : " ++ show epsX
-  --        applyCompose' a b epsF epsX      
-  --   inferCompose Nothing =
-      
-    
-  --   inferCompose :: Term -> [Term] -> Term
-  --   inferCompose f (x:args) =
-  --     do atob <- typeOf f env
-  --        laterAtoB <- atob `availableWith` b'
-  --        epsF <- epsilonCheck modality Open recName env laterAtoB
-  --        (c, d) <- debind laterAtoB
-  --        laterC <- c `availableWith` b'
-  --        epsX <- epsilonCheck modality Open recName env x laterC
-  --        composeFX <- applyCompose' c d          
-    
-
-  --    let (f, args) = unApply t
-  --    iLOG $ "f : " ++ show f
-  --    fType <- typeOf' f env (ifail $ "Function " ++ show f ++ " has no type.")
-  --    epsF <- epsilonCheck modality Open recName env f fType
-  --    epsFTy <- typeOf epsF env
-  --    epsApp' <- epsApp epsF epsFTy args
-  --    case epsApp' of
-  --     Right (tm, tmTy) -> do iLOG "Tensor right"
-  --                            iLOG $ "b : " ++ show b
-  --                            applyNext b tm
-  --     Left (f', atob, [arg]) ->
-  --       do iLOG $ "f' : " ++ show f'
-  --          iLOG $ "atob : " ++ show atob
-  --          iLOG $ "args' : " ++ intercalate "," (map show args')
-  --          iLOG $ "b : " ++ show b
-  --          let a = head $ map snd (getArgTys atob)
-  --          applyCompose' a b f' arg
-  --     Left (f', atob, args') ->
-  --       do iLOG $ "f' : " ++ show f'
-  --          iLOG $ "atob : " ++ show atob
-  --          iLOG $ "args' : " ++ intercalate "," (map show args')
-  --          iLOG $ "b : " ++ show b
-  --          let a = head $ map snd (getArgTys atob)
-  --          ifail "Tensor left"
-  --       --inferTensor f' atob args'           
-  -- where
-  --   epsApp :: Term -> Type -> [Term] -> Idris (Either (Term, Type, [Term]) (Term, Type))
-  --   epsApp f fTy (x:args) =
-  --     do iLOG "epsApp (tensor)"
-  --        iLOG $ "f: " ++ show f
-  --        iLOG $ "fTy : " ++ show fTy
-  --        iLOG $ "x: " ++ show x
-  --        case unapplyLater fTy of
-  --         Just atob -> return $ Left (f, atob, (x:args))
-  --         Nothing ->
-  --           do let argTys = map snd $ getArgTys fTy
-  --              let xTy = head argTys
-  --              epsX <- epsilonCheck modality Open recName env x xTy
-  --              fxTy' <- typeOfMaybe (App f epsX) env
-  --              case fxTy' of
-  --               Just fxTy -> epsApp (App f epsX) fxTy args
-  --               Nothing   -> return $ Left (f, fTy, (x:args))
-  --   epsApp f fTy [] = return $ Right (f, fTy)
-
-  --   -- inferTensor :: Term -> Type -> [Term] -> Idris Term
-  --   -- inferTensor f atob (x:args) =
-  --   --   do epsF <- epsilonCheck modality Open recName env f =<< atob `availableWith` b'
-  --   --      let f'ArgTys = map snd $ getArgTys atob
-  --   --      let a = head f'ArgTys
-  --   --      let b = tail f'ArgTys
-  --   --      epsX <- epsilonCheck modality Open recName env x =<< a `availableWith` b'
-  --   --      compose <- applyCompose' a b epsF epsX
-  --   --      laterB <- applyLater' b
-  --   --      inferTensor compose 
-                  
-
-
-      -- do fType' <- typeOfMaybe f env (ifail $ "Function " ++ show f ++ " has no type.")
-      --    case fType' of
-      --     Just fType ->
-      --       do let argTys = map snd $ getArgTys fType
-      --          let xTy = head argTys
-      --          epsX <- epsilonCheck modality clock recName env x =<< delayBy a xTy
-      --          epsApp (App f epsX) args
-      --     Nothing -> return $ Left (f, 
-      -- epsApp f [] = return $ Right f
-     
-     -- fApply <- case unapplyNext f of
-     --            Just tm -> return tm
-     --            Nothing -> return f --ifail "Cannot unapply Next"
-     -- fRef <- case unapplyApply fApply of
-     --          Just tm -> return tm
-     --          Nothing -> return fApply --ifail "Cannot unapply Apply"
-     -- iLOG $ "fRef : " ++ show fRef
-     -- iLOG $ "fApply : " ++ show fApply
-     -- fRefType <- typeOf fRef env
-     -- iLOG $ "fRefType : " ++ show fRefType
-     -- fApplyType <- typeOf fApply env
-     -- iLOG $ "fApplyType : " ++ show fApplyType
-     -- fTypeM <- typeOfMaybe f env
-  --    iLOG $ "f : " ++ show f
-  --    iLOG $ "x : " ++ show x
-  --    iLOG $ "b : " ++ show b
-  --    iLOG $ "b' : " ++ show b'
-  --    -- let (f', args) = unApply t
-  --    -- f'Ty <- typeOf f' env
-  --    -- iLOG $ "f' : " ++ show f'
-  --    -- iLOG $ "f'Ty : " ++ show f'Ty
-  --    atob <- typeOf f env
-  --    -- atob <- case fTypeM of
-  --    --          Just ty -> return ty
-  --    --          Nothing -> epsFail f "Function does not have a type"
-  --    iLOG $ "atob : " ++ show atob
-  --    distAtoB <- distributeLater atob
-  --    iLOG $ "distAtoB : " ++ show distAtoB
-  --    let argTypes = map snd (getArgTys distAtoB)
-  --    let a = head argTypes
-  --    -- (a, b) <- case debind atob of
-  --    --            Just (ax,bx) -> return (ax,bx)
-  --    --            Nothing      -> epsFail f "Function does not have function type"
-  --    -- iLOG $ "atob : " ++ show atob
-  --    iLOG $ "a : " ++ show a
-  --    epsF <- epsilonCheck modality Open recName env f =<< atob `availableWith` b'
-  --    epsX <- epsilonCheck modality Open recName env x =<< a `availableWith` b'
-  --    iLOG $ "epsF : " ++ show epsF
-  --    iLOG $ "epsX : " ++ show epsX
-  --    applyCompose' a b epsF epsX
-  -- where
-  --   availableWith :: Type -> Type -> Idris Type
-  --   availableWith (unapplyLater -> Just a) (unapplyLater -> Just b) =
-  --     applyLater' =<< availableWith a b
-  --   availableWith a@(unapplyLater -> Nothing) (unapplyLater -> Just b) =
-  --     applyLater' =<< availableWith a b
-  --   availableWith a@(unapplyLater -> Just _) b@(unapplyLater -> Nothing) =
-  --     ifail $ "Cannot make " ++ show a ++ " available with " ++ show b
-  --   availableWith a@(unapplyLater -> Nothing) (unapplyLater -> Nothing) =
-  --     return a
-      
-  -- where
-  --   debind :: Type -> Maybe (Type, Type)
-  --   debind (Bind n (Pi ty kind) sc) = Just (ty, sc)
-  --   debind _ = Nothing
-     
-
-  --    delayedFType <- delayBy b fType
-  --    distDelayedFType <- distributeLater delayedFType
-  --    -- iLOG $ "fType : " ++ show fType
-  --    -- iLOG $ "delayedFType : " ++ show delayedFType
-  --    -- iLOG $ "distDelayedFType : " ++ show distDelayedFType
-  --    let xTy = head $ map snd (getArgTys distDelayedFType)
-  --    -- iLOG $ "f : " ++ show f
-  --    -- iLOG $ "x : " ++ show x
-  --    -- iLOG $ "xTy : " ++ show xTy
-  --    -- iLOG $ "b : " ++ show b
-  --    fEps <- epsilonCheck Open recName env f delayedFType
-  --    xEps <- epsilonCheck Open recName env x xTy
-  --    -- iLOG $ "fEps : " ++ show fEps
-  --    -- iLOG $ "xEps : " ++ show xEps
-  --    now <- nowRef
-  --    applyCompose delayedFType xTy now fEps xEps
-
 -- Tensor error cases
-epsilonCheck _ Closed recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
+epsilonInfer _ Closed recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Just b') =
   epsFail t "Compose application with empty clock environment."
-epsilonCheck _ _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Nothing) =
+epsilonInfer _ _ recName env t@(unapplyCompose -> Just (a, b, av, f, arg)) (unapplyLater -> Nothing) =
   epsFail t "Compose application not expected to be available later."
 
 
-
--- Check next
--- epsilonCheck Open recName env tm@(unapplyNext -> Just t) ty@(unapplyLater -> Just a) =
---   do epsLog "Next check" tm ty
---      nexted <- epsilonCheck Open recName env t a
---      applyNext nexted
 -- Infer next
-epsilonCheck modality Open recName env t ty@(unapplyLater -> Just a) =
+epsilonInfer modality Open recName env t ty@(unapplyLater -> Just a) =
   do epsLog "Next infer" t ty
      t' <- epsilonCheck modality Open recName env t a
      applyNext a t'
-  --    t'Type <- typeOfMaybe t' env
-  --    case t'Type of
-  --     Just ty' -> availableWith t' ty' ty
-  --     Nothing -> applyNext t'
-  -- where
-  --   availableWith :: Term -> Type -> Type -> Idris Term
-  --   availableWith tm (unapplyLater -> Just a) (unapplyLater -> Just b) =
-  --     availableWith tm a b
-  --   availableWith tm (unapplyLater -> Just a) (unapplyLater -> Nothing) =
-  --     epsFail tm "Term is available too late."
-  --   availableWith tm tmTy@(unapplyLater -> Nothing) (unapplyLater -> Just a) =
-  --     do tm' <- availableWith tm tmTy a
-  --        applyNext tm'
-  --   availableWith tm (unapplyLater -> Nothing) (unapplyLater -> Nothing) =
-  --     return tm
+
 -- Next error cases
-epsilonCheck _ _ recName env tm@(unapplyNext -> Just t) (unapplyLater -> Nothing) =
+epsilonInfer _ _ recName env tm@(unapplyNext -> Just t) (unapplyLater -> Nothing) =
   epsFail tm "Next application occurred outside later context."
-epsilonCheck _ Closed recName env tm@(unapplyNext -> Just t) _ =
+epsilonInfer _ Closed recName env tm@(unapplyNext -> Just t) _ =
   epsFail tm "Next application with empty clock environment."
 
 
--- Check forall (clock abstraction)
--- epsilonCheck Closed recName env tm@(unapplyLambdaKappa -> Just t) ty@(unapplyForall -> Just a) =
---   do epsLog "LambdaKappa check" tm ty
---      freeClockTm <- epsilonCheck Open recName env t a
---      applyLambdaKappa freeClockTm
 -- Infer forall
-epsilonCheck modality Closed recName env tm@(unapplyLambdaKappa -> Nothing) ty@(unapplyForall -> Just a) =
+epsilonInfer modality Closed recName env tm@(unapplyLambdaKappa -> Nothing) ty@(unapplyForall -> Just a) =
   do epsLog "LambdaKappa infer" tm ty
      recEps <- epsilonCheck modality Open recName env tm a
      hasForall <- hasForallType recEps
@@ -491,26 +239,17 @@ epsilonCheck modality Closed recName env tm@(unapplyLambdaKappa -> Nothing) ty@(
                           Just ty' -> return $ unapplyForall ty'
                           Nothing -> return Nothing
 -- Forall error cases
-epsilonCheck _ Open recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Just a) =
+epsilonInfer _ Open recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Just a) =
   epsFail tm "Clock abstraction in context with open clock."
-epsilonCheck _ _ recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Nothing) =
+epsilonInfer _ _ recName env tm@(unapplyLambdaKappa -> Just t) (unapplyForall -> Nothing) =
   epsFail tm "Clock abstraction not expected to have Forall type."
   
--- Check apply (clock application)
--- epsilonCheck Open recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
---   do epsLog "Apply check" tm a
---      forallA <- applyForall a
---      unappliedTm <- epsilonCheck Closed recName env t forallA
---      applyApply unappliedTm
--- --epsilonCheck Open recName env tm@(unapplyApply -> Nothing) a@(unapplyForall -> Nothing) =
-  --  do epsLog "Apply infer" tm a
-     
-epsilonCheck _ Closed recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
+epsilonInfer _ Closed recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Nothing) =
   epsFail tm "Clock application with empty clock environment."
-epsilonCheck _ _ recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Just _) =
+epsilonInfer _ _ recName env tm@(unapplyApply -> Just t) a@(unapplyForall -> Just _) =
   epsFail tm "Expected forall type as result of clock application."
 
-epsilonCheck modality clock recName env app@(App _ _) a =
+epsilonInfer modality clock recName env app@(App _ _) a =
   do epsLog "App recurse" app a
      let (f, args) = unApply app
      iLOG $ "f : " ++ show f
@@ -529,119 +268,36 @@ epsilonCheck modality clock recName env app@(App _ _) a =
     epsApp f (x:args) =
       do iLOG "epsApp"
          iLOG $ "f : " ++ show f
-         iLOG $ "x : " ++ showTT x
+         iLOG $ "x : " ++ show x
          fType' <- typeOfMaybe f env
          fType <- case fType' of
                     Just ty -> return ty
                     Nothing -> epsFail f $ "Function has no type."
-         -- (xTy, b, atob) <- debindType fType
+         (xTy, _, _) <- debindType fType
          -- epsF <- epsilonCheck modality clock recName env f atob
-         let argTys = map snd $ getArgTys fType
-         xTy <- if not $ null argTys
-                   then return $ head argTys
-                   else epsFail f "Term does not have function type"
+         -- let argTys = map snd $ getArgTys fType
+         -- xTy <- if not $ null argTys
+         --           then return $ head argTys
+         --           else epsFail f "Term does not have function type"
          epsX <- epsilonCheck modality clock recName env x =<< delayBy a xTy
          epsApp (App f epsX) args
     epsApp f [] = return f
  
-  --     do epsLog "App recurse" app a
-  --        (g, gTy, args) <- appType app []
-  --        let argTys = map snd $ getArgTys gTy
-  --        case (args, argTys) of
-  --         ((arg:as), (argTy:tys)) ->
-  --              do delayedType <- delayBy a argTy
-  --                 xEps <- epsilonCheck modality clock recName env arg delayedType
-  --                 epsilonCheck modality clock recName env (mkApp g (xEps:as)) a
-  --         ([], _) -> return g
-  --         _ -> epsFail app "Application can never reach a well-typed state"
-  -- -- do epsLog "App recurse" app a
-  -- --    ok <- checkGoal app a env
-  -- --    if ok
-  -- --       then return app
-  -- --       else do (g, gTy, args) <- appType app []
-  -- --               let argTys = map snd $ getArgTys gTy
-  -- --               case (args, argTys) of
-  -- --                ((arg:as), (argTy:tys)) ->
-  -- --                     do delayedType <- delayBy a argTy
-  -- --                        xEps <- epsilonCheck modality clock recName env arg delayedType
-  -- --                        epsilonCheck modality clock recName env (mkApp g (xEps:as)) a
-  -- --                _ -> epsFail app "Application can never reach a well-typed state"
-  -- where
-  --   appType :: Term -> [Term] -> Idris (Term, Type, [Term])
-  --   appType app'@(App f' x') args =
-  --     do app'Type <- typeOfMaybe app' env
-  --        case app'Type of
-  --         Just ty -> return (app', ty, args)
-  --         Nothing -> appType f' (x':args)
-  --   appType tm args =
-  --     do tmTyM <- typeOfMaybe tm env
-  --        case tmTyM of
-  --         Just ty -> return (tm, ty, args)
-  --         Nothing -> ifail $ "Term " ++ show tm ++ " has no type"                  
-                        
-  -- do epsLog "App recurse" app a
-  --    let (f', args) = unApply app
-  --    f'TypeMaybe <- typeOfMaybe f' env
-  --    f'Type <- case f'TypeMaybe of
-  --               Just ty -> return ty
-  --               Nothing -> epsFail f' "Function does not have a type"
-  --    let argTys = map snd $ getArgTys f'Type
-  --    let argsWithTys = zip args argTys
-  --    ctxt <- getContext
-  --    let params = parameters f' ctxt
-  --    iLOG $ "params: " ++ intercalate ", " (map show params)
-  --    let paramArgs = map (\(i,_) -> (i, argsWithTys !! i)) params
-  --    paramArgEps <- forM paramArgs $ \(i, (arg, argTy)) ->
-  --                     do delayedType <- delayBy a argTy
-  --                        (i, epsilonCheck modality clock recName env arg delayedType)
-  --    return (mkApp f' argEps)
- 
-    
-  -- do epsLog "App recurse" app a
-  --    let (f', args) = unApply app
-  --    f'TypeMaybe <- typeOfMaybe f' env
-  --    f'Type <- case f'TypeMaybe of
-  --               Just ty -> return ty
-  --               Nothing -> epsFail f' "Function does not have a type"
-  --    let argTys = map snd $ getArgTys f'Type
-  --    argEps <- forM (zip args argTys) $ \(arg, argTy) ->
-  --               do delayedType <- delayBy a argTy
-  --                  epsilonCheck modality clock recName env arg delayedType
-  --    return (mkApp f' argEps)
-
-epsilonCheck modality Open recName env tm@(unapplyApply -> Nothing) a@(unapplyForall -> Nothing) =
+epsilonInfer modality Open recName env tm@(unapplyApply -> Nothing) a@(unapplyForall -> Nothing) =
   do tmTyMaybe <- typeOfMaybe tm env
      case tmTyMaybe of
       Just tmTy -> case unapplyForall tmTy of
                      Just appliedTy -> do epsLog "Apply infer" tm a
                                           applyApply appliedTy tm
-                     Nothing -> do iLOG $ "No apply necessary"
+                     Nothing -> do iLOG $ "Epsilon done: No apply necessary"
                                    return tm
       Nothing -> return tm
 
 -- Conversion check to see if term already has the required type.
 -- If not, try to infer a term that does.
-epsilonCheck modality clock recName env t a =
+epsilonInfer modality clock recName env t a =
   do iLOG $  "Epsilon done: " ++ showTT t
      return t
-     --iLOG "Going into inference mode!"
-     -- tTy <- typeOfMaybe t env
-     -- ok <- idrisCatch (checkGoal t a env) (\err -> return False)
-     -- if ok
-     --  then do epsLog "Epsilon done" t a; return t
-     --  else do iLOG "Going into inference mode!"
-     --          epsilonInfer clock recName env t tTy a
-              
-  -- do epsLog "Inference mode?" t a
-  --    --return t
-  --    --tTy <- typeOfMaybe t env -- Problem: typeOfMaybe makes conversion check with context
-  --                        -- Solution? : Take term type as input, and take it apart by hand.
-     
-  --    ok <- idrisCatch (checkGoal t a env) (\err -> return False)
-  --    if ok
-  --     then do epsLog "Epsilon done" t a; return t
-  --     else do iLOG "Going into inference mode!"
-  --             epsilonInfer clock recName env t a a
 \end{code}
 
 

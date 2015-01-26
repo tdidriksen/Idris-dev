@@ -260,10 +260,22 @@ guardExactNamesIn n t = do gn <- getGuardedName n
 --------------------------------------
 
 debindType :: Type -> Idris (Type, Type, Type)
-debindType (unapplyLater -> Just ty) = debindType ty
+debindType ty@(unapplyLater -> Just _) = debindType =<< distributeLater ty
 debindType (unapplyForall -> Just ty) = debindType ty
 debindType atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
 debindType ty = ifail $ "Cannot debind non-function type: " ++ show ty
+
+whenNow :: Type -> Type -> Type
+whenNow (unapplyLater -> Just a) (unapplyLater -> Just b) = whenNow a b
+whenNow a@(unapplyLater -> Nothing) _ = a
+whenNow a (unapplyLater -> Nothing) = a
+
+-- debindType :: Type -> Idris (Type, Type, Type)
+-- debindType (unapplyLater -> Just ty) = debindType ty
+-- debindType (unapplyForall -> Just ty) = debindType ty
+-- debindType atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
+-- debindType ty = ifail $ "Cannot debind non-function type: " ++ show ty
+
 
 binders :: TT n -> [(n, Binder (TT n))]
 binders (Bind n binder sc) = (n,binder) : binders sc
@@ -392,6 +404,11 @@ unapplyRef tmName (App (P Ref name _) x)
   | name == tmName = Just x
 unapplyRef _ _ = Nothing
 
+applyTomorrow :: Term -> Idris Term
+applyTomorrow av =
+  do tomorrow <- tomorrowRef
+     return $ App tomorrow av
+
 unapplyTomorrow :: Term -> Maybe Term
 unapplyTomorrow tm = unapplyDataConstructor tomorrowName tm
 
@@ -480,7 +497,7 @@ checkGoal tm goal env =
         do iLOG $ "Conversion checking : no type"
            iLOG $ "Goal : " ++ show goal
            iLOG $ "env : " ++ intercalate ", " (map show env)
-           _ <- typeOf tm env
+           --_ <- typeOf tm env
            return False
 
 -- | typeOf t env attempts to get the type of
@@ -511,8 +528,8 @@ typeOfMaybe t env = idrisCatch (typeOf t env >>= \t' -> return $ Just t') (\_ ->
 --- LATER ----
 
 compareAvailability :: Type -> Type -> Ordering
-compareAvailability (unapplyLater -> Just _) (unapplyLater -> Nothing) = LT
-compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Just _) = GT
+compareAvailability (unapplyLater -> Just _) (unapplyLater -> Nothing) = GT
+compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Just _) = LT
 compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Nothing) = EQ
 compareAvailability (unapplyLater -> Just a) (unapplyLater -> Just b) = compareAvailability a b
 
@@ -527,21 +544,42 @@ delayBy (unapplyLater -> Just ty) ty' =
 delayBy (unapplyLater -> Nothing) ty' =
   return ty'
 
+availabilityOf :: Type -> Idris Term
+availabilityOf (unapplyLater -> Just ty) =
+  availabilityOf ty >>= applyTomorrow
+availabilityOf _ = nowRef
+
+tensorAvailabilityOf :: Type -> Idris Term
+tensorAvailabilityOf ty = availabilityOf ty >>= reduceAv
+  where
+    reduceAv :: Term -> Idris Term
+    reduceAv (unapplyTomorrow -> Just av) = return av
+    reduceAv av = return av
+
+applyWhenAvailable :: (Term -> Type -> Idris Term) -> Term -> Type -> Idris Term
+applyWhenAvailable f t (unapplyLater -> Just ty) = applyWhenAvailable f t ty >>= applyNext ty
+applyWhenAvailable f t ty = f t ty
+
 -- | Distributes laters over the type,
 -- e.g. Later (a -> b) becomes
--- Later a -> Later b                            
+-- Later a -> Later b
 distributeLater :: Type -> Idris Type
-distributeLater (unapplyLater -> Just b@(Bind _ (Pi _ _) _)) =
-  do b' <- applyLaters b
-     distributeLater b'
+distributeLater = distributeLater' return
   where
-    applyLaters :: Type -> Idris Type
-    applyLaters (Bind n (Pi t kind) sc) =
-      do laterPiTy <- applyLater' t
-         laterSc <- applyLaters sc
-         return $ Bind n (Pi laterPiTy kind) laterSc
-    applyLaters ty = applyLater' ty
-distributeLater ty = return ty
+    distributeLater' :: (Type -> Idris Type) -> Type -> Idris Type
+    distributeLater' f (unapplyLater -> Just b@(Bind _ (Pi _ _) _)) =
+      do b' <- applyLaters (applyLater' >=> f) b
+         return b'
+      where
+        applyLaters :: (Type -> Idris Type) -> Type -> Idris Type
+        applyLaters f (Bind n (Pi t kind) sc) =
+          do laterPiTy <- f t
+             laterSc <- applyLaters f sc
+             return $ Bind n (Pi laterPiTy kind) laterSc
+        applyLaters f ty = f ty
+    distributeLater' f (unapplyLater -> Just ty) =
+      distributeLater' (applyLater' >=> f) ty
+    distributeLater' _ ty = return ty
 
 findNameRef :: Name -> [Term] -> Maybe Term
 findNameRef n (t@(P Ref n' _) : rest)
