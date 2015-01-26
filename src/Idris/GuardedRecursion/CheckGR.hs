@@ -78,13 +78,13 @@ guardedType ty modality =
      universallyQuantify modality gTy
 
 universallyQuantify :: Modality -> Type -> Idris Type
-universallyQuantify NonCausal (Bind n binder@(Pi (unapplyForall -> Just ty) kind) sc) =
+universallyQuantify NonCausal (Bind n binder@(Pi _ (unapplyForall -> Just ty) kind) sc) =
   do quantifiedSc <- universallyQuantify NonCausal sc
      return $ Bind n binder quantifiedSc
-universallyQuantify NonCausal (Bind n (Pi ty@(unapplyForall -> Nothing) kind) sc) =
+universallyQuantify NonCausal (Bind n (Pi implInfo ty@(unapplyForall -> Nothing) kind) sc) =
   do quantifiedSc <- universallyQuantify NonCausal sc
      forallTy <- applyForall ty
-     return $ Bind n (Pi forallTy kind) quantifiedSc
+     return $ Bind n (Pi implInfo forallTy kind) quantifiedSc
 universallyQuantify _ ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term

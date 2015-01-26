@@ -262,7 +262,7 @@ guardExactNamesIn n t = do gn <- getGuardedName n
 debindType :: Type -> Idris (Type, Type, Type)
 debindType ty@(unapplyLater -> Just _) = debindType =<< distributeLater ty
 debindType (unapplyForall -> Just ty) = debindType ty
-debindType atob@(Bind n (Pi ty kind) sc) = return (ty, sc, atob)
+debindType atob@(Bind n (Pi _ ty kind) sc) = return (ty, sc, atob)
 debindType ty = ifail $ "Cannot debind non-function type: " ++ show ty
 
 whenNow :: Type -> Type -> Type
@@ -534,7 +534,7 @@ compareAvailability (unapplyLater -> Nothing) (unapplyLater -> Nothing) = EQ
 compareAvailability (unapplyLater -> Just a) (unapplyLater -> Just b) = compareAvailability a b
 
 debindFirstArg :: Type -> Maybe Type
-debindFirstArg (Bind _ (Pi t _) _) = Just t
+debindFirstArg (Bind _ (Pi _ t _) _) = Just t
 debindFirstArg _ = Nothing
 
 delayBy :: Type -> Type -> Idris Type
@@ -567,15 +567,15 @@ distributeLater :: Type -> Idris Type
 distributeLater = distributeLater' return
   where
     distributeLater' :: (Type -> Idris Type) -> Type -> Idris Type
-    distributeLater' f (unapplyLater -> Just b@(Bind _ (Pi _ _) _)) =
+    distributeLater' f (unapplyLater -> Just b@(Bind _ (Pi _ _ _) _)) =
       do b' <- applyLaters (applyLater' >=> f) b
          return b'
       where
         applyLaters :: (Type -> Idris Type) -> Type -> Idris Type
-        applyLaters f (Bind n (Pi t kind) sc) =
+        applyLaters f (Bind n (Pi implInfo t kind) sc) =
           do laterPiTy <- f t
              laterSc <- applyLaters f sc
-             return $ Bind n (Pi laterPiTy kind) laterSc
+             return $ Bind n (Pi implInfo laterPiTy kind) laterSc
         applyLaters f ty = f ty
     distributeLater' f (unapplyLater -> Just ty) =
       distributeLater' (applyLater' >=> f) ty
@@ -656,7 +656,7 @@ to a b env = do aK <- typeOfMaybe a env
                 case (aK, bK) of
                   (Just(akind), Just(bkind)) -> do c <- cEq env akind bkind
                                                    if c
-                                                     then return $ Bind (sUN "__pi_arg") (Pi a akind) b
+                                                     then return $ Bind (sUN "__pi_arg") (Pi Nothing a akind) b
                                                      else do iLOG $ "kind of " ++ show a ++ " and " ++ show b ++ " were not equal."
                                                              translateError Undefined
                   _ -> do iLOG $ "Couldn't get kind of " ++ show a
@@ -716,7 +716,7 @@ showNameType (TCon tag _) = "(TCon " ++ show tag ++ ")"
 
 showBinder :: Binder Term -> String
 showBinder (Lam ty) = "Lam " ++ showTT ty
-showBinder (Pi ty kind) = "Pi " ++ showTT ty ++ " " ++ showTT kind
+showBinder (Pi _ ty kind) = "Pi " ++ showTT ty ++ " " ++ showTT kind
 showBinder (Let ty val) = "Let " ++ showTT ty ++ " " ++ showTT val
 showBinder (NLet ty val) = "NLet " ++ showTT ty ++ " " ++ showTT val
 showBinder (Hole ty) = "Lam " ++ showTT ty

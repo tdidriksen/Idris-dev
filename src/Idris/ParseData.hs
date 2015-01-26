@@ -268,7 +268,7 @@ corecordConstructorArg :: IdrisParser (Name, Plicity)
 corecordConstructorArg = (do lchar '{'
                              res <- fnName
                              lchar '}'
-                             return (res, (Imp [] Dynamic False)))
+                             return (res, (Imp [] Dynamic False Nothing)))
                      <|> (do res <- fnName
                              return (res, (Exp [] Dynamic False)))
                              
