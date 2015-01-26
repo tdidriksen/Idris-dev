@@ -202,8 +202,8 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
           in PApp fc (mapPT (rmRefs n) t') args'
         rmRefs n t = t
         
-    splitProj (n, (PPi p@(Imp _ _ _) n' t t')) = do (rt, t'') <- splitProj (n, t')
-                                                    return (rt, (PPi p n' t t''))
+    splitProj (n, (PPi p@(Imp _ _ _ _) n' t t')) = do (rt, t'') <- splitProj (n, t')
+                                                      return (rt, (PPi p n' t t''))
     splitProj (n, _) = tclift $ tfail (At fc (Elaborating "corecord projection " tyn (Msg ("Projection " ++ show n ++ " is not a valid projection."))))
       
     -- Orders second argument accordingly to first argument
@@ -293,10 +293,6 @@ mkProjAndUpdate info syn fc tyn cn cty_in
          logLvl 3 $ show update_decls
          -- mapM_ (tryElabSetter info) update_decls
   where
-    getBoundImpls (PPi (Imp _ _ _) n ty sc) = (n, ty) : getBoundImpls sc
-    getBoundImpls _ = []
-
-
     isNonImp (PExp _ _ _ _, a) = Just a
     isNonImp _ = Nothing
 
@@ -332,10 +328,13 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                                      --  ++ "\n" ++ pshow i v
                                   putIState i)
 
-    getImplB k (PPi (Imp l s _) n Placeholder sc)
+    getBoundImpls (PPi (Imp _ _ _ _) n ty sc) = (n, ty) : getBoundImpls sc
+    getBoundImpls _ = []
+
+    getImplB k (PPi (Imp l s _ _) n Placeholder sc)
         = getImplB k sc
-    getImplB k (PPi (Imp l s p) n ty sc)
-        = getImplB (\x -> k (PPi (Imp l s p) n ty x)) sc
+    getImplB k (PPi (Imp l s p fa) n ty sc)
+        = getImplB (\x -> k (PPi (Imp l s p fa) n ty x)) sc
     getImplB k (PPi _ n ty sc)
         = getImplB k sc
     getImplB k _ = k

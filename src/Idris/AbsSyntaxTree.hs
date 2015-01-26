@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, DeriveFunctor,
-             TypeSynonymInstances, PatternGuards #-}
+             DeriveDataTypeable, TypeSynonymInstances, PatternGuards #-}
 
 module Idris.AbsSyntaxTree where
 
@@ -18,9 +18,13 @@ import Idris.Colours
 import System.Console.Haskeline
 import System.IO
 
+import Control.Applicative ((<|>))
+
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
+import qualified Control.Monad.Trans.Class as Trans (lift)
 
+import Data.Data (Data)
 import Data.Function (on)
 import Data.List hiding (group)
 import Data.Char
@@ -31,6 +35,7 @@ import qualified Data.Set as S
 import Data.Word (Word)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Traversable (Traversable)
+import Data.Typeable
 import Data.Foldable (Foldable)
 
 import Debug.Trace
@@ -310,6 +315,12 @@ idrisInit = IState initContext [] []
 --type Idris = WriterT [Either String (IO ())] (State IState a))
 type Idris = StateT IState (ExceptT Err IO)
 
+catchError :: Idris a -> (Err -> Idris a) -> Idris a
+catchError = liftCatch catchE
+
+throwError :: Err -> Idris a
+throwError = Trans.lift . throwE
+
 -- Commands in the REPL
 
 data Codegen = Via String
@@ -481,7 +492,7 @@ instance Ord FixDecl where
 
 
 data Static = Static | Dynamic
-  deriving (Show, Eq)
+  deriving (Show, Eq, Data, Typeable)
 {-!
 deriving instance Binary Static
 deriving instance NFData Static
@@ -490,7 +501,9 @@ deriving instance NFData Static
 -- Mark bindings with their explicitness, and laziness
 data Plicity = Imp { pargopts :: [ArgOpt],
                      pstatic :: Static,
-                     pparam :: Bool }
+                     pparam :: Bool,
+                     pscoped :: Maybe ImplicitInfo -- Nothing, if top level
+                   }
              | Exp { pargopts :: [ArgOpt],
                      pstatic :: Static,
                      pparam :: Bool }   -- this is a param (rather than index)
@@ -499,14 +512,20 @@ data Plicity = Imp { pargopts :: [ArgOpt],
              | TacImp { pargopts :: [ArgOpt],
                         pstatic :: Static,
                         pscript :: PTerm }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Data, Typeable)
 
 {-!
 deriving instance Binary Plicity
 deriving instance NFData Plicity
 !-}
 
-impl = Imp [] Dynamic False
+is_scoped :: Plicity -> Maybe ImplicitInfo
+is_scoped (Imp _ _ _ s) = s
+is_scoped _ = Nothing
+
+impl = Imp [] Dynamic False Nothing
+forall_imp = Imp [] Dynamic False (Just (Impl False))
+forall_constraint = Imp [] Dynamic False (Just (Impl True))
 expl = Exp [] Dynamic False
 expl_param = Exp [] Dynamic True
 constraint = Constraint [] Static
@@ -735,7 +754,7 @@ updateNs ns t = mapPT updateRef t
 --                                      (map (updateDNs ns) ds)
 -- updateDNs ns c = c
 
-data PunInfo = IsType | IsTerm | TypeOrTerm deriving (Eq, Show)
+data PunInfo = IsType | IsTerm | TypeOrTerm deriving (Eq, Show, Data, Typeable)
 
 -- | High level language terms
 data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level language
@@ -780,7 +799,7 @@ data PTerm = PQuote Raw -- ^ Inclusion of a core term into the high-level langua
            | PQuasiquote PTerm (Maybe PTerm) -- ^ `(Term [: Term])
            | PUnquote PTerm -- ^ ,Term
            | PLhsProj Name PTerm -- ^ A left-hand side projection on a term
-       deriving Eq
+       deriving (Eq, Data, Typeable)
 
 {-!
 deriving instance Binary PTerm
@@ -842,7 +861,7 @@ data PTactic' t = Intro [Name] | Intros | Focus Name
                 | TFail [ErrorReportPart]
                 | Qed | Abandon
                 | SourceFC
-    deriving (Show, Eq, Functor, Foldable, Traversable)
+    deriving (Show, Eq, Functor, Foldable, Traversable, Data, Typeable)
 {-!
 deriving instance Binary PTactic'
 deriving instance NFData PTactic'
@@ -881,7 +900,7 @@ data PDo' t = DoExp  FC t
             | DoBindP FC t t [(t,t)]
             | DoLet  FC Name t t
             | DoLetP FC t t
-    deriving (Eq, Functor)
+    deriving (Eq, Functor, Data, Typeable)
 {-!
 deriving instance Binary PDo'
 deriving instance NFData PDo'
@@ -917,10 +936,10 @@ data PArg' t = PImp { priority :: Int,
                               pname :: Name,
                               getScript :: t,
                               getTm :: t }
-    deriving (Show, Eq, Functor)
+    deriving (Show, Eq, Functor, Data, Typeable)
 
 data ArgOpt = AlwaysShow | HideDisplay | InaccessibleArg
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 instance Sized a => Sized (PArg' a) where
   size (PImp p _ l nm trm) = 1 + size nm + size trm
@@ -939,6 +958,63 @@ pconst t = PConstraint 1 [] (sMN 0 "carg") t
 ptacimp n s t = PTacImplicit 2 [] n s t
 
 type PArg = PArg' PTerm
+
+-- | Get the highest FC in a term, if one exists
+highestFC :: PTerm -> Maybe FC
+highestFC (PQuote _) = Nothing
+highestFC (PRef fc _) = Just fc
+highestFC (PInferRef fc _) = Just fc
+highestFC (PPatvar fc _) = Just fc
+highestFC (PLam fc _ _ _) = Just fc
+highestFC (PPi  _ _ _ _) = Nothing
+highestFC (PLet fc _ _ _ _) = Just fc
+highestFC (PTyped tm ty) = highestFC tm <|> highestFC ty
+highestFC (PApp fc _ _) = Just fc
+highestFC (PAppBind fc _ _) = Just fc
+highestFC (PMatchApp fc _) = Just fc
+highestFC (PCase fc _ _) = Just fc
+highestFC (PTrue fc _) = Just fc
+highestFC (PRefl fc _) = Just fc
+highestFC (PResolveTC fc) = Just fc
+highestFC (PEq fc _ _ _ _) = Just fc
+highestFC (PRewrite fc _ _ _) = Just fc
+highestFC (PPair fc _ _ _) = Just fc
+highestFC (PDPair fc _ _ _ _) = Just fc
+highestFC (PAs fc _ _) = Just fc
+highestFC (PAlternative _ args) =
+  case mapMaybe highestFC args of
+    [] -> Nothing
+    (fc:_) -> Just fc
+highestFC (PHidden _) = Nothing
+highestFC PType = Nothing
+highestFC (PUniverse _) = Nothing
+highestFC (PGoal fc _ _ _) = Just fc
+highestFC (PConstant _) = Nothing
+highestFC Placeholder = Nothing
+highestFC (PDoBlock lines) =
+  case map getDoFC lines of
+    [] -> Nothing
+    (fc:_) -> Just fc
+  where
+    getDoFC (DoExp fc t)          = fc
+    getDoFC (DoBind fc nm t)      = fc
+    getDoFC (DoBindP fc l r alts) = fc
+    getDoFC (DoLet fc nm l r)     = fc
+    getDoFC (DoLetP fc l r)       = fc
+
+highestFC (PIdiom fc _) = Just fc
+highestFC (PReturn fc) = Just fc
+highestFC (PMetavar _) = Nothing
+highestFC (PProof _) = Nothing
+highestFC (PTactics _) = Nothing
+highestFC (PElabError _) = Nothing
+highestFC PImpossible = Nothing
+highestFC (PCoerced tm) = highestFC tm
+highestFC (PDisamb _ opts) = highestFC opts
+highestFC (PUnifyLog tm) = highestFC tm
+highestFC (PNoImplicits tm) = highestFC tm
+highestFC (PQuasiquote _ _) = Nothing
+highestFC (PUnquote tm) = highestFC tm
 
 -- Type class data
 
@@ -1152,7 +1228,7 @@ getInferTerm (App (App _ _) tm) = tm
 getInferTerm tm = tm -- error ("getInferTerm " ++ show tm)
 
 getInferType (Bind n b sc) = Bind n (toTy b) $ getInferType sc
-  where toTy (Lam t) = Pi t (TType (UVar 0))
+  where toTy (Lam t) = Pi Nothing t (TType (UVar 0))
         toTy (PVar t) = PVTy t
         toTy b = b
 getInferType (App (App _ ty) _) = ty
@@ -1338,7 +1414,7 @@ pprintPTerm ppo bnd docArgs infixes = prettySe startPrec bnd
           case s of
             Static -> text "[static]" <> space
             _      -> empty
-    prettySe p bnd (PPi (Imp l s _) n ty sc)
+    prettySe p bnd (PPi (Imp l s _ fa) n ty sc)
       | ppopt_impl ppo =
           bracket p startPrec $
           lbrace <> bindingOf n True <+> colon <+> prettySe startPrec bnd ty <> rbrace <+>

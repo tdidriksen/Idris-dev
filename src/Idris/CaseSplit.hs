@@ -183,7 +183,7 @@ argTys ist (PRef fc n)
     = case lookupTy n (tt_ctxt ist) of
            [ty] -> map (tyName . snd) (getArgTys ty) ++ repeat Nothing
            _ -> repeat Nothing
-  where tyName (Bind _ (Pi _ _) _) = Just (sUN "->")
+  where tyName (Bind _ (Pi _ _ _) _) = Just (sUN "->")
         tyName t | (P _ n _, _) <- unApply t = Just n
                  | otherwise = Nothing
 argTys _ _ = repeat Nothing
@@ -361,7 +361,7 @@ getClause l fn fp
          getNameFrom i used (PPi _ _ _ _) 
               = uniqueNameFrom (mkSupply [sUN "f", sUN "g"]) used
          getNameFrom i used (PApp fc f as) = getNameFrom i used f
-         getNameFrom i used (PEq _ _ _ _ _) = uniqueNameFrom [sUN "prf"] used 
+         getNameFrom i used (PEq _ _ _ _ _) = uniqueNameFrom (mkSupply [sUN "prf"]) used 
          getNameFrom i used (PRef fc f) 
             = case getNameHints i f of
                    [] -> uniqueName (sUN "x") used

@@ -321,6 +321,9 @@ Extra-source-files:
                        test/basic011/run
                        test/basic011/*.idr
                        test/basic011/expected
+                       test/basic012/run
+                       test/basic012/*.idr
+                       test/basic012/expected
 
                        test/buffer001-disabled/*.idr
                        test/buffer001-disabled/run
@@ -526,6 +529,13 @@ Extra-source-files:
                        test/sugar003/run
                        test/sugar003/*.idr
                        test/sugar003/expected
+                       test/sugar004/run
+                       test/sugar004/*.idr
+                       test/sugar004/expected
+                       test/sugar005/run
+                       test/sugar005/*.idr
+                       test/sugar005/expected
+
 
                        test/totality001/run
                        test/totality001/*.idr
@@ -750,7 +760,7 @@ Library
                 , fingertree >= 0.1 && < 0.2
                 , haskeline >= 0.7 && < 0.8
                 , lens >= 4.1.1 && < 4.8
-                , mtl >= 2.2.1 && < 2.3
+                , mtl >= 2.1 && < 2.3
                 , network < 2.7
                 , optparse-applicative >= 0.11 && < 0.12
                 , parsers >= 0.9 && < 0.13
@@ -760,7 +770,9 @@ Library
                 , text < 1.3
                 , time >= 1.4 && < 1.6
                 , transformers < 0.5
+                , transformers-compat >= 0.3
                 , trifecta >= 1.1 && < 1.6
+                , uniplate >=1.6 && < 1.7
                 , unordered-containers < 0.3
                 , utf8-string < 0.4
                 , vector < 0.11

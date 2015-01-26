@@ -50,7 +50,6 @@ import Idris.Core.Evaluate
 
 import Control.Applicative hiding (Const)
 import Control.Monad
-import Control.Monad.Except (throwError, catchError)
 import Control.Monad.State.Strict
 
 import Data.Function
@@ -942,7 +941,7 @@ WExpr ::= '|' Expr';
 -}
 wExpr :: SyntaxInfo -> IdrisParser PTerm
 wExpr syn = do lchar '|'
-               expr' syn
+               expr' (syn { inPattern = True })
             <?> "with pattern"
 
 {- | Parses a where block

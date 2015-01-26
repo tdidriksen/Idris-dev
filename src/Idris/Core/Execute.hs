@@ -22,7 +22,7 @@ import Control.Applicative hiding (Const)
 import Control.Exception
 import Control.Monad.Trans
 import Control.Monad.Trans.State.Strict
-import Control.Monad.Except (ExceptT, runExceptT, throwError)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Control.Monad hiding (forM)
 import Data.Maybe
 import Data.Bits
@@ -88,7 +88,7 @@ toTT (EBind n b body) = do n' <- newN n
                            b' <- fixBinder b
                            Bind n' b' <$> toTT body'
     where fixBinder (Lam t)       = Lam     <$> toTT t
-          fixBinder (Pi t k)      = Pi      <$> toTT t <*> toTT k
+          fixBinder (Pi i t k)    = Pi i    <$> toTT t <*> toTT k
           fixBinder (Let t1 t2)   = Let     <$> toTT t1 <*> toTT t2
           fixBinder (NLet t1 t2)  = NLet    <$> toTT t1 <*> toTT t2
           fixBinder (Hole t)      = Hole    <$> toTT t
@@ -138,7 +138,7 @@ putExecState :: ExecState -> Exec ()
 putExecState = lift . put
 
 execFail :: Err -> Exec a
-execFail = throwError
+execFail = throwE
 
 execIO :: IO a -> Exec a
 execIO = lift . lift
@@ -263,6 +263,13 @@ execApp env ctxt (EP _ fp _) (_:fn:_:handle:_:rest)
                       "The argument to idris_readStr should be a handle, but it was " ++
                       show handle ++
                       ". Are all cases covered?"
+execApp env ctxt (EP _ fp _) (_:fn:_:rest)
+    | fp == mkfprim,
+      Just (FFun "getchar" _ _) <- foreignFromTT fn
+           = do -- The C API returns an Int which Idris library code
+                -- converts; thus, we must make an int here.
+                ch <- execIO $ fmap (ioWrap . EConstant . I . fromEnum) getChar
+                execApp env ctxt ch rest
 execApp  env ctxt (EP _ fp _) (_:fn:rest)
     | fp == mkfprim,
       Just (FFun "idris_time" _ _) <- foreignFromTT fn
