@@ -195,7 +195,18 @@ buildEnv term = nubBy (\(x,_) (y,_) -> x == y) (bounded term)
         bb b' = bounded (binderTy b')
     bounded (App t t') = bounded t ++ bounded t'
     bounded (Proj t _) = bounded t
-    bounded _ = []                   
+    bounded _ = []
+
+buildGuardedEnv :: Modality -> Term -> Idris Env
+buildGuardedEnv    Causal term = do gTerm <- guardedTT' term
+                                    return $ buildEnv gTerm
+buildGuardedEnv NonCausal term = do gTerm <- guardedTT' term
+                                    let env = buildEnv gTerm
+                                    mapM f env
+  where
+    f :: (Name, Binder (TT Name)) -> Idris (Name, Binder (TT Name))
+    f (x, y) = do y' <- applyForall (binderTy y)
+                  return (x, (PVar y'))
 
 -----------------------------------------
 ----------------- PTERM -----------------
@@ -306,6 +317,11 @@ unapplyLater (unapplyNLater -> Just ty) = Just ty
 --   do sc' <- unapplyLater sc
 --      return $ (Bind n (Pi piTy kind) sc')
 unapplyLater _ = Nothing
+
+unapplyLaterUntilNow :: Availability -> Type -> Maybe Type
+unapplyLaterUntilNow Now ty = Just ty
+unapplyLaterUntilNow (Tomorrow n) (unapplyLater -> Just ty) = unapplyLaterUntilNow n ty
+unapplyLaterUntilNow _ _ = Nothing
 
 applyLater' :: Type -> Idris Type
 applyLater' ty =
@@ -592,11 +608,15 @@ nowType    (unapplyLater -> Just ty) = nowType ty
 nowType ty@(unapplyLater -> Nothing) = ty
 
 termAvailability :: Term -> Idris Availability
-termAvailability (P Ref name _)
-  | name == nowName = return Now
-termAvailability (App (P Ref name _) arg)
-  | name == tomorrowName = liftM Tomorrow (termAvailability arg)
+termAvailability (termAvailability' -> Just n) = return n
 termAvailability tm = ifail $ "Term " ++ show tm ++ " is not an Availability term."
+
+termAvailability' :: Term -> Maybe Availability
+termAvailability' (P Ref name _)
+  | name == nowName = return Now
+termAvailability' (App (P Ref name _) arg)
+  | name == tomorrowName = liftM Tomorrow (termAvailability' arg)
+termAvailability' _ = Nothing
 
 availabilityTerm :: Availability -> Idris Term
 availabilityTerm Now = nowRef

@@ -24,8 +24,10 @@ import Idris.GuardedRecursion.Error
 
 import Control.Monad.State.Lazy as LazyState hiding (fix)
 
-checkGR :: Env -> (Name, Type) -> Term -> Type -> Idris Totality
-checkGR = check Closed
+checkGR :: Modality -> Env -> (Name, Type) -> Term -> Type -> Idris Totality
+checkGR Causal g r (lambdaKappa -> Extracted t) (forallK -> Extracted a) = check Open g r t a
+checkGR Causal _ _ _ _ = return $ Partial (NotGuardedRecursive [])
+checkGR NonCausal g r t a = check Closed g r t a
                          
 \end{code}
 }
@@ -84,10 +86,11 @@ check Open g n (next -> Extracted t) (later -> Extracted a) =
 \]
 \begin{code}
 
-check Open g n (tensor -> Extracted (t, u, a, b')) (later -> Extracted b) =
+check Open g n (tensor -> Extracted (t, u, l, a, b')) (laterN l -> Extracted b) =
   do c <- cEq g b' b
      if c
        then (do aToB <- (a `to` b) g
+                iLOG "Tensor success!"
                 requires
                   (check Open g n t =<< laterK aToB)
                   (check Open g n u =<< laterK a))
@@ -128,13 +131,18 @@ check Closed g n (lambdaKappa -> Extracted t) (forallK -> Extracted a) =
 \hrulefill
 Not Guarded Recursion:
 \begin{code}
-check d g n (App t t') b =
-  do ty <- typeOf t g
-     (a,b') <- debind ty
-     -- eq b b'
-     requires
-       (check d g n t ty)
-       (check d g n t' a)
+check d g n term@(App t t') b =
+  do b' <- typeOf term g
+     ty <- typeOf t g
+     iLOG $ "App: " ++ show t ++ "\n and \n" ++ show t'
+     (a,_) <- debind ty
+     c <- cEq g b b'
+     if c
+       then requires
+              (check d g n t ty)
+              (check d g n t' a)
+       else (do iLOG $ "Application type mismatch: " ++ show b ++ "\n and \n" ++ show b'
+                return $ Partial (NotGuardedRecursive []))         
 check d g n (Bind n' b t) a =
   check d ((n', b) : g) n t a
 check d g (n, _) (P _ n' ty) a
@@ -143,7 +151,8 @@ check d g (n, _) (P _ n' ty) a
        if c then
          (do c' <- clockedType ty
              if (not c' || isOpen d)
-                   then (return $ Total [])
+                   then (do iLOG $ show n' ++ " was ok!"
+                            return $ Total [])
                    else (do iLOG $ "Not productive. \n c: " ++ show c' ++ " \n ty: " ++ show ty ++ " \n d: " ++ show (isOpen d)
                             return $ Partial (NotGuardedRecursive [OpenClockNeeded ty])))
          else
@@ -162,11 +171,15 @@ later :: Type -> Extract Type
 later (unapplyLater -> Just a) = return a
 later _ = Nope
 
+laterN :: Availability -> Type -> Extract Type
+laterN n (unapplyLaterUntilNow n -> Just ty) = return ty
+laterN _ _ = Nope
+
 laterK :: Type -> Idris Type
 laterK = applyLater'
 
-tensor :: Term -> Extract (Term, Term, Type, Type)
-tensor (unapplyCompose -> Just(a, b, _, t, u)) = Extracted(t, u, a, b)
+tensor :: Term -> Extract (Term, Term, Availability, Type, Type)
+tensor (unapplyCompose -> Just(a, b, (termAvailability' -> Just l), t, u)) = return (t, u, l, a, b)
 tensor _ = Nope
 
 apply :: Term -> Extract Term
@@ -222,7 +235,9 @@ nofc n env =
      return $ foldr mergeTotal (Total []) tos
   where
     c :: (Name, Type) -> (Name, Binder (TT Name)) -> Idris Totality
-    c r (n', b) = check Closed [] r (P Bound n' (binderTy b)) (binderTy b)
+    c r (n', b) = do let term = P Bound n' (binderTy b)
+                     iLOG $ "NoFC on: " ++ show term
+                     check Closed [] r term (binderTy b)
 
 \end{code}
 }

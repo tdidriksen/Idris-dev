@@ -1026,6 +1026,7 @@ instance Binary FnOpt where
                 CoveringFn -> putWord8 11
                 NoImplicit -> putWord8 12
                 Constructor -> putWord8 13
+                CausalFn -> putWord8 14
         get
           = do i <- getWord8
                case i of
@@ -1044,6 +1045,7 @@ instance Binary FnOpt where
                    11 -> return CoveringFn
                    12 -> return NoImplicit
                    13 -> return Constructor
+                   14 -> return CausalFn
                    _ -> error "Corrupted binary data for FnOpt"
 
 instance Binary Fixity where

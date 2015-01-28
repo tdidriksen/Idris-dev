@@ -26,19 +26,21 @@ checkGuardedRecursive n =
         then return $ Partial NotProductive
         else do case lookupDef n ctxt of
                  [CaseOp _ ty _ _ clauses _] ->
-                   do forM_ clauses $ \(pvs, lhs, rhs) ->
+                   do logLvl 0 $ "Checking function " ++ show n
+                      forM_ clauses $ \(pvs, lhs, rhs) ->
                         do iLOG $ show ("GR_LHS: " ++ showTT lhs)
                            iLOG $ show ("GR_RHS: " ++ showTT rhs)
                       ctxt <- getContext
-                      _ <- case lookupTyExact n ctxt of
+                      t <- case lookupTyExact n ctxt of
                             Just nty -> checkFunction n nty clauses
                             Nothing -> checkFunction n ty clauses
                       -- i <- get
                       -- case lookupCtxt n (idris_flags i) of
                       --  [fnOpts] -> setFlags n (fnOpts \\ [CausalFn])
                       --  _ -> return ()
-
-                      return $ Partial NotProductive
+                      logLvl 0 $ "Checked function " ++ show n ++ ":"
+                      logLvl 0 $ show t
+                      return t
                  _ -> return $ Partial NotProductive
 
 isLhsProj :: Name -> Idris Bool
@@ -60,16 +62,16 @@ checkFunction name ty clauses =
      ist <- get
      ctxt <- getContext
      gClauses <- forM expClauses $ \clause -> guardedRecursiveClause gName gTy clause modality
-     iLOG $ show "Guarded type: " ++ showTT gTy
-     forM_ gClauses $ \(lhs, rhs) ->
+     iLOG $ show "Guarded type: " ++ show gTy
+     forM_ gClauses $ \(lhs, rhs, _) ->
        do iLOG $ show ("GR_LHS_EPS: " ++ show lhs)
           iLOG $ show ("GR_LHS_EPS_AST: " ++ showTT lhs)
           iLOG $ show ("GR_RHS_EPS: " ++ show rhs)
           iLOG $ show ("GR_RHS_EPS_AST: " ++ showTT rhs)
-     checkRhsSeq <- forM gClauses $ \(lhs,rhs) -> guardedRecursiveCheck gName gTy lhs rhs -- checkGR (buildEnv lhs) (gName, rTy) rhs gTy
+     checkRhsSeq <- forM gClauses $ \(lhs,rhs,rhTy) -> guardedRecursiveCheck modality gName gTy lhs rhs rhTy 
      iLOG $ "Checked: " ++ show name
      iLOG $ show checkRhsSeq
-     return $ Partial NotProductive
+     return $ foldr mergeTotal (Total []) checkRhsSeq
      --idrisCatch (sequence checkRhsSeq) (\e -> )    
 
 guardedType :: Type -> Modality -> Idris Type
@@ -90,19 +92,18 @@ universallyQuantify _ ty = applyForall ty
 guardedLHS :: Term -> Idris Term
 guardedLHS lhs = guardedTT' (removeLaziness lhs)
 
-guardedRecursiveCheck :: Name -> Type -> Term -> Term -> Idris Totality
-guardedRecursiveCheck recName ty lhs rhs =
-  do let env = buildEnv lhs
+guardedRecursiveCheck :: Modality -> Name -> Type -> Term -> Term -> Type -> Idris Totality
+guardedRecursiveCheck modality recName ty lhs rhs rhTy =
+  do env <- buildGuardedEnv modality lhs
      let appliedType = case unapplyForall ty of
                          Just ty' -> ty'
                          Nothing -> ty
      recTy <- applyForall $ withoutParams appliedType
-     iLOG $ "New recursive " ++ show recTy
-     checkGR env (recName, recTy) rhs ty
+     checkGR modality env (recName, recTy) rhs rhTy
                          
 
-guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Modality -> Idris (Term, Term)
-guardedRecursiveClause _ _ (_, lhs, Impossible) _ = return (lhs, Impossible)
+guardedRecursiveClause :: Name -> Type -> ([Name], Term, Term) -> Modality -> Idris (Term, Term, Type)
+guardedRecursiveClause _ _ (_, lhs, Impossible) _ = return (lhs, Impossible, Impossible)
 guardedRecursiveClause name ty (_, lhs, rhs) modality =
   do ctxt <- getContext
      rhsTy <- typeOf rhs (buildEnv lhs)
@@ -115,8 +116,9 @@ guardedRecursiveClause name ty (_, lhs, rhs) modality =
                         Just ty' -> ty'
                         Nothing -> ty
      iLOG $ "appliedType : " ++ show appliedType
-     grhs <- epsilon modality name rhs gRhsTy (parameterArgs glhs appliedType) (buildEnv glhs)
-     return (glhs, grhs)
+     gEnv <- buildGuardedEnv modality lhs
+     grhs <- epsilon modality name rhs gRhsTy (parameterArgs glhs appliedType) gEnv
+     return (glhs, grhs, gRhsTy)
      
 
 -- fixFunction :: Name -> [([Name], Term, Term)] -> Idris [([Name], Term, Term)]
