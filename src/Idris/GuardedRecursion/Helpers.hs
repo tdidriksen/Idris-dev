@@ -19,7 +19,7 @@ import Idris.GuardedRecursion.Error
 
 import Data.Maybe
 import Data.List
-import Data.Traversable as Tr hiding (mapM)
+import qualified Data.Traversable as Tr hiding (mapM)
 
 import Data.Foldable (foldr')
 import qualified Data.Foldable as F
@@ -335,6 +335,11 @@ unapplyNLater :: Type -> Maybe Type
 unapplyNLater (App (App later (unapplyTomorrow -> Just av)) ty)
  | isLater later = Just $ App (App later av) ty
 unapplyNLater _ = Nothing
+
+applyLiftCompose :: Type -> Type -> Term -> Idris Term
+applyLiftCompose a b f =
+  do liftCompose <- liftComposeRef
+     return $ App (App (App liftCompose a) b) f
                       
 unapplyType :: Name -> Type -> Maybe Type
 unapplyType tyName (TConApp _ _ n _ x)
@@ -793,8 +798,8 @@ mergeTotal t _ = t
 ----------------------------------------------
 
 
-fixRecursiveRef :: Modality -> Env -> [Term] -> Name -> Term -> Idris Term
-fixRecursiveRef modality lhsEnv params recName t = fixRecRef modality t
+fixRecursiveRef :: Modality -> Env -> [Term] -> Name -> [Name] -> Term -> Idris Term
+fixRecursiveRef modality lhsEnv params recName namesInRhs t = fixRecRef modality t
   where
     fixRecRef :: Modality -> Term -> Idris Term
     fixRecRef Causal (unapplyRecRef recName -> Just (p@(P Ref n (unapplyForall -> Just recTy)), args)) =
@@ -810,14 +815,30 @@ fixRecursiveRef modality lhsEnv params recName t = fixRecRef modality t
                     Nothing -> ifail "Applying parameters on causal recursive reference makes it ill-typed."
          recRef <- applyNext nextTy withParams
          return $ mkApp recRef (drop (length params) args)
-    fixRecRef NonCausal (unapplyRecRef recName -> Just (p@(P Ref n recTy), args)) =
-      do let withParams = mkApp p params
+    fixRecRef NonCausal (unapplyRecRef recName -> Just (p@(P Ref n recTy), args')) =
+      do iLOG $ "Fixing non-causal recursive reference " ++ show n
+         let withParams = mkApp p params
+         let args = drop (length params) args'
+         iLOG $ "args : " ++ show args
          nextTy' <- typeOfMaybe withParams lhsEnv
          nextTy <- case nextTy' of
                     Just ty -> return ty
-                    Nothing -> ifail "Applying parameters on causal recursive reference makes it ill-typed."         
-         recRef <- applyNext nextTy withParams
-         return $ mkApp recRef (drop (length params) args)
+                    Nothing -> ifail "Applying parameters on non-causal recursive reference makes it ill-typed."
+         nextF <- applyNext nextTy withParams
+         iLOG $ "nextTy : " ++ show nextTy
+         iLOG $ "nextF : " ++ show nextF
+         let argTys = getArgTys nextTy
+         iLOG $ "argTys : " ++ show argTys
+         let argNames = uniqueArgNames namesInRhs (map fst argTys)
+         iLOG $ "argNames : " ++ show argNames
+         let argBounds = map (\(n,ty) -> P Bound n ty) (zip argNames (map snd argTys))
+         iLOG $ "argBounds : " ++ show argBounds
+         (a,b,_) <- debindType nextTy
+         recRefBoundsApp <- liftArgs nextF nextTy argBounds
+         iLOG $ "recRefBoundsApp " ++ show recRefBoundsApp
+         let binders = binderStructure (zip argNames (map snd argTys))
+         return $ mkApp (binders recRefBoundsApp) args
+         --return $ mkApp withParams (drop (length params) args)
     fixRecRef modality p@(P nt n ty) = return p
     fixRecRef modality (Bind n binder ty) =
       -- Recursive ref is never in type, so no recursion there
@@ -827,6 +848,23 @@ fixRecursiveRef modality lhsEnv params recName t = fixRecRef modality t
     fixRecRef modality (Proj tm i) =
       liftM (\t -> Proj t i) (fixRecRef modality tm)
     fixRecRef _ tm = return tm
+
+    uniqueArgNames :: [Name] -> [Name] -> [Name]
+    uniqueArgNames usedNames (n:argNames) = let uname = uniqueName n usedNames
+                                            in uname : uniqueArgNames (uname:usedNames) argNames
+    uniqueArgNames _ [] = []
+
+    liftArgs :: Term -> Type -> [Term] -> Idris Term
+    liftArgs f fTy (arg:args) =
+      do (a, b, _) <- debindType fTy
+         liftComposeF <- applyLiftCompose a b f
+         let f' = App liftComposeF arg
+         liftArgs f' b args
+    liftArgs f _ _ = return f
+    
+    binderStructure :: [(Name, Type)] -> (Term -> Term)
+    binderStructure ((name, argTy):args) = \t -> Bind name (Lam argTy) ((binderStructure args) t)
+    binderStructure [] = id
     
 
 -- fixRecursiveRef modality lhsEnv params recName t = flip mapMTT t $ fixRecRef modality

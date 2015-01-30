@@ -9,7 +9,7 @@ import Idris.Error
 
 -- STRINGS
 
-guardedRecursion, guardedPrefix, laterStr, later'Str, nextStr, composeStr, availStr, nowStr, tomorrowStr, forallStr, lambdaKappaStr, applyStr, delayStr, lazyCodataStr, forceStr, lazy'Str :: String
+guardedRecursion, guardedPrefix, laterStr, later'Str, nextStr, composeStr, availStr, nowStr, tomorrowStr, forallStr, lambdaKappaStr, applyStr, delayStr, lazyCodataStr, forceStr, lazy'Str, liftComposeStr :: String
 guardedRecursion = "GuardedRecursion"
 guardedPrefix = "guarded_"
 laterStr = "Later"
@@ -26,17 +26,19 @@ delayStr = "Delay"
 lazyCodataStr = "LazyCodata"
 forceStr = "Force"
 lazy'Str = "Lazy'"
+liftComposeStr = "liftCompose"
 
 -- NAMES
 
 guardedNS :: [String]
 guardedNS = [guardedRecursion]
 
-later'Name, nextName, laterName, composeName :: Name
+later'Name, nextName, laterName, composeName, liftComposeName :: Name
 later'Name = sNS (sUN later'Str) guardedNS
 laterName = sNS (sUN laterStr) guardedNS
 nextName = sNS (sUN nextStr) guardedNS
 composeName = sNS (sUN composeStr) guardedNS
+liftComposeName = sNS (sUN liftComposeStr) guardedNS
 
 availabilityName, nowName, tomorrowName :: Name
 availabilityName = sNS (sUN availStr) guardedNS
@@ -78,6 +80,9 @@ laterRef = ref laterName
 
 later'Ref :: Idris Term
 later'Ref = ref later'Name
+
+liftComposeRef :: Idris Term
+liftComposeRef = ref liftComposeName
 
 nextRef :: Idris Term
 nextRef = ref nextName

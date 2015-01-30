@@ -87,7 +87,9 @@ universallyQuantify NonCausal (Bind n (Pi implInfo ty@(unapplyForall -> Nothing)
   do quantifiedSc <- universallyQuantify NonCausal sc
      forallTy <- applyForall ty
      return $ Bind n (Pi implInfo forallTy kind) quantifiedSc
-universallyQuantify _ ty = applyForall ty
+universallyQuantify NonCausal (unapplyForall -> Just ty) = return ty
+universallyQuantify NonCausal ty@(unapplyForall -> Nothing) = return ty
+universallyQuantify Causal ty = applyForall ty
 
 guardedLHS :: Term -> Idris Term
 guardedLHS lhs = guardedTT' (removeLaziness lhs)

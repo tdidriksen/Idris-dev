@@ -37,7 +37,7 @@ epsilon modality recName t a params env =
   do t' <- guardedTT' (removeLaziness t)
      iLOG $ "params : " ++ intercalate ", " (map show params)
      iLOG $ "Before fixing : " ++ showTT t'
-     fixed <- fixRecursiveRef modality env params recName t'
+     fixed <- fixRecursiveRef modality env params recName (allTTNames t') t'
      iLOG $ "Epsilon start"
      iLOG $ "Trying to infer that term " ++ show recName ++ ":\n" ++ show fixed ++ "\nhas type:\n" ++ show a
      case modality of
@@ -61,19 +61,18 @@ epsilonInfer Causal Open recName env recRef@(unapplyNext >=> unapplyApply -> Jus
 epsilonInfer Causal Open recName env recRef@(unapplyNext >=> unapplyApply -> Just (P Ref n _)) (unapplyLater -> Just a@(unapplyLater -> Just _)) | n == recName =
   do iLOG "Found later recursive ref (causal)"
      applyNext a =<< epsilonCheck Causal Open recName env recRef a
-epsilonInfer NonCausal Open recName env recRef@(unapplyNext -> Just (unApply -> ((P Ref n _), _))) (unapplyLater -> Just (unapplyLater -> Nothing)) | n == recName =
-  do iLOG "Found recursive ref"
+epsilonInfer NonCausal Open recName env recRef@(P Ref n _) _ | n == recName =
+  do iLOG "Found recursive ref (non-causal)"
      return recRef
-epsilonInfer NonCausal Open recName env recRef@(unapplyNext -> Just (unApply -> ((P Ref n _), _))) (unapplyLater -> Just a@(unapplyLater -> Just _)) | n == recName =
+epsilonInfer NonCausal Open recName env recRef@(unApply -> (P Ref n _, args)) a | n == recName =
   do iLOG "Found later recursive ref"
      applyNext a =<< epsilonCheck NonCausal Open recName env recRef a
      
 -- Binders
 epsilonInfer modality clock recName env tm@(Bind n (Let letty letval) sc) a =
   do epsLog "Let binder check" tm a
-     gLetTy <- guardedTT letty
-     gLetVal <- epsilonCheck modality clock recName env letval gLetTy
-     let gBinder = Let gLetTy gLetVal
+     gLetVal <- epsilonCheck modality clock recName env letval letty
+     let gBinder = Let letty gLetVal
      bindEps <- epsilonCheck modality clock recName ((n, gBinder):env) sc a
      return $ Bind n gBinder sc
 epsilonInfer modality clock recName env tm@(Bind n binder sc) ty@(debindFirstArg -> Just a)

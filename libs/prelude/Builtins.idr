@@ -138,7 +138,7 @@ namespace GuardedRecursion
   laterDist : Later' (a -> b) -> (Later' a -> Later' b)
   laterDist (Next f) = \a => case a of
                                (Next a') => Next (f a')
-
+                               
   compose : {a, b : Type} -> 
             {n : Availability} -> 
             Later (Tomorrow n) (a -> b) -> 
@@ -150,6 +150,8 @@ namespace GuardedRecursion
      compose' (Next t) (Next u) = Next (t u)
   compose {n = Tomorrow n'} (Next t) (Next u) = Next (compose {n = n'} t u)
 
+  liftCompose : {a, b : Type} -> Later' (a -> b) -> (a -> Later' b)
+  liftCompose f = \x : a => compose {n = Now} f (Next x)
     
 
 ||| Assert to the totality checker that y is always structurally smaller than
