@@ -211,7 +211,11 @@ buildGuardedEnv NonCausal term = do gTerm <- guardedTT' NonCausal term
                                     mapM f env
   where
     f :: (Name, Binder (TT Name)) -> Idris (Name, Binder (TT Name))
-    f (x, y) = do y' <- applyForall (binderTy y)
+    f (x, y) = do let ty = binderTy y
+                  c <- clockedType ty
+                  y' <- if c
+                           then applyForall ty
+                           else return ty
                   return (x, (PVar y'))
 
 -----------------------------------------
