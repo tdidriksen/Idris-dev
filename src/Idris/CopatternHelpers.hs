@@ -164,8 +164,8 @@ desugarLhsProjs name clauses =
          forM_ merged $ \m ->
            do case (clauseLhs m, clauseName m) of
                (Just app, Just n) ->
-                 do iLOG $ "LHS: " ++ show app
-                    _ <- constructorFor n
+                 do iLOG $ "LHS: " ++ show app ++ " , name: " ++ show n
+                    --_ <- constructorFor n
                     return ()
                _ -> return ()
               iLOG $ "RHS: " ++ show (clauseRhs m)
@@ -454,16 +454,26 @@ subst subs t = mapPT (subst' subs) t
       | Just t' <- lookup n subs = t'
       | otherwise = t
     subst' subs t@(PLam fc x ty body)
-      | isJust $ lookup x subs = t
+      | isJust $ lookup x subs = PLam fc x (subst' subs ty) (subst' (deleteSub x subs) body)
       | otherwise = PLam fc x (subst' subs ty) (subst' subs body)
     subst' subs t@(PPi pl n a b)
-      | isJust $ lookup n subs = t
+      | isJust $ lookup n subs = PPi pl n (subst' subs a) (subst' (deleteSub n subs) b)
       | otherwise = PPi pl n (subst' subs a) (subst' subs b)
     subst' subs t@(PLet fc x ty e b)
-      | isJust $ lookup x subs = t
+      | isJust $ lookup x subs =
+          let subs' = deleteSub x subs
+          in PLet fc x (subst' subs ty) (subst' subs' e) (subst' subs' b)
       | otherwise = PLet fc x (subst' subs ty) (subst' subs e) (subst' subs b)
-    subst' _ t = t 
+    subst' _ t = t
 
+    deleteSub :: Name -> [Substitution] -> [Substitution]
+    deleteSub x subs = deleteFrom (==) x subs
+
+    deleteFrom :: (a -> a -> Bool) -> a -> [(a,b)] -> [(a,b)]
+    deleteFrom p x ((a,b):ys)
+      | p x a     = deleteFrom p x ys
+      | otherwise = (a,b) : deleteFrom p x ys
+    deleteFrom p x [] = [] 
 
 -- allAll :: (a -> a -> Bool) -> [a] -> ([a], [a])
 -- allAll f xs = allAll' f xs []
