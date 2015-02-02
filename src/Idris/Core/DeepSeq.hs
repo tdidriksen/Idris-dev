@@ -145,6 +145,8 @@ instance NFData Const where
         rnf (B32V x1) = rnf x1 `seq` ()
         rnf (B64V x1) = rnf x1 `seq` ()
         rnf (AType x1) = rnf x1 `seq` ()
+        rnf WorldType = ()
+        rnf TheWorld = ()
         rnf StrType = ()
         rnf PtrType = ()
         rnf ManagedPtrType = ()
@@ -200,7 +202,7 @@ instance NFData Def where
               rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` rnf x5 `seq` rnf x6 `seq` ()
 
 instance NFData CaseInfo where
-        rnf (CaseInfo x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
+        rnf (CaseInfo x1 x2 x3) = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` ()
  
 instance NFData CaseDefs where
         rnf (CaseDefs x1 x2 x3 x4)

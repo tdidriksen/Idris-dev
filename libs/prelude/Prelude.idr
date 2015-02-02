@@ -233,7 +233,7 @@ instance Show a => Show (Maybe a) where
 instance Functor PrimIO where
     map f io = prim_io_bind io (prim_io_return . f)
 
-instance Functor IO where
+instance Functor (IO' ffi) where
     map f io = io_bind io (\b => io_return (f b))
 
 instance Functor Maybe where
@@ -251,7 +251,7 @@ instance Applicative PrimIO where
 
     am <$> bm = prim_io_bind am (\f => prim_io_bind bm (prim_io_return . f))
 
-instance Applicative IO where
+instance Applicative (IO' ffi) where
     pure x = io_return x
     f <$> a = io_bind f (\f' =>
                 io_bind a (\a' =>
@@ -293,7 +293,7 @@ instance Alternative List where
 instance Monad PrimIO where
     b >>= k = prim_io_bind b k
 
-instance Monad IO where
+instance Monad (IO' ffi) where
     b >>= k = io_bind b k
 
 instance Monad Maybe where
@@ -434,34 +434,33 @@ uniformB64x2 x = prim__mkB64x2 x x
 ---- some basic io
 
 ||| Output a string to stdout without a trailing newline
-partial
-putStr : String -> IO ()
-putStr x = mkForeign (FFun "putStr" [FString] FUnit) x
+putStr : String -> IO' ffi ()
+putStr x = do prim_write x
+              return ()
 
 ||| Output a string to stdout with a trailing newline
-partial
-putStrLn : String -> IO ()
+putStrLn : String -> IO' ffi ()
 putStrLn x = putStr (x ++ "\n")
 
 ||| Output something showable to stdout, with a trailing newline
 partial
-print : Show a => a -> IO ()
+print : Show a => a -> IO' ffi ()
 print x = putStrLn (show x)
 
 ||| Read one line of input from stdin
 partial
-getLine : IO String
-getLine = prim_fread prim__stdin
+getLine : IO' ffi String
+getLine = prim_read 
 
 ||| Write a single character to stdout
 partial
 putChar : Char -> IO ()
-putChar c = mkForeign (FFun "putchar" [FInt] FUnit) (cast c)
+putChar c = foreign FFI_C "putchar" (Int -> IO ()) (cast c) 
 
 ||| Read a single character from stdin
 partial
 getChar : IO Char
-getChar = map cast $ mkForeign (FFun "getchar" [] FInt)
+getChar = map cast $ foreign FFI_C "getchar" (IO Int)
 
 ---- some basic file handling
 
@@ -470,22 +469,22 @@ abstract
 data File = FHandle Ptr
 
 ||| Standard input
-partial stdin : File
+stdin : File
 stdin = FHandle prim__stdin
 
 ||| Standard output
-partial stdout : File
+stdout : File
 stdout = FHandle prim__stdout
 
 ||| Standard output
-partial stderr : File
+stderr : File
 stderr = FHandle prim__stderr
 
 ||| Call the RTS's file opening function
 do_fopen : String -> String -> IO Ptr
 do_fopen f m
-   = mkForeign (FFun "fileOpen" [FString, FString] FPtr) f m
-
+   = foreign FFI_C "fileOpen" (String -> String -> IO Ptr) f m
+   
 ||| Open a file
 ||| @ f the filename
 ||| @ m the mode as a String (`"r"`, `"w"`, or `"r+"`)
@@ -508,30 +507,30 @@ openFile f m = fopen f (modeStr m) where
 
 partial
 do_fclose : Ptr -> IO ()
-do_fclose h = mkForeign (FFun "fileClose" [FPtr] FUnit) h
+do_fclose h = foreign FFI_C "fileClose" (Ptr -> IO ()) h
 
 partial
 closeFile : File -> IO ()
 closeFile (FHandle h) = do_fclose h
 
 partial
-do_fread : Ptr -> IO String
+do_fread : Ptr -> IO' l String
 do_fread h = prim_fread h
 
 fgetc : File -> IO Char
-fgetc (FHandle h) = return (cast !(mkForeign (FFun "fgetc" [FPtr] FInt) h))
+fgetc (FHandle h) = return (cast !(foreign FFI_C "fgetc" (Ptr -> IO Int) h))
 
 fgetc' : File -> IO (Maybe Char)
 fgetc' (FHandle h)
-   = do x <- mkForeign (FFun "fgetc" [FPtr] FInt) h
+   = do x <- foreign FFI_C "fgetc" (Ptr -> IO Int) h
         if (x < 0) then return Nothing
                    else return (Just (cast x))
 
 fflush : File -> IO ()
-fflush (FHandle h) = mkForeign (FFun "fflush" [FPtr] FUnit) h
+fflush (FHandle h) = foreign FFI_C "fflush" (Ptr -> IO ()) h
 
 do_popen : String -> String -> IO Ptr
-do_popen f m = mkForeign (FFun "do_popen" [FString, FString] FPtr) f m
+do_popen f m = foreign FFI_C "do_popen" (String -> String -> IO Ptr) f m
 
 popen : String -> Mode -> IO File
 popen f m = do ptr <- do_popen f (modeStr m)
@@ -542,19 +541,19 @@ popen f m = do ptr <- do_popen f (modeStr m)
     modeStr ReadWrite = "r+"
 
 pclose : File -> IO ()
-pclose (FHandle h) = mkForeign (FFun "pclose" [FPtr] FUnit) h
+pclose (FHandle h) = foreign FFI_C "pclose" (Ptr -> IO ()) h
 
 -- mkForeign (FFun "idris_readStr" [FPtr, FPtr] (FAny String))
 --                        prim__vm h
 
 partial
-fread : File -> IO String
+fread : File -> IO' l String
 fread (FHandle h) = do_fread h
 
 partial
 do_fwrite : Ptr -> String -> IO ()
-do_fwrite h s
-   = mkForeign (FFun "fputStr" [FPtr, FString] FUnit) h s
+do_fwrite h s = do prim_fwrite h s
+                   return ()
 
 partial
 fwrite : File -> String -> IO ()
@@ -562,7 +561,7 @@ fwrite (FHandle h) s = do_fwrite h s
 
 partial
 do_feof : Ptr -> IO Int
-do_feof h = mkForeign (FFun "fileEOF" [FPtr] FInt) h
+do_feof h = foreign FFI_C "fileEOF" (Ptr -> IO Int) h
 
 ||| Check if a file handle has reached the end
 feof : File -> IO Bool
@@ -571,31 +570,45 @@ feof (FHandle h) = do eof <- do_feof h
 
 partial
 do_ferror : Ptr -> IO Int
-do_ferror h = mkForeign (FFun "fileError" [FPtr] FInt) h
+do_ferror h = foreign FFI_C "fileError" (Ptr -> IO Int) h
 
 ferror : File -> IO Bool
 ferror (FHandle h) = do err <- do_ferror h
                         return (not (err == 0))
 
 fpoll : File -> IO Bool
-fpoll (FHandle h) = do p <- mkForeign (FFun "fpoll" [FPtr] FInt) h
+fpoll (FHandle h) = do p <- foreign FFI_C "fpoll" (Ptr -> IO Int) h
                        return (p > 0)
 
 ||| Check if a foreign pointer is null
 partial
 nullPtr : Ptr -> IO Bool
-nullPtr p = do ok <- mkForeign (FFun "isNull" [FPtr] FInt) p
+nullPtr p = do ok <- foreign FFI_C "isNull" (Ptr -> IO Int) p
                return (ok /= 0)
 
 ||| Check if a supposed string was actually a null pointer
 partial
 nullStr : String -> IO Bool
-nullStr p = do ok <- mkForeign (FFun "isNull" [FString] FInt) p
+nullStr p = do ok <- foreign FFI_C "isNull" (String -> IO Int) p
                return (ok /= 0)
+
+namespace JSNull
+  ||| Check if a foreign pointer is null
+  partial
+  nullPtr : Ptr -> JS_IO Bool
+  nullPtr p = do ok <- foreign FFI_JS "isNull" (Ptr -> JS_IO Int) p
+                 return (ok /= 0)
+
+  ||| Check if a supposed string was actually a null pointer
+  partial
+  nullStr : String -> JS_IO Bool
+  nullStr p = do ok <- foreign FFI_JS "isNull" (String -> JS_IO Int) p
+                 return (ok /= 0)
+
 
 ||| Pointer equality
 eqPtr : Ptr -> Ptr -> IO Bool
-eqPtr x y = do eq <- mkForeign (FFun "idris_eqPtr" [FPtr, FPtr] FInt) x y
+eqPtr x y = do eq <- foreign FFI_C "idris_eqPtr" (Ptr -> Ptr -> IO Int) x y
                return (eq /= 0)
 
 ||| Check whether a file handle is actually a null pointer

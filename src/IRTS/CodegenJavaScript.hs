@@ -8,6 +8,7 @@ import Idris.AbsSyntax hiding (TypeCase)
 import IRTS.Bytecode
 import IRTS.Lang
 import IRTS.Simplified
+import IRTS.Defunctionalise
 import IRTS.CodegenCommon
 import Idris.Core.TT
 import IRTS.System
@@ -541,14 +542,6 @@ jsTAILCALL _ n =
 
 jsFOREIGN :: CompileInfo -> Reg -> String -> [(FType, Reg)] -> JS
 jsFOREIGN _ reg n args
-  | n == "putStr"
-  , [(FString, arg)] <- args =
-      JSAssign (
-        translateReg reg
-      ) (
-        JSApp (JSIdent "i$putStr") [translateReg arg]
-      )
-
   | n == "isNull"
   , [(FPtr, arg)] <- args =
       JSAssign (
@@ -686,6 +679,10 @@ jsOP _ reg op args = JSAssign (translateReg reg) jsOP'
     jsOP' :: JS
     jsOP'
       | LNoOp <- op = translateReg (last args)
+
+      | LWriteStr <- op,
+        (_:str:_) <- args = JSAssign (translateReg reg)
+                               (JSApp (JSIdent "i$putStr") [translateReg str])
 
       | (LZExt (ITFixed IT8) ITNative)  <- op = jsUnPackBits $ translateReg (last args)
       | (LZExt (ITFixed IT16) ITNative) <- op = jsUnPackBits $ translateReg (last args)
@@ -1332,7 +1329,8 @@ translateBC info bc
   | NULL r                <- bc = jsNULL info r
   | CALL n                <- bc = jsCALL info n
   | TAILCALL n            <- bc = jsTAILCALL info n
-  | FOREIGNCALL r _ _ n a <- bc = jsFOREIGN info r n a
+  | FOREIGNCALL r _ (FStr n) args   
+                          <- bc = jsFOREIGN info r n (map fcall args)
   | TOPBASE n             <- bc = jsTOPBASE info n
   | BASETOP n             <- bc = jsBASETOP info n
   | STOREOLD              <- bc = jsSTOREOLD info
@@ -1346,4 +1344,29 @@ translateBC info bc
   | OP r o a              <- bc = jsOP info r o a
   | ERROR e               <- bc = jsERROR info e
   | otherwise                   = JSRaw $ "//" ++ show bc
+ where fcall (t, arg) = (toFType t, arg)
+
+toAType (FCon i) 
+    | i == sUN "JS_IntChar" = ATInt ITChar
+    | i == sUN "JS_IntNative" = ATInt ITNative
+toAType t = error (show t ++ " not defined in toAType")
+
+toFnType (FApp c [_,_,s,t])
+    | c == sUN "JS_Fn" = toFnType t
+toFnType (FApp c [_,_,r])
+    | c == sUN "JS_FnIO" = FFunctionIO
+toFnType (FApp c [_,r])
+    | c == sUN "JS_FnBase" = FFunction
+toFnType t = error (show t ++ " not defined in toFnType")
+
+toFType (FCon c) 
+    | c == sUN "JS_Str" = FString
+    | c == sUN "JS_Float" = FArith ATFloat
+    | c == sUN "JS_Ptr" = FPtr
+    | c == sUN "JS_Unit" = FUnit
+toFType (FApp c [_,ity]) 
+    | c == sUN "JS_IntT" = FArith (toAType ity)
+toFType (FApp c [_,fty]) 
+    | c == sUN "JS_FnT" = toFnType fty
+toFType t = error (show t ++ " not yet defined in toFType")
 

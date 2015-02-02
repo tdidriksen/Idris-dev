@@ -265,9 +265,9 @@ Extra-source-files:
                        test/reg050/run
                        test/reg050/*.idr
                        test/reg050/expected
-                       test/reg051/run
-                       test/reg051/*.idr
-                       test/reg051/expected
+                       test/reg051-disabled/run
+                       test/reg051-disabled/*.idr
+                       test/reg051-disabled/expected
                        test/reg052/run
                        test/reg052/*.idr
                        test/reg052/expected
@@ -455,6 +455,9 @@ Extra-source-files:
                        test/interactive006/input
                        test/interactive006/*.idr
                        test/interactive006/expected
+                       test/interactive007/run
+                       test/interactive007/input
+                       test/interactive007/expected
 
                        test/io001/run
                        test/io001/*.idr
@@ -751,7 +754,7 @@ Library
                 , base64-bytestring < 1.1
                 , binary >= 0.7 && < 0.8
                 , blaze-html >= 0.6.1.3 && < 0.8
-                , blaze-markup >= 0.5.2.1 && < 0.7.0.0
+                , blaze-markup >= 0.5.2.1 && < 0.6.3.0
                 , bytestring < 0.11
                 , cheapskate < 0.2
                 , containers >= 0.5 && < 0.6
