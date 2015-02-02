@@ -312,7 +312,6 @@ idrisInit = IState initContext [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
                    AutomaticWidth S.empty Nothing Nothing [] [] M.empty emptyContext []
-                   AutomaticWidth S.empty [] Nothing Nothing [] [] M.empty
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).
