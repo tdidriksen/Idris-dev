@@ -374,6 +374,11 @@ calcTotality fc n pats
     checkLHS i (App f a) = mplus (checkLHS i f) (checkLHS i a)
     checkLHS _ _ = Nothing
 
+eitherIsTotal :: Totality -> Totality -> Totality
+eitherIsTotal (Total []) _ = Total []
+eitherIsTotal _ (Total []) = Total []
+eitherIsTotal _ p = p
+
 checkTotality :: [Name] -> FC -> Name -> Idris Totality
 checkTotality path fc n
     | n `elem` path = return (Partial (Mutual (n : path)))
@@ -392,10 +397,11 @@ checkTotality path fc n
                         [CaseOp _ _ _ _ pats _] ->
                             do t' <- if AssertTotal `elem` opts
                                         then return $ Total []
-                                        else do when (Coinductive `elem` opts)
-                                                  (do _ <- checkGuardedRecursive n
-                                                      return ())
-                                                calcTotality fc n pats
+                                        else do termination <- calcTotality fc n pats
+                                                if (Coinductive `elem` opts)
+                                                  then (do gr <- checkGuardedRecursive n
+                                                           return (eitherIsTotal gr termination))
+                                                  else return termination
                                setTotality n t'
                                addIBC (IBCTotal n t')
                                return t'

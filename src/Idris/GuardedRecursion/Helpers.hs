@@ -1,4 +1,3 @@
-
 {-# LANGUAGE PatternGuards, PatternSynonyms, ViewPatterns #-}
 
 module Idris.GuardedRecursion.Helpers where
@@ -16,6 +15,7 @@ import Idris.Core.Typecheck hiding (isType)
 -- Idris Guarded Recursion
 import Idris.GuardedRecursion.Constants
 import Idris.GuardedRecursion.Error
+import Idris.GuardedRecursion.Exports
 
 import Data.Maybe
 import Data.List
@@ -89,41 +89,45 @@ data Modality = Causal | NonCausal deriving Show
 ------------------------------------------
 
 -- |Adds a rename to the guarded context.
-addGuardedRename :: Name -> Name -> Idris ()
+addGuardedRename :: Name -> GuardedRename -> Idris ()
 addGuardedRename n gn = do i <- getIState
                            case lookup n (guarded_renames i) of
                              Just _ -> tclift $ tfail (Elaborating "guarded recursion of " n (Msg $ "A guarded recursive name already exists for " ++ show n))
                              Nothing -> putIState (i { guarded_renames = (n, gn) : (guarded_renames i) })
 
+forallPreName :: Name -> Name
+forallPreName = prefixName forallPrefix
+
 -- |Looks up a name for its guarded version in the context.
-getGuardedName :: Name -> Idris Name
+getGuardedName :: Name -> Idris GuardedRename
 getGuardedName n = do i <- getIState
                       case lookup n (guarded_renames i) of
                         Just n' -> return n'
                         Nothing -> tclift $ tfail (Elaborating "guarded recursion of " n (Msg $ "A guarded recursive name for " ++ show n ++ " could not be found."))
 
 -- |Looks up a name for its guarded version in the context. If it does not exist it creates one.                        
-getGuardedNameSoft :: Name -> Idris Name
+getGuardedNameSoft :: Name -> Idris GuardedRename
 getGuardedNameSoft n = do i <- getIState
                           case lookup n (guarded_renames i) of
                             Just n' -> return n'
-                            Nothing -> guardedNameCtxt n                             
+                            Nothing -> do gn <- guardedNameCtxt n
+                                          return $ Left gn
 
 -- |Creates a guarded version of a name.
 guardedName :: Name -> Name
-guardedName (UN t) = UN (guardedText t)
-guardedName (NS n ns) = NS (guardedName n) ns --(placeInGuardedNS ns)
-guardedName (MN i t) = MN i (guardedText t)
--- FIX ME: We need to figure out more about what special names are so we can figure out how to "guard" them.
--- Total hack!
-guardedName (SN s) = sUN (show s)
-guardedName n = n
+guardedName = prefixName guardedPrefix
 
 -- |Creates and adds a rename to the guarded context.
 guardedNameCtxt :: Name -> Idris Name
 guardedNameCtxt n = do let gn = guardedName n
-                       addGuardedRename n gn
+                       addGuardedRename n (Left gn)
                        return gn
+
+guardedProjCtxt :: Name -> Idris GuardedProjectionNames
+guardedProjCtxt n = do let gn = GuardedProjectionNames (guardedName n) (forallPreName n)
+                       addGuardedRename n (Right gn)
+                       return gn
+
 
 -- |inNS ns n puts n in namespace ns
 inNS :: [T.Text] -> Name -> Name
@@ -160,6 +164,8 @@ prefixName :: String -> Name -> Name
 prefixName s (UN t) = UN (prefixTxt s t)
 prefixName s (NS n ns) = NS (prefixName s n) ns
 prefixName s (MN i t) = MN i (prefixTxt s t)
+-- Total hack!
+prefixName s (SN sn) = sUN (s ++ show sn)
 prefixName _ n = n
 
 -- |Same as guardedNS but on SyntaxInfo level.
@@ -198,9 +204,9 @@ buildEnv term = nubBy (\(x,_) (y,_) -> x == y) (bounded term)
     bounded _ = []
 
 buildGuardedEnv :: Modality -> Term -> Idris Env
-buildGuardedEnv    Causal term = do gTerm <- guardedTT' term
+buildGuardedEnv    Causal term = do gTerm <- guardedTT' Causal term
                                     return $ buildEnv gTerm
-buildGuardedEnv NonCausal term = do gTerm <- guardedTT' term
+buildGuardedEnv NonCausal term = do gTerm <- guardedTT' NonCausal term
                                     let env = buildEnv gTerm
                                     mapM f env
   where
@@ -219,14 +225,37 @@ applyPTLater = applyPTLaterFC emptyFC
 applyPTLaterFC :: FC -> PTerm -> PTerm
 applyPTLaterFC fc t = PApp fc (laterPTRefFC fc) [pexp t]
 
--- |elabGuardedPostulate (n, ty) elaborates:
+applyPTForall :: PTerm -> PTerm
+applyPTForall = applyPTForallFC emptyFC
+
+applyPTForallFC :: FC -> PTerm -> PTerm
+applyPTForallFC fc t = PApp fc (forallPTRefFC fc) [pexp t]
+
+-- |elabPost (gn, ty) elaborates:
 -- |  postulate gn = ty
--- |where gn is the guarded name of n
-elabGuardedPostulate :: (Name, PTerm) -> Idris ()
-elabGuardedPostulate (n, ty) = do gn <- getGuardedName n
-                                  let syn = defaultSyntax
-                                  logLvl 3 $ "Created postulate " ++ show gn ++ " with type " ++ show ty ++ " from " ++ show n ++ " for checking for guarded recursion."
-                                  elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] gn ty
+elabPost :: Name -> PTerm -> Idris ()
+elabPost gn ty = do let syn = defaultSyntax
+                    logLvl 3 $ "Created postulate " ++ show gn ++ " with type " ++ show ty ++ " for checking for guarded recursion."                           
+                    elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] gn ty
+
+elabForallPost :: (Name, PTerm) -> Idris ()
+elabForallPost (n, ty) = do gn <- getGuardedName n
+                            case gn of
+                              Right fn -> do let syn = defaultSyntax
+                                             logLvl 3 $ "Created forall postulate " ++ show gn ++ " with type " ++ show ty ++ " for " ++ show n ++ " for checking for guarded recursion."
+                                             elabPostulate (toplevel { namespace = Just (syn_namespace syn) }) syn emptyDocstring emptyFC [] (forallProj fn) ty
+                              Left _ -> ifail "Attempted to elaborate a non-projection name."
+
+foralledPTerm :: Name -> PTerm -> PTerm
+foralledPTerm tyn t
+  | isName t = applyPTForall t
+  where
+    isName :: PTerm -> Bool
+    isName (PApp _ (PRef _ n) _) = n == tyn || n == (nsroot tyn)
+    isName (PRef _ n) = n == tyn || n == (nsroot tyn)
+    isName _ = False
+foralledPTerm tyn (PPi p n t t') = PPi p n (foralledPTerm tyn t) (foralledPTerm tyn t')
+foralledPTerm _ t = t
 
 -- |guardedTerm tyn t inserts laters on references to tyn in t                                  
 guardedPTerm :: Name -> PTerm -> PTerm
@@ -257,14 +286,19 @@ guardNamesIn n t = do i <- getIState
 -- |guardRootNamesIn n t replaces any references to n in t                                                
 guardRootNamesIn :: Name -> PTerm -> Idris PTerm
 guardRootNamesIn n t = do gn <- getGuardedName n
-                          let gt = substMatch (nsroot n) (PRef emptyFC gn) t
+                          let gt = substMatch (nsroot n) (PRef emptyFC (unpackRename gn)) t
                           guardExactNamesIn n gt
+
 
 -- |guardExactNamesIn n t replaces references to exactly n in t                          
 guardExactNamesIn :: Name -> PTerm -> Idris PTerm
 guardExactNamesIn n t = do gn <- getGuardedName n
-                           return $ substMatch n (PRef emptyFC gn) t
+                           return $ substMatch n (PRef emptyFC (unpackRename gn)) t
                    
+unpackRenameModality :: Modality -> GuardedRename -> Name
+unpackRenameModality _ (Left n) = n
+unpackRenameModality Causal (Right g) = guardedProj g
+unpackRenameModality NonCausal (Right g) = forallProj g
 
 --------------------------------------
 ----------------- TT -----------------
@@ -635,12 +669,8 @@ guardableTC (Bind _ b t) = guardableTC (binderTy b) && guardableTC t
 guardableTC (TType _) = True
 guardableTC _ = False
 
--- |guards all free names in the term.
-guardedTT :: Term -> Idris Term
-guardedTT = guardedTTIgnore []
-
-guardedTT' :: Term -> Idris Term
-guardedTT' tm = mapMTT withGuardedNames tm
+guardedTT' :: Modality -> Term -> Idris Term
+guardedTT' modality tm = mapMTT withGuardedNames tm
   where
     withGuardedNames :: Term -> Idris Term
     withGuardedNames (P nt n _) | nt /= Bound = guardedP n
@@ -650,21 +680,28 @@ guardedTT' tm = mapMTT withGuardedNames tm
     guardedP n =
       do i <- get
          gname <- case lookup n $ guarded_renames i of
-                   Just n' -> return n'
+                   Just (Left n') -> return n'
+                   Just (Right g) -> case modality of
+                                       Causal    -> return $ guardedProj g
+                                       NonCausal -> return $ forallProj g
                    Nothing -> return n
          let ctxt = tt_ctxt i
          case lookupP gname ctxt of 
           [p] -> return p
           _ -> ifail $ "Name " ++ show gname ++ " has no definition."
 
+-- |guards all free names in the term.
+guardedTT :: Modality -> Term -> Idris Term
+guardedTT = guardedTTIgnore []          
+
 -- |Same as guardedTT, but ignoring names in the given list.
-guardedTTIgnore :: [Name] -> Term -> Idris Term
-guardedTTIgnore is t = do let fn = is \\ (freeNames t)
-                          i <- getIState
-                          let gns = mapMaybe (\y -> lookup y (guarded_renames i)) fn
-                          ctxt <- getContext
-                          let ps = concat $ map (\n -> lookupP n ctxt) gns
-                          return $ substNames (zip gns ps) t          
+guardedTTIgnore :: [Name] -> Modality -> Term -> Idris Term
+guardedTTIgnore is modality t = do let fn = is \\ (freeNames t)
+                                   i <- getIState
+                                   let gns = map (unpackRenameModality modality) (mapMaybe (\y -> lookup y (guarded_renames i)) fn)
+                                   ctxt <- getContext
+                                   let ps = concat $ map (\n -> lookupP n ctxt) gns
+                                   return $ substNames (zip gns ps) t                    
 
 removeLaziness :: Term -> Term
 removeLaziness t = mapTT withoutLazyOps t
@@ -772,7 +809,7 @@ clockedType :: Type -> Idris Bool
 clockedType (Bind _ _ sc) = clockedType sc
 clockedType (unApply -> (P _ n _, _)) =
   do i <- get
-     return $ n `elem` (map snd (guarded_renames i))
+     return $ n `elem` (map (unpackRename . snd) (guarded_renames i))
 clockedType _ = return False     
 
 isOpen :: Clock -> Bool

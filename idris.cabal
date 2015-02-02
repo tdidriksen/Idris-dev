@@ -663,6 +663,7 @@ Library
                 , Idris.GuardedRecursion.Error
                 , Idris.GuardedRecursion.GRLhs
                 , Idris.GuardedRecursion.Helpers
+                , Idris.GuardedRecursion.Exports
 
                 , Idris.AbsSyntax
                 , Idris.AbsSyntaxTree

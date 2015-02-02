@@ -8,6 +8,7 @@ import Idris.Core.Evaluate
 import Idris.Core.Elaborate hiding (Tactic(..))
 import Idris.Core.Typecheck
 import Idris.Docstrings
+import Idris.GuardedRecursion.Exports
 import IRTS.Lang
 import IRTS.CodegenCommon
 import Util.Pretty
@@ -225,7 +226,7 @@ data IState = IState {
     elab_stack :: [Name], -- ^ Stack of names currently being elaborated
     idris_symbols :: M.Map Name Name, -- ^ Symbol table (preserves sharing of names)
     lhs_projections :: Ctxt (PDecl, Name, Name, Name),
-    guarded_renames :: [(Name, Name)] -- ^ Names of declarations that have a guarded counterpart
+    guarded_renames :: [(Name, GuardedRename)] -- ^ Names of declarations that have a guarded counterpart
    }
 
 -- Required for parsers library, and therefore trifecta

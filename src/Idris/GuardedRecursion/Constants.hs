@@ -12,6 +12,7 @@ import Idris.Error
 guardedRecursion, guardedPrefix, laterStr, later'Str, nextStr, composeStr, availStr, nowStr, tomorrowStr, forallStr, lambdaKappaStr, applyStr, delayStr, lazyCodataStr, forceStr, lazy'Str, liftComposeStr :: String
 guardedRecursion = "GuardedRecursion"
 guardedPrefix = "guarded_"
+forallPrefix = "forall_"
 laterStr = "Later"
 later'Str = "Later'"
 nextStr = "Next"
@@ -100,3 +101,9 @@ laterPTRef = laterPTRefFC emptyFC
 
 laterPTRefFC :: FC -> PTerm
 laterPTRefFC fc = PRef fc later'Name
+
+forallPTRef :: PTerm
+forallPTRef = forallPTRefFC emptyFC
+
+forallPTRefFC :: FC -> PTerm
+forallPTRefFC fc = PRef fc forallName

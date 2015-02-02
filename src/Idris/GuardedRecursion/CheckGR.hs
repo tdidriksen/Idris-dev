@@ -53,8 +53,8 @@ checkFunction :: Name -> Type -> [([Name], Term, Term)] -> Idris Totality
 checkFunction name ty clauses =
   do let expTy = explicitNames ty
      let expClauses = flip map clauses $ \(pvs, lhs, rhs) -> (pvs, explicitNames lhs, explicitNames rhs)
-     gName <- getGuardedNameSoft name
      modality <- modalityOf name
+     gName <- liftM (unpackRenameModality modality) (getGuardedNameSoft name)
      iLOG $ show gName ++ " is " ++ show modality
      iLOG $ "expTy : " ++ showTT expTy
      gTy <- guardedType expTy modality
@@ -76,7 +76,7 @@ checkFunction name ty clauses =
 
 guardedType :: Type -> Modality -> Idris Type
 guardedType ty modality =
-  do gTy <- guardedTT' ty
+  do gTy <- guardedTT' modality ty
      universallyQuantify modality gTy
 
 universallyQuantify :: Modality -> Type -> Idris Type
@@ -91,8 +91,8 @@ universallyQuantify NonCausal (unapplyForall -> Just ty) = return ty
 universallyQuantify NonCausal ty@(unapplyForall -> Nothing) = return ty
 universallyQuantify Causal ty = applyForall ty
 
-guardedLHS :: Term -> Idris Term
-guardedLHS lhs = guardedTT' (removeLaziness lhs)
+guardedLHS :: Modality -> Term -> Idris Term
+guardedLHS modality lhs = guardedTT' modality (removeLaziness lhs)
 
 guardedRecursiveCheck :: Modality -> Name -> Type -> Term -> Term -> Type -> Idris Totality
 guardedRecursiveCheck modality recName ty lhs rhs rhTy =
@@ -112,7 +112,7 @@ guardedRecursiveClause name ty (_, lhs, rhs) modality =
      gRhsTy <- guardedType rhsTy modality
      ist <- get
      put $ ist { tt_ctxt = addTyDecl name Ref ty ctxt }
-     glhs <- guardedLHS lhs
+     glhs <- guardedLHS modality lhs
      iLOG $ "Guarded LHS: " ++ show glhs
      let appliedType = case unapplyForall ty of
                         Just ty' -> ty'

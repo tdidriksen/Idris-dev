@@ -34,7 +34,7 @@ epsLogInfer rule tm Nothing goalty = iLOG $ show rule ++ ": Term" ++ showTT tm +
 \begin{code}
 epsilon :: Modality -> Name -> Term -> Type -> [Term] -> Env -> Idris Term
 epsilon modality recName t a params env =
-  do t' <- guardedTT' (removeLaziness t)
+  do t' <- guardedTT' modality (removeLaziness t)
      iLOG $ "params : " ++ intercalate ", " (map show params)
      iLOG $ "Before fixing : " ++ showTT t'
      fixed <- fixRecursiveRef modality env params recName (allTTNames t') t'

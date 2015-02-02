@@ -20,6 +20,7 @@ import IRTS.Lang
 import Idris.ParseHelpers (opChars)
 import Idris.IdrisDoc (extract)
 import Idris.GuardedRecursion.Helpers
+import Idris.GuardedRecursion.Exports
 
 import Idris.Elab.Type
 import Idris.Elab.Data
@@ -106,16 +107,20 @@ elabCorecord info syn rsyn doc argDocs fc opts (PCorecorddecl tyn tyc projs cons
          when (guardableTC cty')
                -- Get the guarded name. This should already exist from the elaborationg of the codata
            (do gn <- getGuardedName tyn
-               -- Create guarded names for projections
-               mapM_ guardedNameCtxt pNas
-               -- Guard the projection types
-               let gpTys = map (guardedPTerm tyn) pTys'
-               gpTys' <- mapM (guardNamesIn tyn) gpTys
-               -- Prefix projection type with guarded recursive reference
-               gty <- guardNamesIn tyn ty
-               let gtf = map (prePi gty) gpTys'
-               -- Elaborate guarded projections as postulates
-               mapM_ elabGuardedPostulate (zip pNas gtf))
+               let guardedTypeName = unpackRename gn
+                                                               -- Make the guarded name
+               let elabProjPostulates (projName, projTy) = (do rename <- guardedProjCtxt projName
+                                                               -- Make the full type of the projection with guarded names
+                                                               fullType <- guardNamesIn tyn (prePi ty projTy)
+                                                               -- Make the full type with guarded names and laters
+                                                               guardedType <- guardNamesIn tyn (prePi ty (guardedPTerm tyn projTy))
+                                                               -- Make the full type with guarded names and forall
+                                                               let forallType = foralledPTerm guardedTypeName fullType
+                                                               -- Elaborate the guarded and forall projections
+                                                               elabPost (guardedProj rename) guardedType
+                                                               elabPost (forallProj rename) forallType
+                                                             )
+               mapM_ elabProjPostulates (zip pNas pTys'))
   where
     prePi c t = PPi (Exp [] Dynamic False) (sMN 0 "__pi_arg") c t
 
