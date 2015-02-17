@@ -972,6 +972,7 @@ expandParams dec ps ns infs tm = en tm
     en (PApp fc f as) = PApp fc (en f) (map (fmap en) as)
     en (PAppBind fc f as) = PAppBind fc (en f) (map (fmap en) as)
     en (PCase fc c os) = PCase fc (en c) (map (pmap en) os)
+    en (PLhsProj n t) = PLhsProj n (en t)
     en t = t
 
     nselem x [] = False

@@ -311,7 +311,8 @@ idrisInit = IState initContext [] []
                    [] [] [] defaultOpts 6 [] [] [] [] emptySyntaxRules [] [] [] [] [] [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
-                   AutomaticWidth S.empty Nothing Nothing [] [] M.empty emptyContext []
+                   AutomaticWidth S.empty [] Nothing Nothing [] [] M.empty emptyContext []
+
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).
@@ -1574,6 +1575,7 @@ pprintPTerm ppo bnd docArgs infixes = prettySe startPrec bnd
     prettySe p bnd (PQuasiquote t Nothing) = text "`(" <> prettySe p [] t <> text ")"
     prettySe p bnd (PQuasiquote t (Just g)) = text "`(" <> prettySe p [] t <+> colon <+> prettySe p [] g <> text ")"
     prettySe p bnd (PUnquote t) = text "~" <> prettySe p bnd t
+    prettySe p bnd (PLhsProj n t) = text "lhs proj " <+> prettyName True (ppopt_impl ppo) bnd n <+> prettySe p bnd t
 
     prettySe p bnd _ = text "missing pretty-printer for term"
 
@@ -1856,6 +1858,7 @@ allNamesIn tm = nub $ ni [] tm
     ni env (PUnifyLog tm)    = ni env tm
     ni env (PDisamb _ tm)    = ni env tm
     ni env (PNoImplicits tm)    = ni env tm
+    ni env (PLhsProj _ tm) = ni env tm
     ni env _               = []
 
     niTacImp env (TacImp _ _ scr) = ni env scr
@@ -1882,6 +1885,7 @@ boundNamesIn tm = nub $ ni tm
     ni (PUnifyLog tm)    = ni tm
     ni (PDisamb _ tm)    = ni tm
     ni (PNoImplicits tm) = ni tm
+    ni (PLhsProj _ tm) = ni tm
     ni _               = []
 
     niTacImp (TacImp _ _ scr) = ni scr
@@ -1918,6 +1922,7 @@ implicitNamesIn uvars ist tm = nub $ ni [] tm
     ni env (PUnifyLog tm)    = ni env tm
     ni env (PDisamb _ tm)    = ni env tm
     ni env (PNoImplicits tm) = ni env tm
+    ni env (PLhsProj _ tm) = ni env tm
     ni env _               = []
 
 -- Return names which are free in the given term.
@@ -1948,6 +1953,7 @@ namesIn uvars ist tm = nub $ ni [] tm
     ni env (PUnifyLog tm)    = ni env tm
     ni env (PDisamb _ tm)    = ni env tm
     ni env (PNoImplicits tm) = ni env tm
+    ni env (PLhsProj _ tm) = ni env tm
     ni env _               = []
 
     niTacImp env (TacImp _ _ scr) = ni env scr
@@ -1979,6 +1985,7 @@ usedNamesIn vars ist tm = nub $ ni [] tm
     ni env (PUnifyLog tm)    = ni env tm
     ni env (PDisamb _ tm)    = ni env tm
     ni env (PNoImplicits tm) = ni env tm
+    ni env (PLhsProj _ tm) = ni env tm
     ni env _               = []
 
     niTacImp env (TacImp _ _ scr) = ni env scr

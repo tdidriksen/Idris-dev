@@ -157,7 +157,15 @@ desugarLhsProjs name clauses =
     splitCopatterns = undefined
 
     mergedCopatterns =
-      do expanded <- mapM expandClause clauses
+      do forM_ clauses $ \m ->
+           do case (clauseLhs m, clauseName m) of
+               (Just app, Just n) ->
+                 do iLOG $ "LHS before: " ++ show app ++ " , name: " ++ show n
+                    --_ <- constructorFor n
+                    return ()
+               _ -> return ()
+              iLOG $ "RHS before: " ++ show (clauseRhs m)
+         expanded <- mapM expandClause clauses
          iLOG $ "Expanded " ++ show (length expanded) ++ " clauses"
          merged <- mergeClauseList expanded
          iLOG $ "Returning " ++ show (length merged) ++ " merged clauses"
@@ -422,13 +430,16 @@ replaceWheres newwheres (PClauseR fc wis rhs _) = PClauseR fc wis rhs newwheres
 replaceWheres newwheres (PWithR fc wis rhs _) = PWithR fc wis rhs newwheres
 
 
-mergeWheres :: PClause -> PClause -> PClause
-mergeWheres l r =
-  case (clauseWheres l, clauseWheres r) of
-   ([], []) -> l
-   (_, []) -> l
-   ([], ys) -> replaceWheres ys l
-   (xs, ys) -> replaceWheres (xs ++ ys) l
+-- mergeWheres :: [PDecl] -> [PDecl] -> [PDecl]
+-- mergeWheres [] wheresR = wheresR
+-- mergeWheres wheresL [] = wheresL
+-- mergeWheres wheresL wheresR = wheresL ++ wheresR
+  
+  -- case (clauseWheres l, clauseWheres r) of
+  --  ([], []) -> l
+  --  (_, []) -> l
+  --  ([], ys) -> replaceWheres ys l
+  --  (xs, ys) -> replaceWheres (xs ++ ys) l
       
 
 mergeClauses :: PClause -> PClause -> Idris PClause
@@ -440,12 +451,125 @@ mergeClauses l r
       compSet <- icompatible lhsl lhsr
       case compSet of
        Just cs -> do iLOG $ "Substitutions (" ++ show lhsl ++ ", " ++ show lhsr ++ ") : " ++ intercalate ", " (map show cs)
-                     mergedRhs <- merge rhsl (subst cs rhsr)
-                     return $ mergeWheres (replaceRhs mergedRhs l) r
+                     let wheresL = clauseWheres l
+                     let wheresR = clauseWheres r
+                     let namesInWheresR = namesInWhereBlock wheresR
+                     let substWheresR = map (substPDecl cs) wheresR
+                     let wheresRNameClashes = nameClashes rhsl wheresL wheresR
+                     iLOG $ "rhsl : " ++ show rhsl
+                     iLOG $ "rhsr : " ++ show rhsr
+                     iLOG $ "wheresR : " ++ show wheresR
+                     iLOG $ "wheresL : " ++ show wheresL
+                     iLOG $ "wheresRNameClashes : " ++ show wheresRNameClashes
+                     let conflictingNames = nub $ namesInWhereBlock wheresL ++ allNamesIn rhsl
+                     iLOG $ "Conflicting names : " ++ show conflictingNames
+                     ctxt <- getContext
+                     let nameSubs = map (\n -> (n, uniqueNameCtxt ctxt n conflictingNames)) wheresRNameClashes
+                     iLOG $ "nameSubs : " ++ show nameSubs
+                     let renamedRhs = subst (mkSubs nameSubs) rhsr
+                     iLOG $ "renamed rhs : " ++ show renamedRhs
+                     let renamedWheresR = renameWhereBlock nameSubs substWheresR
+                     let cs' = deleteSubs namesInWheresR cs -- Names in where block will shadow arguments
+                     mergedRhs <- merge rhsl (subst cs' renamedRhs)
+                     return $ replaceWheres (wheresL ++ renamedWheresR) (replaceRhs mergedRhs l)
        Nothing -> return l
  | otherwise = return l
+  where 
+    namesInWhereBlock :: [PDecl] -> [Name]
+    namesInWhereBlock wheres = nub $ concatMap declared wheres ++ concatMap defined wheres
+
+    nameClashes :: PTerm -> [PDecl] -> [PDecl] -> [Name]
+    nameClashes rhs wheresL wheresR = nub $ nameClashesFromRhs rhs wheresR ++ nameClashesFromWheres wheresL wheresR
+
+    nameClashesFromRhs :: PTerm -> [PDecl] -> [Name]
+    nameClashesFromRhs rhs wheres = allNamesIn rhs `intersect` namesInWhereBlock wheres
+
+    {-|
+      Returns the names in the second arguments which clash with
+      names in the first argument
+    -}
+    nameClashesFromWheres :: [PDecl] -> [PDecl] -> [Name]
+    nameClashesFromWheres wheresL wheresR =
+      let namesInWheresL = namesInWhereBlock wheresL
+          namesInWheresR = namesInWhereBlock wheresR
+      in  namesInWheresL `intersect` namesInWheresR
+
+    substPDecl :: [Substitution] -> PDecl -> PDecl
+    substPDecl subs (PClauses fc opts n clauses) =
+      PClauses fc opts n (map (substPClause subs) clauses)
+    substPDecl _ decl = decl
+
+substPClause :: [Substitution] -> PClause -> PClause
+substPClause subs (PClause fc n lhs withs rhs wheres) =
+  PClause fc n lhs withs substRhs wheres
+  where substRhs = let lhsNames = allNamesIn lhs
+                   in subst (deleteSubs lhsNames subs) rhs
+substPClause subs (PWith fc n lhs withs rhs wheres) =
+  PWith fc n lhs withs substRhs wheres
+  where substRhs = let lhsNames = allNamesIn lhs
+                   in subst (deleteSubs lhsNames subs) rhs
+substPClause subs (PClauseR fc withs rhs wheres) =
+  PClauseR fc withs (subst subs rhs) wheres
+substPClause subs (PWithR fc withs rhs wheres) =
+  PWithR fc withs (subst subs rhs) wheres
+
+renamePClause :: [Substitution] -> PClause -> PClause
+renamePClause subs (PClause fc n lhs withs rhs wheres) =
+  PClause fc n (subst subs lhs) withs (subst subs rhs) wheres
+renamePClause subs (PWith fc n lhs withs rhs wheres) =
+  PWith fc n (subst subs lhs) withs (subst subs rhs) wheres
+renamePClause subs (PClauseR fc withs rhs wheres) =
+  PClauseR fc withs (subst subs rhs) wheres
+renamePClause subs (PWithR fc withs rhs wheres) =
+  PWithR fc withs (subst subs rhs) wheres
+
+renameWhereBlock :: [(Name, Name)] -> [PDecl] -> [PDecl]
+renameWhereBlock renames decls = renameWB [] decls
+  where
+    renameWB :: [(Name,Name)] -> [PDecl] -> [PDecl]
+    renameWB scope (d:ds) =
+      let declNames = nub $ declared d ++ defined d
+          declRenames = lookupEntries declNames renames
+          scope' = declRenames ++ scope
+      in renamePDecl scope' d : renameWB scope' ds
+    renameWB _ [] = []
+
+    renamePDecl :: [(Name, Name)] -> PDecl -> PDecl
+    renamePDecl scope (PTy doc argDoc syn fc opts n tm) =
+      PTy doc argDoc syn fc opts (updateN scope n) (subst (mkSubs scope) tm')
+      where tm' = subst (mkSubs (deleteFrom (==) n scope)) tm -- A type cannot refer to itself, so remove name from scope
+    renamePDecl scope (PClauses fc opts n clauses) =
+      PClauses fc opts (updateN scope n) clauses'
+      where clauses' = map (renamePClause (mkSubs scope)) clauses
+    renamePDecl scope (PMutual fc decls) =
+      PMutual fc (map (renamePDecl scope) decls)
+    renamePDecl _ decl = decl
+    
+mkSubs :: [(Name, Name)] -> [Substitution]
+mkSubs ns = map (\(n,n') -> (n, PRef emptyFC n')) ns
 
 type Substitution = (Name, PTerm)
+
+deleteSub :: Name -> [Substitution] -> [Substitution]
+deleteSub x subs = deleteFrom (==) x subs
+
+deleteSubs :: [Name] -> [Substitution] -> [Substitution]
+deleteSubs (n:ns) subs = let subs' = deleteFrom (==) n subs
+                         in deleteSubs ns subs'
+deleteSubs _ subs = subs
+
+lookupEntries :: Eq a => [a] -> [(a,b)] -> [(a,b)]
+lookupEntries (a:as) xs =
+  case lookup a xs of
+   Just b -> (a,b) : lookupEntries as xs
+   Nothing -> lookupEntries as xs
+lookupEntries [] xs = []
+
+deleteFrom :: (a -> a -> Bool) -> a -> [(a,b)] -> [(a,b)]
+deleteFrom p x ((a,b):ys)
+  | p x a     = deleteFrom p x ys
+  | otherwise = (a,b) : deleteFrom p x ys
+deleteFrom p x [] = [] 
 
 subst :: [Substitution] -> PTerm -> PTerm
 subst subs t = mapPT (subst' subs) t
@@ -463,17 +587,8 @@ subst subs t = mapPT (subst' subs) t
       | isJust $ lookup x subs =
           let subs' = deleteSub x subs
           in PLet fc x (subst' subs ty) (subst' subs' e) (subst' subs' b)
-      | otherwise = PLet fc x (subst' subs ty) (subst' subs e) (subst' subs b)
+      | otherwise = PLet fc x (subst' subs ty) (subst' subs e) (subst' subs b)  
     subst' _ t = t
-
-    deleteSub :: Name -> [Substitution] -> [Substitution]
-    deleteSub x subs = deleteFrom (==) x subs
-
-    deleteFrom :: (a -> a -> Bool) -> a -> [(a,b)] -> [(a,b)]
-    deleteFrom p x ((a,b):ys)
-      | p x a     = deleteFrom p x ys
-      | otherwise = (a,b) : deleteFrom p x ys
-    deleteFrom p x [] = [] 
 
 -- allAll :: (a -> a -> Bool) -> [a] -> ([a], [a])
 -- allAll f xs = allAll' f xs []
