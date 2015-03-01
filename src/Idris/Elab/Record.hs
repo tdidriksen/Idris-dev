@@ -296,7 +296,7 @@ mkProjAndUpdate info syn fc tyn cn cty_in
                                    implBinds (length nonImp)) (zip nonImp [0..])
          mapM_ (rec_elabDecl info EAll info) (concat proj_decls)
          logLvl 3 $ show update_decls
-         -- mapM_ (tryElabSetter info) update_decls
+         mapM_ (tryElabSetter info) update_decls
   where
     isNonImp (PExp _ _ _ _, a) = Just a
     isNonImp _ = Nothing
