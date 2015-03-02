@@ -179,13 +179,13 @@ instance (NFData t) => NFData (PClause' t) where
         rnf (PClause x1 x2 x3 x4 x5 x6)
           = rnf x1 `seq`
               rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` rnf x5 `seq` rnf x6 `seq` ()
-        rnf (PWith x1 x2 x3 x4 x5 x6)
+        rnf (PWith x1 x2 x3 x4 x5 x6 x7)
           = rnf x1 `seq`
-              rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` rnf x5 `seq` rnf x6 `seq` ()
+              rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` rnf x5 `seq` rnf x6 `seq` rnf x7 `seq` ()
         rnf (PClauseR x1 x2 x3 x4)
           = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` ()
-        rnf (PWithR x1 x2 x3 x4)
-          = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` ()
+        rnf (PWithR x1 x2 x3 x4 x5)
+          = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` rnf x5 `seq` ()
 
 instance (NFData t) => NFData (PData' t) where
         rnf (PDatadecl x1 x2 x3)
@@ -203,6 +203,7 @@ instance NFData PTerm where
         rnf (PLet _ x1 x2 x3 x4)
           = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` ()
         rnf (PTyped x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
+        rnf (PAppImpl x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
         rnf (PApp x1 x2 x3) = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` ()
         rnf (PAppBind x1 x2 x3) = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` ()
         rnf (PMatchApp x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
@@ -239,6 +240,7 @@ instance NFData PTerm where
         rnf (PNoImplicits x1) = rnf x1 `seq` ()
         rnf (PQuasiquote x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
         rnf (PUnquote x1) = rnf x1 `seq` ()
+        rnf (PRunTactics x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
 
 instance (NFData t) => NFData (PTactic' t) where
         rnf (Intro x1) = rnf x1 `seq` ()
@@ -250,6 +252,7 @@ instance (NFData t) => NFData (PTactic' t) where
         rnf (Induction x1) = rnf x1 `seq` ()
         rnf (CaseTac x1) = rnf x1 `seq` ()
         rnf (Equiv x1) = rnf x1 `seq` ()
+        rnf (Claim x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
         rnf (MatchRefine x1) = rnf x1 `seq` ()
         rnf (LetTac x1 x2) = rnf x1 `seq` rnf x2 `seq` ()
         rnf (LetTacTy x1 x2 x3) = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` ()
@@ -280,6 +283,7 @@ instance (NFData t) => NFData (PTactic' t) where
         rnf Skip = ()
         rnf (TFail x1) = rnf x1 `seq` ()
         rnf SourceFC = ()
+        rnf Unfocus = ()
 
 instance NFData ErrorReportPart where
         rnf (TermPart x1) = rnf x1 `seq` ()
