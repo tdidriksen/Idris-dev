@@ -35,13 +35,9 @@ checkGR NonCausal g r t a = check Closed g r t a
 check :: Clock -> Env -> (Name, Type) -> Term -> Type -> Idris Totality
 
 check Open g (n, (forallK -> Extracted ty)) (causalRecursiveRef n -> Extracted t) a =
-  do iLOG $ "Recursive ref " ++ show t
-     iLOG $ "Type of rec: " ++ show ty
-     iLOG $ "Type wanted: " ++ show a
      (a `laterThan` ty) g
      
 check Open g (n, ty) (acausalRecursiveRef n -> Extracted t) a =
-  do iLOG $ "Recursive ref " ++ show t
      (a `laterThan` ty) g
      
 \end{code}
@@ -52,7 +48,6 @@ check Open g (n, ty) (acausalRecursiveRef n -> Extracted t) a =
 \begin{code}
 
 check Closed g n (forallK -> Extracted a) ty@(TType _) =
-  do iLOG $ "Forall type: " ++ show a
      requires
        (nofc n g)
        (check Open g n a ty)
@@ -65,7 +60,6 @@ check Closed g n (forallK -> Extracted a) ty@(TType _) =
 \begin{code}
 
 check Open g n (later -> Extracted a) t@(TType _) =
-  do iLOG $ "Later type: " ++ show a
      check Open g n a t
   
 \end{code}
@@ -76,7 +70,6 @@ check Open g n (later -> Extracted a) t@(TType _) =
 \begin{code}
 
 check Open g n (next -> Extracted t) (later -> Extracted a) =
-  do iLOG $ "Next rule: " ++ show t ++ " and " ++ show a
      check Open g n t a
   
 \end{code}
@@ -90,12 +83,10 @@ check Open g n (tensor -> Extracted (t, u, l, a, b')) (laterN l -> Extracted b) 
   do c <- cEq g b' b
      if c
        then (do aToB <- (a `to` b) g
-                iLOG "Tensor success!"
                 requires
                   (check Open g n t =<< laterK aToB)
                   (check Open g n u =<< laterK a))
-       else (do iLOG $ "Tensor not equal: " ++ show b' ++ " \n and \n " ++ show b
-                return $ Partial (NotGuardedRecursive [(TensorTypeMismatch b b')]))
+       else return $ Partial (NotGuardedRecursive [(TensorTypeMismatch b b')])
      
 \end{code}
 \hrulefill 
@@ -105,16 +96,13 @@ check Open g n (tensor -> Extracted (t, u, l, a, b')) (laterN l -> Extracted b) 
 \begin{code}
 
 check Open g n (apply -> Extracted t) a =
-  do iLOG $ "apply rule " ++ show t ++ "\n and \n" ++ show a
-     aTy <- typeOfMaybe a g
-     iLOG $ "aTy " ++ show aTy
+  do aTy <- typeOfMaybe a g
      case aTy of
        Just(TType _) -> do forallA <- forall a
                            requires
                              (nofc n g)
                              (check Closed g n t forallA)
-       _ -> do iLOG $ "Expected " ++ show aTy ++ " to be of type type"
-               return $ Partial (NotGuardedRecursive [ApplyWithoutType])
+       _ -> return $ Partial (NotGuardedRecursive [ApplyWithoutType])
 \end{code}
 \hrulefill 
 \[
@@ -123,7 +111,6 @@ check Open g n (apply -> Extracted t) a =
 \begin{code}
 
 check Closed g n (lambdaKappa -> Extracted t) (forallK -> Extracted a) =
-  do iLOG $ "LambdaK " ++ show t ++ "\n and \n" ++ show a
      requires
        (nofc n g)
        (check Open g n t a)
@@ -134,15 +121,13 @@ Not Guarded Recursion:
 check d g n term@(App t t') b =
   do b' <- typeOf term g
      ty <- typeOf t g
-     iLOG $ "App: " ++ show t ++ "\n and \n" ++ show t'
      (a,_) <- debind ty
      c <- cEq g b b'
      if c
        then requires
               (check d g n t ty)
               (check d g n t' a)
-       else (do iLOG $ "Application type mismatch: " ++ show b ++ "\n and \n" ++ show b'
-                return $ Partial (NotGuardedRecursive []))         
+       else return $ Partial (NotGuardedRecursive [])
 check d g n (Bind n' b t) a =
   check d ((n', b) : g) n t a
 check d g (n, _) (P _ n' ty) a
@@ -151,15 +136,11 @@ check d g (n, _) (P _ n' ty) a
        if c then
          (do c' <- clockedType ty
              if (not c' || isOpen d)
-                   then (do iLOG $ show n' ++ " was ok!"
-                            return $ Total [])
-                   else (do iLOG $ "Not productive. \n c: " ++ show c' ++ " \n ty: " ++ show ty ++ " \n d: " ++ show (isOpen d)
-                            return $ Partial (NotGuardedRecursive [OpenClockNeeded ty])))
+                   then return $ Total []
+                   else return $ Partial (NotGuardedRecursive [OpenClockNeeded ty]))
          else
-         (do iLOG $ "Not productive because \n" ++ show ty ++ "\n and\n " ++ show a ++ "\n were not equal. cEq was " ++ show c
-             return $ Partial (NotGuardedRecursive [TypeMismatch ty a]))
-check _ _ _ t a = do iLOG $ "Catch all..." ++ show t ++ " and " ++ show a
-                     return $ Partial (NotGuardedRecursive [Misc t a])
+             return $ Partial (NotGuardedRecursive [TypeMismatch ty a])
+check _ _ _ t a = return $ Partial (NotGuardedRecursive [Misc t a])
 \end{code}
 \ignore{
 \begin{code}
@@ -220,8 +201,7 @@ laterThan :: Type -> Type -> Env -> Idris Totality
 laterThan (unapplyLater -> Just ty') ty env = do c <- cEq env ty ty'
                                                  if c
                                                    then (return $ Total [])
-                                                   else (do iLOG $ "laterThan failed because \n" ++ show ty ++ "\n and\n " ++ show ty' ++ "\n were not equal."
-                                                            return $ Partial (NotGuardedRecursive [WrongRecRefType]))
+                                                   else return $ Partial (NotGuardedRecursive [WrongRecRefType])
 laterThan _ _ _ = return $ Partial (NotGuardedRecursive [WrongRecRefType])
 
 requires :: Idris Totality -> Idris Totality -> Idris Totality
@@ -236,7 +216,6 @@ nofc n env =
   where
     c :: (Name, Type) -> (Name, Binder (TT Name)) -> Idris Totality
     c r (n', b) = do let term = P Bound n' (binderTy b)
-                     iLOG $ "NoFC on: " ++ show term
                      check Closed [] r term (binderTy b)
 
 \end{code}

@@ -26,20 +26,13 @@ checkGuardedRecursive n =
         then return $ Partial NotProductive
         else do case lookupDef n ctxt of
                  [CaseOp _ ty _ _ clauses _] ->
-                   do logLvl 0 $ "Checking function " ++ show n
-                      forM_ clauses $ \(pvs, lhs, rhs) ->
+                   do forM_ clauses $ \(pvs, lhs, rhs) ->
                         do iLOG $ show ("GR_LHS: " ++ showTT lhs)
                            iLOG $ show ("GR_RHS: " ++ showTT rhs)
                       ctxt <- getContext
                       t <- case lookupTyExact n ctxt of
                             Just nty -> checkFunction n nty clauses
                             Nothing -> checkFunction n ty clauses
-                      -- i <- get
-                      -- case lookupCtxt n (idris_flags i) of
-                      --  [fnOpts] -> setFlags n (fnOpts \\ [CausalFn])
-                      --  _ -> return ()
-                      logLvl 0 $ "Checked function " ++ show n ++ ":"
-                      logLvl 0 $ show t
                       return t
                  _ -> return $ Partial NotProductive
 
@@ -56,23 +49,13 @@ checkFunction name ty clauses =
      modality <- modalityOf name
      gName <- liftM (unpackRenameModality modality) (getGuardedNameSoft name)
      iLOG $ show gName ++ " is " ++ show modality
-     iLOG $ "expTy : " ++ showTT expTy
      gTy <- guardedType expTy modality
-     iLOG $ "gTy : " ++ show gTy
      ist <- get
      ctxt <- getContext
      gClauses <- forM expClauses $ \clause -> guardedRecursiveClause gName gTy clause modality
-     iLOG $ show "Guarded type: " ++ show gTy
-     forM_ gClauses $ \(lhs, rhs, _) ->
-       do iLOG $ show ("GR_LHS_EPS: " ++ show lhs)
-          iLOG $ show ("GR_LHS_EPS_AST: " ++ showTT lhs)
-          iLOG $ show ("GR_RHS_EPS: " ++ show rhs)
-          iLOG $ show ("GR_RHS_EPS_AST: " ++ showTT rhs)
      checkRhsSeq <- forM gClauses $ \(lhs,rhs,rhTy) -> guardedRecursiveCheck modality gName gTy lhs rhs rhTy 
      iLOG $ "Checked: " ++ show name
-     iLOG $ show checkRhsSeq
      return $ foldr mergeTotal (Total []) checkRhsSeq
-     --idrisCatch (sequence checkRhsSeq) (\e -> )    
 
 guardedType :: Type -> Modality -> Idris Type
 guardedType ty modality =
@@ -113,32 +96,9 @@ guardedRecursiveClause name ty (_, lhs, rhs) modality =
      ist <- get
      put $ ist { tt_ctxt = addTyDecl name Ref ty ctxt }
      glhs <- guardedLHS modality lhs
-     iLOG $ "Guarded LHS: " ++ show glhs
      let appliedType = case unapplyForall ty of
                         Just ty' -> ty'
                         Nothing -> ty
-     iLOG $ "appliedType : " ++ show appliedType
      gEnv <- buildGuardedEnv modality lhs
      grhs <- epsilon modality name rhs gRhsTy (parameterArgs glhs appliedType) gEnv
      return (glhs, grhs, gRhsTy)
-     
-
--- fixFunction :: Name -> [([Name], Term, Term)] -> Idris [([Name], Term, Term)]
--- fixFunction n clauses =
---   do forM_ clauses $ \(pvs, lhs, rhs) ->
---        do iLOG $ show ("GR_LHS: " ++ showEnvDbg [] lhs)
---           iLOG $ show ("GR_RHS: " ++ showEnvDbg [] rhs)
---      ctxt <- getContext
---      ty <- case lookupTyExact n ctxt of
---             Just ty' -> return ty'
---             Nothing -> ifail "Seemingly defined function has no definition"
---      recRef <- recursiveRef n ty
---      let replaceRec = subst n recRef
---      let recsReplaced = map (\(pvs,lhs,rhs) -> (pvs,lhs,replaceRec rhs)) clauses
---      forM_ recsReplaced $ \(_,_,rhs) -> iLOG $ "GR " ++ show n ++ " after subst: " ++ (showEnvDbg [] rhs)
---      return recsReplaced
-
--- recursiveRef :: Name -> Type -> Idris Type
--- recursiveRef name ty =
---   do laterType <- applyLater' ty
---      return $ P Ref (sMN 0 (show name ++ "_rec")) laterType

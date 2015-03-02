@@ -399,8 +399,7 @@ checkTotality path fc n
                                         else do termination <- calcTotality fc n pats
                                                 if (Coinductive `elem` opts)
                                                   then (do gr <- idrisCatch (checkGuardedRecursive n)
-                                                                 (\err -> do logLvl 0 $ "GR checker crashed... " ++ show err
-                                                                             return $ Partial NotProductive)
+                                                                 (\_ -> return $ Partial NotProductive)
                                                            return (eitherIsTotal gr termination))
                                                   else return termination
                                setTotality n t'
@@ -420,12 +419,6 @@ checkTotality path fc n
             Total _ -> return t'
             Productive -> return t'
             e ->
-                 -- do gr <- do if Coinductive `elem` opts
-                 --                then checkGuardedRecursive n
-                 --                else return e
-                 --    case gr of
-                 --     Productive -> return Productive
-                 --     _ ->
                           do w <- cmdOptType WarnPartial
                              if TotalFn `elem` opts
                                 then do totalityError t'; return t'
