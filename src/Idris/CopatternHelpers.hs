@@ -38,8 +38,8 @@ path :: PClause -> (PClause, Path)
 path (PClause fc n (PLhsProj pn t) wis rhs whs) =
   let (c, p) = path (PClause fc n t wis rhs whs)
   in (c, reverse (pn:p))
-path (PWith fc n (PLhsProj pn t) wis rhs whs) =
-  let (c, p) = path (PWith fc n t wis rhs whs)
+path (PWith fc n (PLhsProj pn t) wis rhs mn whs) =
+  let (c, p) = path (PWith fc n t wis rhs mn whs)
   in (c, reverse (pn:p))
 path c = (c, [])
 
@@ -197,11 +197,11 @@ expandClause (PClause fc n t@(PLhsProj projName app) wis rhs whs) =
      (reducedLhs, expandedRhs) <- expandRhs fc n t rhs
      iLOG $ "expanded clause " ++ show n
      return $ PClause fc n reducedLhs wis expandedRhs whs
-expandClause (PWith fc n t@(PLhsProj projName app) wis rhs whs) =
+expandClause (PWith fc n t@(PLhsProj projName app) wis rhs mn whs) =
   do iLOG $ "expanding clause " ++ show n
      (reducedLhs, expandedRhs) <- expandRhs fc n t rhs
      iLOG $ "expanded clause " ++ show n
-     return $ PWith fc n reducedLhs wis expandedRhs whs
+     return $ PWith fc n reducedLhs wis expandedRhs mn whs
 expandClause c = return c
 
 
@@ -419,15 +419,15 @@ allM p (x:xs) = let andM = liftM2 (&&) in p x `andM` allM p xs
 -}
 replaceRhs :: PTerm -> PClause -> PClause
 replaceRhs newrhs (PClause fc n lhs wis _ whs) = PClause fc n lhs wis newrhs whs
-replaceRhs newrhs (PWith fc n lhs wis _ whs) = PWith fc n lhs wis newrhs whs
+replaceRhs newrhs (PWith fc n lhs wis _ mn whs) = PWith fc n lhs wis newrhs mn whs
 replaceRhs newrhs (PClauseR fc wis _ whs) = PClauseR fc wis newrhs whs
-replaceRhs newrhs (PWithR fc wis _ whs) = PWithR fc wis newrhs whs
+replaceRhs newrhs (PWithR fc wis _ mn whs) = PWithR fc wis newrhs mn whs
 
 replaceWheres :: [PDecl] -> PClause -> PClause
 replaceWheres newwheres (PClause fc n lhs wis rhs _) = PClause fc n lhs wis rhs newwheres
-replaceWheres newwheres (PWith fc n lhs wis rhs _) = PWith fc n lhs wis rhs newwheres
+replaceWheres newwheres (PWith fc n lhs wis rhs mn _) = PWith fc n lhs wis rhs mn newwheres
 replaceWheres newwheres (PClauseR fc wis rhs _) = PClauseR fc wis rhs newwheres
-replaceWheres newwheres (PWithR fc wis rhs _) = PWithR fc wis rhs newwheres
+replaceWheres newwheres (PWithR fc wis rhs mn _) = PWithR fc wis rhs mn newwheres
 
 
 -- mergeWheres :: [PDecl] -> [PDecl] -> [PDecl]
@@ -504,24 +504,24 @@ substPClause subs (PClause fc n lhs withs rhs wheres) =
   PClause fc n lhs withs substRhs wheres
   where substRhs = let lhsNames = allNamesIn lhs
                    in subst (deleteSubs lhsNames subs) rhs
-substPClause subs (PWith fc n lhs withs rhs wheres) =
-  PWith fc n lhs withs substRhs wheres
+substPClause subs (PWith fc n lhs withs rhs mn wheres) =
+  PWith fc n lhs withs substRhs mn wheres
   where substRhs = let lhsNames = allNamesIn lhs
                    in subst (deleteSubs lhsNames subs) rhs
 substPClause subs (PClauseR fc withs rhs wheres) =
   PClauseR fc withs (subst subs rhs) wheres
-substPClause subs (PWithR fc withs rhs wheres) =
-  PWithR fc withs (subst subs rhs) wheres
+substPClause subs (PWithR fc withs rhs mn wheres) =
+  PWithR fc withs (subst subs rhs) mn wheres
 
 renamePClause :: [Substitution] -> PClause -> PClause
 renamePClause subs (PClause fc n lhs withs rhs wheres) =
   PClause fc n (subst subs lhs) withs (subst subs rhs) wheres
-renamePClause subs (PWith fc n lhs withs rhs wheres) =
-  PWith fc n (subst subs lhs) withs (subst subs rhs) wheres
+renamePClause subs (PWith fc n lhs withs rhs mn wheres) =
+  PWith fc n (subst subs lhs) withs (subst subs rhs) mn wheres
 renamePClause subs (PClauseR fc withs rhs wheres) =
   PClauseR fc withs (subst subs rhs) wheres
-renamePClause subs (PWithR fc withs rhs wheres) =
-  PWithR fc withs (subst subs rhs) wheres
+renamePClause subs (PWithR fc withs rhs mn wheres) =
+  PWithR fc withs (subst subs rhs) mn wheres
 
 renameWhereBlock :: [(Name, Name)] -> [PDecl] -> [PDecl]
 renameWhereBlock renames decls = renameWB [] decls
@@ -763,22 +763,22 @@ mergeArgTerms xs ys = return xs
 
 clauseName :: PClause -> Maybe Name
 clauseName (PClause _ n _ _ _ _) = Just n
-clauseName (PWith _ n _ _ _ _) = Just n
+clauseName (PWith _ n _ _ _ _ _) = Just n
 clauseName _ = Nothing
 
 clauseLhs :: PClause -> Maybe PTerm
 clauseLhs (PClause _ _ app _ _ _) = Just app
-clauseLhs (PWith _ _ app _ _ _) = Just app
+clauseLhs (PWith _ _ app _ _ _ _) = Just app
 clauseLhs _ = Nothing
 
 clauseRhs :: PClause -> PTerm
 clauseRhs (PClause _ _ _ _ rhs _) = rhs
-clauseRhs (PWith _ _ _ _ rhs _) = rhs
+clauseRhs (PWith _ _ _ _ rhs _ _) = rhs
 clauseRhs (PClauseR _ _ rhs _) = rhs
-clauseRhs (PWithR _ _ rhs _) = rhs
+clauseRhs (PWithR _ _ rhs _ _) = rhs
 
 clauseWheres :: PClause -> [PDecl]
 clauseWheres (PClause _ _ _ _ _ wheres) = wheres
-clauseWheres (PWith _ _ _ _ _ wheres) = wheres
+clauseWheres (PWith _ _ _ _ _ _ wheres) = wheres
 clauseWheres (PClauseR _ _ _ wheres) = wheres
-clauseWheres (PWithR _ _ _ wheres) = wheres
+clauseWheres (PWithR _ _ _ _ wheres) = wheres
