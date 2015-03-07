@@ -111,6 +111,50 @@ Lazy t = Lazy' LazyEval t
 Inf : Type -> Type
 Inf t = Lazy' LazyCodata t
 
+namespace GuardedRecursion
+  ||| A computation that is available later.
+  data Later' : Type -> Type where
+    Next : {a : Type} -> a -> Later' a
+
+  data ForallKappa : Type -> Type where
+    LambdaKappa : {a : Type} -> a -> ForallKappa a
+ 
+  applyKappa : {a : Type} -> ForallKappa a -> a
+  applyKappa (LambdaKappa a) = a 
+
+  data Availability = Now | Tomorrow Availability
+
+  Later : Availability -> Type -> Type
+  Later Now a = a
+  Later (Tomorrow n) a = Later' (Later n a)
+                               
+  laterApp : {a, b : Type} -> 
+             {n : Availability} -> 
+             Later (Tomorrow n) (a -> b) -> 
+             Later (Tomorrow n) a -> 
+             Later (Tomorrow n) b
+  laterApp {n = Now} t u = laterApp' t u
+    where
+     laterApp' : {a, b : Type} -> Later' (a -> b) -> Later' a -> Later' b
+     laterApp' (Next t) (Next u) = Next (t u)
+  laterApp {n = Tomorrow n'} (Next t) (Next u) = Next (laterApp {n = n'} t u)
+  
+  ||| The guarded recursive fixed point
+  partial
+  fix : (Later' a -> a) -> a
+  fix f = f (Next (fix f))
+  
+  ||| The indexed fixed point (named 'pfix' due to the theory)
+  partial
+  pfix : ((a -> Later' b) -> (a -> b)) -> (a -> b)
+  pfix {b} f = fix (\g: Later' (a -> b) => f (\x: a => laterApp {n = Now} g (Next x)))
+
+  ||| A binary version of the indexed fixed point
+  partial
+  pfix2 : ((a -> b -> Later' c) -> (a -> b -> c)) -> (a -> b -> c)
+  pfix2 {b} {c} f = fix (\g: Later' (a -> b -> c) => f (\x: a, y: b => laterApp {n = Now} (laterApp {n = Now} g (Next x)) (Next y)))
+  
+
 namespace Ownership
   ||| A read-only version of a unique value
   data Borrowed : UniqueType -> NullType where
