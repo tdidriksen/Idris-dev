@@ -675,6 +675,10 @@ Library
                 , Idris.Elab.Transform
                 , Idris.Elab.Value
 
+                , Idris.GuardedRecursion.BuiltinHandlers
+                , Idris.GuardedRecursion.Helpers
+                , Idris.GuardedRecursion.InferTerm
+
                 , Idris.AbsSyntax
                 , Idris.AbsSyntaxTree
                 , Idris.Apropos
