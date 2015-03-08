@@ -119,6 +119,7 @@ instance NFData FnOpt where
         rnf Reflection = ()
         rnf (Specialise x1) = rnf x1 `seq` ()
         rnf Constructor = ()
+        rnf CausalFn = ()
 
 instance NFData DataOpt where
         rnf Codata = ()

@@ -538,7 +538,7 @@ constraint = Constraint [] Static
 tacimpl t = TacImp [] Dynamic t
 
 data FnOpt = Inlinable -- always evaluate when simplifying
-           | TotalFn | PartialFn | CoveringFn
+           | TotalFn | PartialFn | CoveringFn | CausalFn
            | Coinductive | AssertTotal
            | Dictionary -- type class dictionary, eval only when
                         -- a function argument, and further evaluation resutls

@@ -1062,6 +1062,7 @@ instance Binary FnOpt where
                 Constructor -> putWord8 13
                 CExport x1 -> do putWord8 14
                                  put x1
+                CausalFn -> putWord8 15
         get
           = do i <- getWord8
                case i of
@@ -1082,6 +1083,7 @@ instance Binary FnOpt where
                    13 -> return Constructor
                    14 -> do x1 <- get
                             return $ CExport x1
+                   15 -> return CausalFn
                    _ -> error "Corrupted binary data for FnOpt"
 
 instance Binary Fixity where
