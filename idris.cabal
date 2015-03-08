@@ -676,6 +676,7 @@ Library
                 , Idris.Elab.Value
 
                 , Idris.GuardedRecursion.BuiltinHandlers
+                , Idris.GuardedRecursion.Constants
                 , Idris.GuardedRecursion.Helpers
                 , Idris.GuardedRecursion.InferTerm
 
