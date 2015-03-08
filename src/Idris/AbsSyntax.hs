@@ -129,21 +129,29 @@ addErasureUsage :: Name -> Int -> Idris ()
 addErasureUsage n i = do ist <- getIState
                          putIState $ ist { idris_erasureUsed = (n, i) : idris_erasureUsed ist }
 
+addExport :: Name -> Idris ()
+addExport n = do ist <- getIState
+                 putIState $ ist { idris_exports = n : idris_exports ist }
+
 addUsedName :: FC -> Name -> Name -> Idris ()
 addUsedName fc n arg 
     = do ist <- getIState
          case lookupTyName n (tt_ctxt ist) of
-              [(_, ty)] -> addUsage 0 ty
+              [(n', ty)] -> addUsage n' 0 ty
               [] -> throwError (At fc (NoSuchVariable n))
               xs -> throwError (At fc (CantResolveAlts (map fst xs)))
-  where addUsage i (Bind x _ sc) | x == arg = do addIBC (IBCUsage (n, i))
-                                                 addErasureUsage n i
-                                 | otherwise = addUsage (i + 1) sc
-        addUsage _ _ = throwError (At fc (Msg ("No such argument name " ++ show arg)))
+  where addUsage n i (Bind x _ sc) | x == arg = do addIBC (IBCUsage (n, i))
+                                                   addErasureUsage n i
+                                   | otherwise = addUsage n (i + 1) sc
+        addUsage _ _ _ = throwError (At fc (Msg ("No such argument name " ++ show arg)))
 
 getErasureUsage :: Idris [(Name, Int)]
 getErasureUsage = do ist <- getIState;
                      return (idris_erasureUsed ist)
+
+getExports :: Idris [Name]
+getExports = do ist <- getIState
+                return (idris_exports ist)
 
 totcheck :: (FC, Name) -> Idris ()
 totcheck n = do i <- getIState; putIState $ i { idris_totcheck = idris_totcheck i ++ [n] }
@@ -1292,8 +1300,10 @@ getUnboundImplicits i t tm = getImps t (collectImps tm)
         getImps (Bind n (Pi _ t _) sc) imps
             | Just (p, t') <- lookup n imps = argInfo n p t' : getImps sc imps
          where
+            argInfo n (Imp opt _ _ _) Placeholder 
+                   = (True, PImp 0 True opt n Placeholder)
             argInfo n (Imp opt _ _ _) t'
-                   = (True, PImp (getPriority i t') True opt n t')
+                   = (False, PImp (getPriority i t') True opt n t')
             argInfo n (Exp opt _ _) t'
                    = (InaccessibleArg `elem` opt,
                           PExp (getPriority i t') opt n t')
