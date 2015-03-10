@@ -13,9 +13,11 @@ import Control.Monad.Reader
 
 -- NAMES AS STRINGS
 
+forallKappaStr = "ForallKappa"
 guardedRecursionStr = "GuardedRecursion"
-nextStr = "Next"
 later'Str = "Later'"
+nextStr = "Next"
+
 
 
 -- NAMES AS NAMES
@@ -25,6 +27,8 @@ guardedNS = [guardedRecursionStr]
 
 inGuardedNS :: String -> Name
 inGuardedNS s = sNS (sUN s) guardedNS
+
+forallKappaName = inGuardedNS forallKappaStr
 
 nextName = inGuardedNS nextStr
 later'Name = inGuardedNS later'Str
@@ -38,6 +42,7 @@ ref n =
       [nP] -> return nP
       _ -> lift (ifail $ "Term " ++ show n ++ " does not exist!")
 
+forallKappaRef = ref forallKappaName
 nextRef = ref nextName
 
 -- PTERM REFS

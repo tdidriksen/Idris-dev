@@ -33,7 +33,10 @@ unapplyBInary _ _ = Nothing
 isRef :: Name -> Term -> Bool
 isRef n (P Ref n' _) | n == n' = True
 
--- 
+--
+
+applyForallKappa :: Type -> GR Type
+applyForallKappa ty = applyUnary forallKappaRef (return ty)
 
 applyNext :: Type -> Term -> GR Term
 applyNext ty tm = applyBinary nextRef (return ty) (return tm)
