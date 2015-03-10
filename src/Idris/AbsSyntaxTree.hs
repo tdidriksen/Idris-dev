@@ -15,6 +15,8 @@ import Util.DynamicLinker
 
 import Idris.Colours
 
+import Idris.GuardedRecursion.Exports
+
 import System.Console.Haskeline
 import System.IO
 
@@ -226,7 +228,8 @@ data IState = IState {
     idris_repl_defs :: [Name], -- ^ List of names that were defined in the repl, and can be re-/un-defined
     elab_stack :: [Name], -- ^ Stack of names currently being elaborated
     idris_symbols :: M.Map Name Name, -- ^ Symbol table (preserves sharing of names)
-    idris_exports :: [Name] -- ^ Functions with ExportList
+    idris_exports :: [Name], -- ^ Functions with ExportList
+    guarded_renames :: [(Name, GuardedRename)]
    }
 
 -- Required for parsers library, and therefore trifecta
@@ -311,7 +314,7 @@ idrisInit = IState initContext [] []
                    [] [] [] defaultOpts 6 [] [] [] [] emptySyntaxRules [] [] [] [] [] [] []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
-                   AutomaticWidth S.empty [] Nothing Nothing [] [] M.empty []
+                   AutomaticWidth S.empty [] Nothing Nothing [] [] M.empty [] []
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).
@@ -830,7 +833,74 @@ mapPT f t = f (mpt t) where
   mpt (PGoal fc r n sc) = PGoal fc (mapPT f r) n (mapPT f sc)
   mpt x = x
 
+mapMPT :: Monad m => (PTerm -> m PTerm) -> PTerm -> m PTerm
+mapMPT f t = do t' <- mmpt t
+                f t' where
+  mmpt (PLam fc n t s)
+    = do t' <- mapMPT f t
+         s' <- mapMPT f s
+         return $ PLam fc n t' s'
+  mmpt (PPi p n t s)
+    = do t' <- mapMPT f t
+         s' <- mapMPT f s
+         return $ PPi p n t' s'
+  mmpt (PLet fc n ty v s)
+    = do t' <- mapMPT f ty
+         v' <- mapMPT f v
+         s' <- mapMPT f s
+         return $ PLet fc n t' v' s'
+  mmpt (PApp fc t as)
+    = do t' <- mapMPT f t
+         as' <- sequence $ map (mapMPArg f) as
+         return $ PApp fc t' as'
+  mmpt (PAppBind fc t as)
+    = do t' <- mapMPT f t
+         as' <- sequence $ map (mapMPArg f) as
+         return $ PAppBind fc t' as'
+  mmpt (PCase fc t os)
+    = do t' <- mapMPT f t
+         let pmapM (x, y) = do x' <- mapMPT f x
+                               y' <- mapMPT f y
+                               return (x', y')
+         os' <- sequence $ map pmapM os
+         return $ PCase fc t' os'
+  mmpt (PEq fc lt rt l r)
+    = do lt' <- mapMPT f lt
+         rt' <- mapMPT f rt
+         l' <- mapMPT f l
+         r' <- mapMPT f r
+         return $ PEq fc lt' rt' l' r'
+  mmpt (PTyped l r)
+    = do l' <- mapMPT f l
+         r' <- mapMPT f r
+         return $ PTyped l' r'
+  mmpt (PPair fc p l r)
+    = do l' <- mapMPT f l
+         r' <- mapMPT f r
+         return $ PPair fc p l' r'
+  mmpt (PDPair fc p l t r)
+    = do l' <- mapMPT f l
+         t' <- mapMPT f t
+         r' <- mapMPT f r
+         return $ PDPair fc p l' t' r'
+  mmpt t = return t
 
+mapMPArg :: Monad m => (PTerm -> m PTerm) -> PArg -> m PArg
+mapMPArg f (PImp p m os n t)
+  = do t' <- mapMPT f t
+       return $ PImp p m os n t'
+mapMPArg f (PExp p os n t)
+  = do t' <- mapMPT f t
+       return $ PExp p os n t'
+mapMPArg f (PConstraint p os n t)
+  = do t' <- mapMPT f t
+       return $ PConstraint p os n t'
+mapMPArg f (PTacImplicit p os x s t)
+  = do t' <- mapMPT f t
+       s' <- mapMPT f s
+       return $ PTacImplicit p os x s' t'
+  
+         
 data PTactic' t = Intro [Name] | Intros | Focus Name
                 | Refine Name [Bool] | Rewrite t | DoUnify
                 | Induction t

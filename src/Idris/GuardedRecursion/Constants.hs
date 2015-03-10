@@ -15,6 +15,7 @@ import Control.Monad.Reader
 
 guardedRecursionStr = "GuardedRecursion"
 nextStr = "Next"
+later'Str = "Later'"
 
 
 -- NAMES AS NAMES
@@ -26,7 +27,7 @@ inGuardedNS :: String -> Name
 inGuardedNS s = sNS (sUN s) guardedNS
 
 nextName = inGuardedNS nextStr
-
+later'Name = inGuardedNS later'Str
 
 -- REFS
 
@@ -38,3 +39,16 @@ ref n =
       _ -> lift (ifail $ "Term " ++ show n ++ " does not exist!")
 
 nextRef = ref nextName
+
+-- PTERM REFS
+
+later'PTRef :: PTerm
+later'PTRef = later'PTRefFC emptyFC
+
+later'PTRefFC :: FC -> PTerm
+later'PTRefFC fc = PRef fc later'Name
+
+-- OTHER STRINGS
+
+guardedPrefix = "guarded_"
+forallPrefix  = "forall_"

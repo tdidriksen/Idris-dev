@@ -679,6 +679,10 @@ Library
                 , Idris.GuardedRecursion.Constants
                 , Idris.GuardedRecursion.Helpers
                 , Idris.GuardedRecursion.InferTerm
+                , Idris.GuardedRecursion.Renaming
+                , Idris.GuardedRecursion.Exports
+                , Idris.GuardedRecursion.Error
+                , Idris.GuardedRecursion.GuardedTypes
 
                 , Idris.AbsSyntax
                 , Idris.AbsSyntaxTree

@@ -31,6 +31,9 @@ import Idris.Core.CaseTree
 
 import Idris.Docstrings
 
+import Idris.GuardedRecursion.Renaming
+import Idris.GuardedRecursion.GuardedTypes
+
 import Prelude hiding (id, (.))
 import Control.Category
 
@@ -116,6 +119,16 @@ elabData info syn doc argDocs fc opts (PDatadecl n t_in dcons)
          -- create a case function
          when (DefaultCaseFun `elem` opts) $
             evalStateT (elabCaseFun False params n t dcons info) Map.empty
+
+         when (codata && isGuardableTC cty)
+           (do let guardedOpts = delete Codata opts
+               gn <- (liftM unpackGuardedName) (createAndAddRename n)
+               let guardConstructor (_,_,cn,ct,_,_) = (do gcn <- createAndAddRename cn
+                                                          let gct = guardedConstructor n ct
+                                                          gct' <- guardNamesIn syn gct
+                                                          return (emptyDocstring, [], (unpackGuardedName gcn), gct', emptyFC, []))
+               guardedDcons <- mapM guardConstructor dcons
+               elabData info syn emptyDocstring [] emptyFC guardedOpts (PDatadecl gn t_in guardedDcons))
   where
         setDetaggable :: Name -> Idris ()
         setDetaggable n = do
@@ -240,7 +253,7 @@ elabCon info syn tn codata expkind (doc, argDocs, n, t_in, fc, forcenames)
          addIBC (IBCDoc n)
          fputState (opt_inaccessible . ist_optimisation n) inacc
          addIBC (IBCOpt n)
-         return (n, cty')
+         return (n, cty')         
   where
     tyIs con (Bind n b sc) = tyIs con sc
     tyIs con t | (P _ n' _, _) <- unApply t

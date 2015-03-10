@@ -162,7 +162,10 @@ data Err' t
           | LoadingFailed String (Err' t)
           | ReflectionError [[ErrorReportPart]] (Err' t)
           | ReflectionFailed String (Err' t)
+          | GuardedRecursionFailed GRErrorReason  
   deriving (Eq, Functor, Data, Typeable)
+
+data GRErrorReason = RenamingFailed String deriving(Eq, Data, Typeable)    
 
 type Err = Err' Term
 
@@ -257,7 +260,11 @@ instance Show Err where
                                        show x ++ ": " ++ show e
     show (Elaborating what n e) = "Elaborating " ++ what ++ show n ++ ":" ++ show e
     show (ProofSearchFail e) = "Proof search fail: " ++ show e
+    show (GuardedRecursionFailed err) = "Inference of guarded recursion failed because:\n" ++ show err
     show _ = "Error"
+
+instance Show GRErrorReason where
+  show (RenamingFailed s) = "Could not rename: " ++ show s
 
 instance Pretty Err OutputAnnotation where
   pretty (Msg m) = text m
