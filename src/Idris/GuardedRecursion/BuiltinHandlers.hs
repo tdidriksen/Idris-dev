@@ -32,11 +32,28 @@ unapplyBInary _ _ = Nothing
 
 isRef :: Name -> Term -> Bool
 isRef n (P Ref n' _) | n == n' = True
+isRef _ _ = False
+
+isTCon :: Name -> Term -> Bool
+isTCon n (P (TCon _ _) n' _) | n == n' = True
+isTCon _ _ = False
 
 --
 
+applyFix :: Type -> Term -> GR Term
+applyFix a f = applyBinary fixRef (return a) (return f)
+
 applyForallKappa :: Type -> GR Type
 applyForallKappa ty = applyUnary forallKappaRef (return ty)
+
+unapplyForallKappa :: Type -> Maybe Type
+unapplyForallKappa ty = unapplyUnary (isTCon forallKappaName) ty
+
+applyLambdaKappa :: Type -> Term -> GR Term
+applyLambdaKappa ty tm = applyBinary lambdaKappaRef (return ty) (return tm)
+
+applyLater' :: Type -> GR Type
+applyLater' ty = applyUnary later'Ref (return ty)
 
 applyNext :: Type -> Term -> GR Term
 applyNext ty tm = applyBinary nextRef (return ty) (return tm)
