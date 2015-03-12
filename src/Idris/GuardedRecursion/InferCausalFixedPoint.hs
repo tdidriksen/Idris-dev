@@ -35,12 +35,19 @@ occursBoundIn n (App t t') = occursBoundIn n t || occursBoundIn n t'
 occursBoundIn n (Proj t _) = occursBoundIn n t
 occursBoundIn n _ = False
 
-splitFixDefType :: Type -> (Type -> Type, Type)
-splitFixDefType ty = splitqt ty id
+-- splitFixDefType :: Type -> (Type -> Type, Type)
+-- splitFixDefType ty = splitqt ty id
+--   where
+--     splitqt :: Type -> (Type -> Type) -> (Type -> Type, Type)
+--     splitqt (unapplyForallKappa -> Just ty) f = (f, ty)
+--     splitqt (Bind n binder sc) f = splitqt sc (Bind n binder . f)
+
+splitFixDefType :: Type -> ([(Name, Binder Type)], Type)
+splitFixDefType ty = splitqt ty []
   where
-    splitqt :: Type -> (Type -> Type) -> (Type -> Type, Type)
-    splitqt (unapplyForallKappa -> Just ty) f = (f, ty)
-    splitqt (Bind n binder sc) f = splitqt sc (Bind n binder . f)
+    splitqt :: Type -> [(Name, Binder Type)] -> ([(Name, Binder Type)], Type)
+    splitqt (unapplyForallKappa -> Just ty) binders = (binders, ty)
+    splitqt (Bind n binder sc) binders = splitqt sc (binders ++ [(n, binder)])
 
 
 {-|
@@ -66,8 +73,22 @@ fixDefType (Bind n binder sc)
                             return $ Bind n binder qsc
 fixDefType ty = applyForallKappa ty
 
-fixDefLhs :: GR Term
-fixDefLhs = undefined
+-- fixDefLhs :: Term -> Type -> GR Term
+-- fixDefLhs lhs guardedTy =
+--   do let (f, args) = unApply lhs
+--      let argTys = getArgTys guardedTy
+--      gArgs <- mapM (guardedArg argTys) args
+--      return $ mkApp f gArgs
+--   where
+--     guardedArg :: [(Name, Term)] -> [(Name, Term)] -> [Term] -> GR [Term]
+--     guardedArg ((a, aTy):argTys) inScope ((P Bound n nTy):args) =
+--       do let aTy' = substNames inScope aTy
+--          args' <- guardedArg argTys ((a, (P Bound n aTy')):inScope) args
+--          return $ P Bound n aTy' : args'
+--     guardedArg ((a, aTy):argTys) inScope ((App f x):args) =
+--       do -- Check if type is coinductive
+--          -- If yes, fail
+--          -- If no, call recursively
 
 fixDefRhs :: Type -> Name -> Type -> [Term] -> GR Term
 fixDefRhs fixDefTy auxName auxType params = 
@@ -76,18 +97,18 @@ fixDefRhs fixDefTy auxName auxType params =
      fix <- applyFix typeUnderQuantifier fixedTerm
      applyLambdaKappa typeUnderQuantifier fix
 
-recRefType :: Type -> Env -> GR (Type -> Type)
-recRefType ty env = do ty' <- applyLater' ty
-                       ty'ty <- typeOf ty' env
-                       ctxt <- lift getContext
-                       let recBinderName = uniqueNameCtxt ctxt (sUN "rec") (map fst env)
-                       return $ Bind recBinderName (Pi Nothing ty' ty'ty)
+recRefTypeBinder :: Type -> Env -> GR (Name, Binder Type)
+recRefTypeBinder ty env = do ty' <- applyLater' ty
+                             ty'ty <- typeOf ty' env
+                             ctxt <- lift getContext
+                             let recBinderName = uniqueNameCtxt ctxt (sUN "rec") (map fst env)
+                             return (recBinderName, (Pi Nothing ty' ty'ty))
 
 auxDefType :: Type -> GR Type
 auxDefType ty = do fixTy <- fixDefType ty
-                   let (paramsPart, quantifiedPart) = splitFixDefType fixTy
-                   recRefTy <- recRefType quantifiedPart (bindersIn fixTy)
-                   return $ (paramsPart . recRefTy) quantifiedPart
+                   let (params, typeUnderQuantifier) = splitFixDefType fixTy
+                   recTyBinder <- recRefTypeBinder typeUnderQuantifier (bindersIn fixTy)
+                   return $ bindAll (params ++ [recTyBinder]) typeUnderQuantifier
 
 auxDefLhs :: Term -> GR Term
 auxDefLhs _ = undefined
