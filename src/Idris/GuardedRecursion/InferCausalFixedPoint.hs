@@ -77,18 +77,26 @@ fixDefType ty = applyForallKappa ty
 -- fixDefLhs lhs guardedTy =
 --   do let (f, args) = unApply lhs
 --      let argTys = getArgTys guardedTy
---      gArgs <- mapM (guardedArg argTys) args
+--      let (paramBinders, _) = splitFixDefType guardedTy
+--      let params = map (\(n, binder) -> (n, binderTy binder)) paramBinders
+--      let fixDefArgs = take (length params) args
+--      gArgs <- guardedArgs params [] fixDefArgs
 --      return $ mkApp f gArgs
 --   where
---     guardedArg :: [(Name, Term)] -> [(Name, Term)] -> [Term] -> GR [Term]
---     guardedArg ((a, aTy):argTys) inScope ((P Bound n nTy):args) =
+--     guardedArgs :: [(Name, Type)] -> [(Name, Type)] -> [Term] -> GR [Term]
+--     guardedArgs ((a, aTy):argTys) inScope ((P Bound n nTy):args) =
 --       do let aTy' = substNames inScope aTy
 --          args' <- guardedArg argTys ((a, (P Bound n aTy')):inScope) args
 --          return $ P Bound n aTy' : args'
---     guardedArg ((a, aTy):argTys) inScope ((App f x):args) =
+--     guardedArgs ((a, aTy):argTys) inScope ((App f x):args) =
 --       do -- Check if type is coinductive
+--          hasCoType <- hasCoinductiveType (App f x) inScope
 --          -- If yes, fail
---          -- If no, call recursively
+--          if hasCoType
+--             then -- fail
+--             else 
+         -- If no, call recursively
+         -- matchesOnCoinductiveData = mapMTT ...
 
 fixDefRhs :: Type -> Name -> Type -> [Term] -> GR Term
 fixDefRhs fixDefTy auxName auxType params = 

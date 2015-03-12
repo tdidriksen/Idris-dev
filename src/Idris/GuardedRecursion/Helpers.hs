@@ -1,6 +1,7 @@
 module Idris.GuardedRecursion.Helpers where
 
 import Idris.Core.TT
+import Idris.Core.Evaluate
 import Idris.Core.Typecheck
 
 import Idris.AbsSyntaxTree
@@ -8,6 +9,7 @@ import Idris.AbsSyntax
 import Idris.Error
 
 import Control.Monad.Reader
+import Control.Monad.State
 
 ------- TYPE DEFINITIONS -------
 -- rho
@@ -46,3 +48,16 @@ bindersIn _ = []
 debind :: Type -> GR (Type, Type)
 debind (Bind n (Pi _ ty kind) sc) = return (ty, sc)
 debind e = lift $ ifail $ "Cannot debind non-function type: " ++ show e
+
+hasCoinductiveType :: Term -> Env -> GR Bool
+hasCoinductiveType t env =
+  do ty <- typeOf t env
+     isCoinductive ty env
+
+isCoinductive :: Type -> Env -> GR Bool
+isCoinductive ty env =
+  do ist <- lift get
+     let ((P _ n _), args) = unApply (normalise (tt_ctxt ist) env ty)
+     case lookupCtxtExact n (idris_datatypes ist) of
+      Just ti -> return $ codata ti
+      Nothing -> lift $ ifail $ "Cannot determine whether type " ++ show ty ++ " is coinductive"
