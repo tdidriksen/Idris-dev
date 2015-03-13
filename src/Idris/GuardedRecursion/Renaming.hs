@@ -53,7 +53,6 @@ prefixTxt s t = txt (s ++ (str t))
 -- | Adds a rename to the context.
 addRename :: Name -> GuardedRename -> Idris ()
 addRename name guardedName = do i <- getIState
-                                logLvl 0 $ "Attempting to add rename from " ++ show name ++ " to " ++ show guardedName
                                 case lookup name (guarded_renames i) of
                                   Just rn -> grFail (RenamingFailed $ "Attemped to add new rename " ++ show guardedName ++ " for " ++ show name ++ " which already has rename " ++ show rn)
                                   Nothing -> putIState (i { guarded_renames = (name, guardedName) : (guarded_renames i) })

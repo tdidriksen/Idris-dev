@@ -37,7 +37,6 @@ guardNamesIn syn pt = mapMPT guardRef pt
     guardRef :: PTerm -> Idris PTerm
     guardRef (PRef fc name) = do name' <-
                                    (do rn <- maybeFetchRename (expandNS syn name)
-                                       logLvl 0 $ "Fetched: " ++ show rn ++ " for " ++ show name
                                        return $ case rn of
                                          Just n -> unpackGuardedName n
                                          Nothing -> name)
