@@ -61,7 +61,7 @@ grepeat : (a : Type) -> ForallKappa (a -> gStream a)
 grepeat a = /\k. fix(grepeat' a)
 -}
 
-
+guardedLhs :: Term -> GR (Term, Term)
 
 -- causalFixDef :: GR (Term, Term)
 -- causalFixDef = (fixDefLhs, fixDefRhs)
@@ -73,16 +73,42 @@ fixDefType (Bind n binder sc)
                             return $ Bind n binder qsc
 fixDefType ty = applyForallKappa ty
 
--- fixDefLhs :: Term -> Type -> GR Term
--- fixDefLhs lhs guardedTy =
---   do let (f, args) = unApply lhs
---      let argTys = getArgTys guardedTy
---      let (paramBinders, _) = splitFixDefType guardedTy
---      let params = map (\(n, binder) -> (n, binderTy binder)) paramBinders
---      let fixDefArgs = take (length params) args
---      gArgs <- guardedArgs params [] fixDefArgs
---      return $ mkApp f gArgs
---   where
+fixDefLhs :: Name -> Term -> Type -> GR Term
+fixDefLhs n lhs guardedTy =
+  do let (P Ref n ty, args) = unApply lhs
+     guardedArgs <- guardedParamArgs args
+     ctxt <- lift getContext
+     let guardedName = uniqueNameCtxt ctxt [] n
+     return $ mkApp (P Ref guardedName ty) guardedArgs
+
+guardedParamArgs :: [Term] -> Type -> GR [Term]
+guardedParamArgs args guardedTy =
+  let (paramBinders, _) = splitFixDefType guardedTy
+  in guardedArgs paramBinders [] args
+  where
+   guardedArgs :: [(Name, Binder Term)] -> [(Name, Term)] -> [Term] -> GR [Term]
+   guardedArgs (p:params) inScope (arg:args) =
+    do gArg <- guardedArg p inScope arg
+       gArgs <- guardedArgs params (inScope ++ [(fst p, binderTy (snd p))]) args
+       return $ gArg : gArgs
+   guardedArgs [] _ _ = return []
+   guardedArgs _ _ [] = ifail $ "Function has fewer arguments than is described by its type" 
+
+   guardedArg :: (Name, Binder Term) -> [(Name, Term)] -> Term -> GR Term
+   guardedArg (pName, pBinder) inScope p@(P Bound n nTy) = 
+     do hasCoType <- hasCoinductiveType p
+        if hasCoType
+           then return $ P Bound n (substNames inScope (binderTy pBinder))
+           else return p
+   guardedArg (pName, pBinder) inScope (App f x) =
+     do matchesCodata <- matchesOnCoinductiveData (App f x) inScope
+        if matchesCodata
+           then lift $ ifail $ "Argument pattern " ++ show (App f x) ++ " pattern matches on coinductive data"
+           else do f' <- guardedArg (pName, pBinder) inScope f
+                   x' <- guardedArg (pName, pBinder) inScope x
+                   return $ App f' x'
+   guardedArg _ _ t = return t
+
 --     guardedArgs :: [(Name, Type)] -> [(Name, Type)] -> [Term] -> GR [Term]
 --     guardedArgs ((a, aTy):argTys) inScope ((P Bound n nTy):args) =
 --       do let aTy' = substNames inScope aTy
@@ -111,6 +137,7 @@ recRefTypeBinder ty env = do ty' <- applyLater' ty
                              ctxt <- lift getContext
                              let recBinderName = uniqueNameCtxt ctxt (sUN "rec") (map fst env)
                              return (recBinderName, (Pi Nothing ty' ty'ty))
+
 
 auxDefType :: Type -> GR Type
 auxDefType ty = do fixTy <- fixDefType ty

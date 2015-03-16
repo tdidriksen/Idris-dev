@@ -58,8 +58,8 @@ IE |- e : A => e' : A
 ---------------------------------
 IE |- e : A => Next e' : Later A
 \begin{code}
-check Open modality e (unapplyLater -> Just a) =
-  do e' <- check Open modality e a
-     applyNext e' a
+check Open modality e (unapplyLater -> Just a') =
+  do e' <- check Open modality e a'
+     applyNext e' a'
 check _ _ e _ = return e
 \end{code}

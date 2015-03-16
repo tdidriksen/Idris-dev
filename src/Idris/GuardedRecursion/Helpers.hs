@@ -11,6 +11,8 @@ import Idris.Error
 import Control.Monad.Reader
 import Control.Monad.State
 
+import qualified Data.Foldable as F
+
 ------- TYPE DEFINITIONS -------
 -- rho
 type Renaming = (Name, Name)
@@ -61,3 +63,18 @@ isCoinductive ty env =
      case lookupCtxtExact n (idris_datatypes ist) of
       Just ti -> return $ codata ti
       Nothing -> lift $ ifail $ "Cannot determine whether type " ++ show ty ++ " is coinductive"
+
+matchesOnCoinductiveData :: Term -> Env -> GR Bool
+matchesOnCoinductiveData (P _ _ _) = return False
+matchesOnCoinductiveData (App f x) =
+  do yes <- hasCoinductiveType (App f x) env
+     if yes
+        then return yes
+        else do yesF <- matchesOnCoinductiveData f
+                yesX <- matchesOnCoinductiveData x
+                return $ yesF || yesX
+matchesOnCoinductiveData (Bind n binder sc) =
+  matchesOnCoinductiveData sc
+matchesOnCoinductiveData (Proj t i) =
+  matchesOnCoinductiveData t
+matchesOnCoinductiveData _ = return False
