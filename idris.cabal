@@ -611,6 +611,17 @@ Extra-source-files:
                        test/unique003/*.idr
                        test/unique003/expected
 
+                       test/docs001/run
+                       test/docs001/input
+                       test/docs001/*.idr
+                       test/docs001/expected
+                       test/docs002/run
+                       test/docs002/input
+                       test/docs002/*.idr
+                       test/docs002/expected
+
+
+
 source-repository head
   type:     git
   location: git://github.com/idris-lang/Idris-dev.git
