@@ -350,6 +350,7 @@ data Command = Quit
              | NewDefn [PDecl] -- ^ Each 'PDecl' should be either a type declaration (at most one) or a clause defining the same name.
              | Undefine [Name]
              | Check PTerm
+             | Core PTerm
              | DocStr (Either Name Const) HowMuchDocs
              | TotCheck Name
              | Reload
@@ -1738,12 +1739,6 @@ isHoleName _      = False
 -- | Check whether a PTerm has been delaborated from a Term containing a Hole or Guess
 containsHole :: PTerm -> Bool
 containsHole pterm = or [isHoleName n | PRef _ n <- take 1000 $ universe pterm]
-
--- | Pretty-printer helper for the binding site of a name
-bindingOf :: Name -- ^^ the bound name
-          -> Bool -- ^^ whether the name is implicit
-          -> Doc OutputAnnotation
-bindingOf n imp = annotate (AnnBoundName n imp) (text (show n))
 
 -- | Pretty-printer helper for names that attaches the correct annotations
 prettyName
