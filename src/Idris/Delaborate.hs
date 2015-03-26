@@ -392,6 +392,7 @@ pprintErr' i (ElabDebug msg tm holes) =
           pprintTT ns (binderTy b) <>
           line <>
           ppAssumptions (n:ns) rest
+pprintErr' i (GuardedRecursionFailed reason) = text "When attempting to infer a guarded recursive term: " <> text (show reason)
 
 -- | Make sure the machine invented names are shown helpfully to the user, so
 -- that any names which differ internally also differ visibly

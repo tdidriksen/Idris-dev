@@ -13,12 +13,21 @@ import Control.Monad.Reader
 
 -- NAMES AS STRINGS
 
+applyClockStr = "applyClock"
+delayStr = "Delay"
 fixStr = "fix"
-forallKappaStr = "ForallKappa"
+forallClocksStr = "ForallClocks"
+forceStr = "Force"
 guardedRecursionStr = "GuardedRecursion"
-lambdaKappaStr = "LambdaKappa"
+lambdaClockStr = "LambdaClock"
+laterStr = "Later"
 later'Str = "Later'"
+laterAppStr = "laterApp"
+lazy'Str = "Lazy'"
+lazyCodataStr = "LazyCodata"
 nextStr = "Next"
+nowStr = "Now"
+tomorrowStr = "Tomorrow"
 
 
 
@@ -30,27 +39,36 @@ guardedNS = [guardedRecursionStr]
 inGuardedNS :: String -> Name
 inGuardedNS s = sNS (sUN s) guardedNS
 
+applyClockName = inGuardedNS applyClockStr
 fixName = inGuardedNS fixStr
-forallKappaName = inGuardedNS forallKappaStr
-lambdaKappaName = inGuardedNS lambdaKappaStr
+forallClocksName = inGuardedNS forallClocksStr
+lambdaClockName = inGuardedNS lambdaClockStr
+laterName = inGuardedNS laterStr
 later'Name = inGuardedNS later'Str
+laterAppName = inGuardedNS laterAppStr
 nextName = inGuardedNS nextStr
+nowName = inGuardedNS nowStr
+tomorrowName = inGuardedNS tomorrowStr
 
 
 -- REFS
 
-ref :: Name -> GR Term
+ref :: Name -> Idris Term
 ref n =
-  do ctxt <- lift getContext
+  do ctxt <- getContext
      case lookupP n ctxt of
       [nP] -> return nP
-      _ -> lift (ifail $ "Term " ++ show n ++ " does not exist!")
+      _ -> ifail $ "Term " ++ show n ++ " does not exist!"
 
+applyClockRef = ref applyClockName
 fixRef = ref fixName
-forallKappaRef = ref forallKappaName
-lambdaKappaRef = ref lambdaKappaName
+forallClocksRef = ref forallClocksName
+lambdaClockRef = ref lambdaClockName
 later'Ref = ref later'Name
+laterAppRef = ref laterAppName
 nextRef = ref nextName
+nowRef = ref nowName
+tomorrowRef = ref tomorrowName
 
 -- PTERM REFS
 

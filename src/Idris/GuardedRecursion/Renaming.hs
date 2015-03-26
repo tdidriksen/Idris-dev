@@ -5,6 +5,8 @@ import Idris.GuardedRecursion.Exports
 import Idris.GuardedRecursion.Error
 
 import Idris.Core.TT
+import Idris.Core.Evaluate
+
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
 
@@ -54,7 +56,7 @@ prefixTxt s t = txt (s ++ (str t))
 addRename :: Name -> GuardedRename -> Idris ()
 addRename name guardedName = do i <- getIState
                                 case lookup name (guarded_renames i) of
-                                  Just rn -> grFail (RenamingFailed $ "Attemped to add new rename " ++ show guardedName ++ " for " ++ show name ++ " which already has rename " ++ show rn)
+                                  Just rn -> return () -- grFail (RenamingFailed $ "Attemped to add new rename " ++ show guardedName ++ " for " ++ show name ++ " which already has rename " ++ show rn)
                                   Nothing -> putIState (i { guarded_renames = (name, guardedName) : (guarded_renames i) })
 
 
@@ -65,6 +67,14 @@ fetchRename name = do i <- getIState
                       case rename of
                         Just rn -> return rn
                         Nothing -> grFail (RenamingFailed $ "A rename for " ++ show name ++ " does not exist")
+
+-- | Lookup rename for input name. If the rename is not a projection rename, return it. Otherwise, return nothing.
+fetchGuardedRename :: Name -> Idris (Maybe Name)
+fetchGuardedRename n = do i <- getIState
+                          rename <- maybeFetchRename n
+                          case rename of
+                           Just (GuardedRename n) -> return $ Just n
+                           _                      -> return Nothing
 
 -- | Looks for rename for the given name. Just name if its found, Nothing if it does not exist.
 maybeFetchRename :: Name -> Idris (Maybe GuardedRename)
@@ -82,3 +92,11 @@ createAndAddProjRename :: Name -> Idris GuardedRename
 createAndAddProjRename name = do let guardedRename = ProjectionRename $ GuardedProjectionNames (guardedName name) (forallName name)
                                  addRename name guardedRename
                                  return guardedRename
+
+typeOfGuardedRename :: Name -> Env -> Idris (Maybe Type)
+typeOfGuardedRename n env = do rn <- fetchGuardedRename n
+                               ctxt <- getContext
+                               case rn of
+                                Just n' -> return $ lookupTyExact n' ctxt
+                                Nothing -> return Nothing
+                     

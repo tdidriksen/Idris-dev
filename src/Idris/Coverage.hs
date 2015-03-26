@@ -11,6 +11,8 @@ import Idris.Delaborate
 import Idris.Error
 import Idris.Output (iWarn, iputStrLn)
 
+import Idris.GuardedRecursion.CheckGR(checkGuardedRecursive)
+
 import Data.List
 import Data.Either
 import Data.Maybe
@@ -389,7 +391,10 @@ checkTotality path fc n
                         [CaseOp _ _ _ _ pats _] ->
                             do t' <- if AssertTotal `elem` opts
                                         then return $ Total []
-                                        else calcTotality fc n pats
+                                        else if Coinductive `elem` opts
+                                                then do _ <- checkGuardedRecursive n
+                                                        calcTotality fc n pats
+                                                else calcTotality fc n pats
                                setTotality n t'
                                addIBC (IBCTotal n t')
                                return t'

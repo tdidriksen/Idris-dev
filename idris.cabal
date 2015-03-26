@@ -723,12 +723,13 @@ Library
                 , Idris.Elab.Value
 
                 , Idris.GuardedRecursion.BuiltinHandlers
+                , Idris.GuardedRecursion.Causal
+                , Idris.GuardedRecursion.CheckGR
                 , Idris.GuardedRecursion.Constants
                 , Idris.GuardedRecursion.Error
                 , Idris.GuardedRecursion.Exports
                 , Idris.GuardedRecursion.GuardedTypes
                 , Idris.GuardedRecursion.Helpers
-                , Idris.GuardedRecursion.InferCausalFixedPoint
                 , Idris.GuardedRecursion.InferTerm
                 , Idris.GuardedRecursion.Renaming
 

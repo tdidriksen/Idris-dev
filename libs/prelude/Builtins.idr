@@ -116,11 +116,11 @@ namespace GuardedRecursion
   data Later' : Type -> Type where
     Next : {a : Type} -> a -> Later' a
 
-  data ForallKappa : Type -> Type where
-    LambdaKappa : {a : Type} -> a -> ForallKappa a
+  data ForallClocks : Type -> Type where
+    LambdaClock : {a : Type} -> a -> ForallClocks a
  
-  applyKappa : {a : Type} -> ForallKappa a -> a
-  applyKappa (LambdaKappa a) = a 
+  applyClock : {a : Type} -> ForallClocks a -> a
+  applyClock (LambdaClock a) = a 
 
   data Availability = Now | Tomorrow Availability
 
@@ -153,7 +153,15 @@ namespace GuardedRecursion
   partial
   pfix2 : ((a -> b -> Later' c) -> (a -> b -> c)) -> (a -> b -> c)
   pfix2 {b} {c} f = fix (\g: Later' (a -> b -> c) => f (\x: a, y: b => laterApp {n = Now} (laterApp {n = Now} g (Next x)) (Next y)))
-  
+
+-- evens'' : (ForallClocks (gStream a) -> Later' (gStream a)) -> 
+-- evens'' = 
+
+evens' : ForallClocks (gStream a) -> gStream a
+--evens' s = pfix (evens'' s)
+
+evens : ForallClocks (gStream a) -> ForallClocks (gStream a)
+evens s = LambdaClock (evens' s)
 
 namespace Ownership
   ||| A read-only version of a unique value

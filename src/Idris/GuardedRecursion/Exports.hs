@@ -6,8 +6,8 @@ import Idris.Core.TT
 
 data GuardedProjectionNames = GuardedProjectionNames { guardedProj :: Name
                                                      , forallProj  :: Name
-                                                     }
-
+                                                     } deriving Show
+                                                                
 data GuardedRename = GuardedRename Name | ProjectionRename GuardedProjectionNames
 
 instance Show GuardedRename where
