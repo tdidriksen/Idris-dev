@@ -92,4 +92,3 @@ main.adc_lemma_1 = proof {
     rewrite sym (plusZeroRightNeutral c) ;
     trivial;
 }
-

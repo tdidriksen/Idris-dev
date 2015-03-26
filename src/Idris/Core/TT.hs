@@ -155,9 +155,12 @@ data Err' t
           | WithFnType t
           | NoTypeDecl Name
           | NotInjective t t t
-          | CantResolve t
+          | CantResolve Bool -- True if postponed, False if fatal
+                        t
+          | InvalidTCArg Name t
           | CantResolveAlts [Name]
           | IncompleteTerm t
+          | NoEliminator String t
           | UniverseError
           | UniqueError Universe Name
           | UniqueKindError Universe Name
@@ -234,7 +237,7 @@ instance Sized Err where
   size (NoSuchVariable name) = size name
   size (NoTypeDecl name) = size name
   size (NotInjective l c r) = size l + size c + size r
-  size (CantResolve trm) = size trm
+  size (CantResolve _ trm) = size trm
   size (NoRewriting trm) = size trm
   size (CantResolveAlts _) = 1
   size (IncompleteTerm trm) = size trm
@@ -249,7 +252,7 @@ instance Sized Err where
 
 score :: Err -> Int
 score (CantUnify _ _ _ m _ s) = s + score m
-score (CantResolve _) = 20
+score (CantResolve _ _) = 20
 score (NoSuchVariable _) = 1000
 score (ProofSearchFail e) = score e
 score (CantSolveGoal _ _) = 100000
@@ -514,7 +517,7 @@ toAlist :: Ctxt a -> [(Name, a)]
 toAlist ctxt = let allns = map snd (Map.toList ctxt) in
                 concatMap (Map.toList) allns
 
-addAlist :: Show a => [(Name, a)] -> Ctxt a -> Ctxt a
+addAlist :: [(Name, a)] -> Ctxt a -> Ctxt a
 addAlist [] ctxt = ctxt
 addAlist ((n, tm) : ds) ctxt = addDef n tm (addAlist ds ctxt)
 
@@ -786,14 +789,6 @@ deriving instance NFData UExp
 instance Sized UExp where
   size _ = 1
 
--- We assume that universe levels have been checked, so anything external
--- can just have the same universe variable and we won't get any new
--- cycles.
-
-instance Binary UExp where
-    put x = return ()
-    get = return (UVar (-1))
-
 instance Show UExp where
     show (UVar x) | x < 26 = [toEnum (x + fromEnum 'a')]
                   | otherwise = toEnum ((x `mod` 26) + fromEnum 'a') : show (x `div` 26)
@@ -804,6 +799,16 @@ instance Show UExp where
 data UConstraint = ULT UExp UExp -- ^ Strictly less than
                  | ULE UExp UExp -- ^ Less than or equal to
   deriving (Eq, Ord)
+
+data ConstraintFC = ConstraintFC { uconstraint :: UConstraint,
+                                   ufc :: FC }
+  deriving Show
+
+instance Eq ConstraintFC where
+    x == y = uconstraint x == uconstraint y  
+
+instance Ord ConstraintFC where
+    compare x y = compare (uconstraint x) (uconstraint y)
 
 instance Show UConstraint where
     show (ULT x y) = show x ++ " < " ++ show y
@@ -941,6 +946,7 @@ vinstances i t = 0
 -- | Replace the outermost (index 0) de Bruijn variable with the given term
 instantiate :: TT n -> TT n -> TT n
 instantiate e = subst 0 where
+    subst i (P nt x ty) = P nt x (subst i ty)
     subst i (V x) | i == x = e
     subst i (Bind x b sc) = Bind x (fmap (subst i) b) (subst (i+1) sc)
     subst i (App f a) = App (subst i f) (subst i a)
@@ -952,6 +958,7 @@ instantiate e = subst 0 where
 -- that has been substituted.
 substV :: TT n -> TT n -> TT n
 substV x tm = dropV 0 (instantiate x tm) where
+    subst i (P nt x ty) = P nt x (subst i ty)
     dropV i (V x) | x > i = V (x - 1)
                   | otherwise = V x
     dropV i (Bind x b sc) = Bind x (fmap (dropV i) b) (dropV (i+1) sc)
@@ -1045,6 +1052,9 @@ subst n v tm = fst $ subst' 0 tm
     -- substitution happens...)
     subst' i (V x) | i == x = (v, True)
     subst' i (P _ x _) | n == x = (v, True)
+    subst' i t@(P nt x ty)
+         = let (ty', ut) = subst' i ty in
+               if ut then (P nt x ty', True) else (t, False)
     subst' i t@(Bind x b sc) | x /= n
          = let (b', ub) = substB' i b
                (sc', usc) = subst' (i+1) sc in
@@ -1170,17 +1180,35 @@ unList tm = case unApply tm of
 forget :: TT Name -> Raw
 forget tm = forgetEnv [] tm
 
+safeForget :: TT Name -> Maybe Raw
+safeForget tm = safeForgetEnv [] tm
+
 forgetEnv :: [Name] -> TT Name -> Raw
-forgetEnv env (P _ n _) = Var n
-forgetEnv env (V i)     = Var (env !! i)
-forgetEnv env (Bind n b sc) = let n' = uniqueName n env in
-                                  RBind n' (fmap (forgetEnv env) b)
-                                           (forgetEnv (n':env) sc)
-forgetEnv env (App f a) = RApp (forgetEnv env f) (forgetEnv env a)
-forgetEnv env (Constant c) = RConstant c
-forgetEnv env (TType i) = RType
-forgetEnv env (UType u) = RUType u
-forgetEnv env Erased    = RConstant Forgot
+forgetEnv env tm = case safeForgetEnv env tm of
+                     Just t' -> t'
+                     Nothing -> error $ "Scope error in " ++ show tm
+
+
+safeForgetEnv :: [Name] -> TT Name -> Maybe Raw
+safeForgetEnv env (P _ n _) = Just $ Var n
+safeForgetEnv env (V i) | i < length env = Just $ Var (env !! i)
+                        | otherwise = Nothing 
+safeForgetEnv env (Bind n b sc) 
+     = do let n' = uniqueName n env
+          b' <- safeForgetEnvB env b
+          sc' <- safeForgetEnv (n':env) sc
+          Just $ RBind n' b' sc'
+  where safeForgetEnvB env (Let t v) = liftM2 Let (safeForgetEnv env t) 
+                                                  (safeForgetEnv env v)
+        safeForgetEnvB env (Guess t v) = liftM2 Guess (safeForgetEnv env t) 
+                                                      (safeForgetEnv env v)
+        safeForgetEnvB env b = do ty' <- safeForgetEnv env (binderTy b)
+                                  Just $ fmap (\_ -> ty') b 
+safeForgetEnv env (App f a) = liftM2 RApp (safeForgetEnv env f) (safeForgetEnv env a)
+safeForgetEnv env (Constant c) = Just $ RConstant c
+safeForgetEnv env (TType i) = Just RType
+safeForgetEnv env (UType u) = Just $ RUType u
+safeForgetEnv env Erased    = Just $ RConstant Forgot
 
 -- | Introduce a 'Bind' into the given term for each element of the
 -- given list of (name, binder) pairs.

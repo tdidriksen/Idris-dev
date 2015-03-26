@@ -87,6 +87,7 @@ import Control.Concurrent
 import Data.Maybe
 import Data.List hiding (group)
 import Data.Char
+import qualified Data.Set as S
 import Data.Version
 import Data.Word (Word)
 import Data.Either (partitionEithers)
@@ -773,7 +774,7 @@ process fn (NewDefn decls) = do
   getName (PTy docs argdocs syn fc opts name ty) = Just name
   getName (PClauses fc opts name (clause:clauses)) = Just (getClauseName clause)
   getName (PData doc argdocs syn fc opts dataDecl) = Just (d_name dataDecl)
-  getName (PClass doc syn fc constraints name parms parmdocs decls) = Just name
+  getName (PClass doc syn fc constraints name parms parmdocs fds decls) = Just name
   getName _ = Nothing
   -- getClauseName is partial and I am not sure it's used safely! -- trillioneyes
   getClauseName (PClause fc name whole with rhs whereBlock) = name
@@ -945,9 +946,10 @@ process fn (DocStr (Right c) _) -- constants only have overviews
 process fn Universes
                      = do i <- getIState
                           let cs = idris_constraints i
+                          let cslist = S.toAscList cs 
 --                        iputStrLn $ showSep "\n" (map show cs)
-                          iputStrLn $ show (map fst cs)
-                          let n = length cs
+                          iputStrLn $ show (map uconstraint cslist)
+                          let n = length cslist
                           iputStrLn $ "(" ++ show n ++ " constraints)"
                           case ucheck cs of
                             Error e -> iPrintError $ pshow i e
@@ -1518,7 +1520,8 @@ loadInputs inputs toline -- furthest line to read in input source files
 
 idrisMain :: [Opt] -> Idris ()
 idrisMain opts =
-    do let inputs = opt getFile opts
+  do   mapM_ setWidth (opt getConsoleWidth opts)
+       let inputs = opt getFile opts
        let quiet = Quiet `elem` opts
        let nobanner = NoBanner `elem` opts
        let idesl = Idemode `elem` opts || IdemodeSocket `elem` opts
@@ -1533,6 +1536,7 @@ idrisMain opts =
        let optimise = case opt getOptLevel opts of
                         [] -> 2
                         xs -> last xs
+
        setOptLevel optimise
        let outty = case opt getOutputTy opts of
                      [] -> if Interface `elem` opts then
@@ -1554,7 +1558,9 @@ idrisMain opts =
        when (DefaultTotal `elem` opts) $ do i <- getIState
                                             putIState (i { default_total = True })
        setColourise $ not quiet && last (True : opt getColour opts)
-       when (not runrepl) $ setWidth InfinitelyWide
+
+
+
        mapM_ addLangExt (opt getLanguageExt opts)
        setREPL runrepl
        setQuiet (quiet || isJust script || not (null immediate))
@@ -1776,6 +1782,12 @@ getPkgTest _ = Nothing
 getCodegen :: Opt -> Maybe Codegen
 getCodegen (UseCodegen x) = Just x
 getCodegen _ = Nothing
+
+
+getConsoleWidth :: Opt -> Maybe ConsoleWidth
+getConsoleWidth (UseConsoleWidth x) = Just x
+getConsoleWidth _ = Nothing
+
 
 getExecScript :: Opt -> Maybe String
 getExecScript (InterpretScript expr) = Just expr

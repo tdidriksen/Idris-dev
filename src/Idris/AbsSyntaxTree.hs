@@ -68,27 +68,27 @@ toplevel = EInfo [] emptyContext id Nothing Nothing (\_ _ _ -> fail "Not impleme
 eInfoNames :: ElabInfo -> [Name]
 eInfoNames info = map fst (params info) ++ M.keys (inblock info)
 
-data IOption = IOption { opt_logLevel   :: Int,
-                         opt_typecase   :: Bool,
-                         opt_typeintype :: Bool,
-                         opt_coverage   :: Bool,
-                         opt_showimp    :: Bool, -- ^^ show implicits
-                         opt_errContext :: Bool,
-                         opt_repl       :: Bool,
-                         opt_verbose    :: Bool,
-                         opt_nobanner   :: Bool,
-                         opt_quiet      :: Bool,
-                         opt_codegen    :: Codegen,
-                         opt_outputTy   :: OutputType,
-                         opt_ibcsubdir  :: FilePath,
-                         opt_importdirs :: [FilePath],
-                         opt_triple     :: String,
-                         opt_cpu        :: String,
-                         opt_cmdline    :: [Opt], -- remember whole command line
-                         opt_origerr    :: Bool,
-                         opt_autoSolve  :: Bool, -- ^ automatically apply "solve" tactic in prover
-                         opt_autoImport :: [FilePath], -- ^ e.g. Builtins+Prelude
-                         opt_optimise   :: [Optimisation]
+data IOption = IOption { opt_logLevel     :: Int,
+                         opt_typecase     :: Bool,
+                         opt_typeintype   :: Bool,
+                         opt_coverage     :: Bool,
+                         opt_showimp      :: Bool, -- ^^ show implicits
+                         opt_errContext   :: Bool,
+                         opt_repl         :: Bool,
+                         opt_verbose      :: Bool,
+                         opt_nobanner     :: Bool,
+                         opt_quiet        :: Bool,
+                         opt_codegen      :: Codegen,
+                         opt_outputTy     :: OutputType,
+                         opt_ibcsubdir    :: FilePath,
+                         opt_importdirs   :: [FilePath],
+                         opt_triple       :: String,
+                         opt_cpu          :: String,
+                         opt_cmdline      :: [Opt], -- remember whole command line
+                         opt_origerr      :: Bool,
+                         opt_autoSolve    :: Bool, -- ^ automatically apply "solve" tactic in prover
+                         opt_autoImport   :: [FilePath], -- ^ e.g. Builtins+Prelude
+                         opt_optimise     :: [Optimisation]
                        }
     deriving (Show, Eq)
 
@@ -153,11 +153,13 @@ data OutputMode = RawOutput Handle -- ^ Print user output directly to the handle
 data ConsoleWidth = InfinitelyWide -- ^ Have pretty-printer assume that lines should not be broken
                   | ColsWide Int -- ^ Manually specified - must be positive
                   | AutomaticWidth -- ^ Attempt to determine width, or 80 otherwise
+   deriving (Show, Eq)
+
 
 -- | The global state used in the Idris monad
 data IState = IState {
     tt_ctxt :: Context, -- ^ All the currently defined names and their terms
-    idris_constraints :: [(UConstraint, FC)],
+    idris_constraints :: S.Set ConstraintFC,
       -- ^ A list of universe constraints and their corresponding source locations
     idris_infixes :: [FixDecl], -- ^ Currently defined infix operators
     idris_implicits :: Ctxt [PArg],
@@ -186,7 +188,11 @@ data IState = IState {
     idris_name :: Int,
     idris_lineapps :: [((FilePath, Int), PTerm)],
           -- ^ Full application LHS on source line
-    idris_metavars :: [(Name, (Maybe Name, Int, Bool))], -- ^ The currently defined but not proven metavariables
+    idris_metavars :: [(Name, (Maybe Name, Int, Bool))],
+    -- ^ The currently defined but not proven metavariables. The Int
+    -- is the number of vars to display as a context, the Maybe Name
+    -- is its top-level function, and the Bool is whether :p is
+    -- allowed
     idris_coercions :: [Name],
     idris_errRev :: [(Term, Term)],
     syntax_rules :: SyntaxRules,
@@ -306,7 +312,7 @@ data IBCWrite = IBCFix FixDecl
 
 -- | The initial state for the compiler
 idrisInit :: IState
-idrisInit = IState initContext [] []
+idrisInit = IState initContext S.empty []
                    emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext
@@ -466,6 +472,7 @@ data Opt = Filename String
          | ShowOrigErr
          | AutoWidth -- ^ Automatically adjust terminal width
          | AutoSolve -- ^ Automatically issue "solve" tactic in interactive prover
+         | UseConsoleWidth ConsoleWidth
     deriving (Show, Eq)
 
 -- Parsed declarations
@@ -602,6 +609,7 @@ data PDecl' t
               Name
               [(Name, t)] -- parameters
               [(Name, Docstring (Either Err PTerm))] -- parameter docstrings
+              [Name] -- determining parameters
               [PDecl' t] -- declarations
               -- ^ Type class: arguments are documentation, syntax info, source location, constraints,
               -- class name, parameters, method declarations
@@ -634,10 +642,12 @@ deriving instance NFData PDecl'
 -- For elaborator state
 data EState = EState {
                   case_decls :: [PDecl],
-                  delayed_elab :: [Elab' EState ()]
+                  delayed_elab :: [Elab' EState ()],
+                  new_tyDecls :: [(Name, FC, [PArg], Type)]
               }
 
-initEState = EState [] []
+initEState :: EState
+initEState = EState [] [] []
 
 type ElabD a = Elab' EState a
 
@@ -696,7 +706,7 @@ declared (PData _ _ _ _ _ (PLaterdecl n _)) = [n]
 declared (PParams _ _ ds) = concatMap declared ds
 declared (PNamespace _ ds) = concatMap declared ds
 declared (PRecord _ _ _ n _ _ _ c _) = [n, c]
-declared (PClass _ _ _ _ n _ _ ms) = n : concatMap declared ms
+declared (PClass _ _ _ _ n _ _ _ ms) = n : concatMap declared ms
 declared (PInstance _ _ _ _ _ _ _ _ _ _) = []
 declared (PDSL n _) = [n]
 declared (PSyntax _ _) = []
@@ -715,7 +725,7 @@ tldeclared (PData _ _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
 tldeclared (PParams _ _ ds) = []
 tldeclared (PMutual _ ds) = concatMap tldeclared ds
 tldeclared (PNamespace _ ds) = concatMap tldeclared ds
-tldeclared (PClass _ _ _ _ n _ _ ms) = concatMap tldeclared ms
+tldeclared (PClass _ _ _ _ n _ _ _ ms) = concatMap tldeclared ms
 tldeclared (PInstance _ _ _ _ _ _ _ _ _ _) = []
 tldeclared _ = []
 
@@ -731,7 +741,7 @@ defined (PData _ _ _ _ _ (PLaterdecl n _)) = []
 defined (PParams _ _ ds) = concatMap defined ds
 defined (PNamespace _ ds) = concatMap defined ds
 defined (PRecord _ _ _ n _ _ _ c _) = [n, c]
-defined (PClass _ _ _ _ n _ _ ms) = n : concatMap defined ms
+defined (PClass _ _ _ _ n _ _ _ ms) = n : concatMap defined ms
 defined (PInstance _ _ _ _ _ _ _ _ _ _) = []
 defined (PDSL n _) = [n]
 defined (PSyntax _ _) = []
@@ -1099,7 +1109,8 @@ data ClassInfo = CI { instanceName :: Name,
                       class_defaults :: [(Name, (Name, PDecl))], -- method name -> default impl
                       class_default_superclasses :: [PDecl],
                       class_params :: [Name],
-                      class_instances :: [Name] }
+                      class_instances :: [Name],
+                      class_determiners :: [Int] }
     deriving Show
 {-!
 deriving instance Binary ClassInfo
@@ -1260,6 +1271,9 @@ data SyntaxInfo = Syn { using :: [Using],
                         syn_params :: [(Name, PTerm)],
                         syn_namespace :: [String],
                         no_imp :: [Name],
+                        imp_methods :: [Name], -- class methods. When expanding
+                           -- implicits, these should be expanded even under
+                           -- binders
                         decoration :: Name -> Name,
                         inPattern :: Bool,
                         implicitAllowed :: Bool,
@@ -1273,7 +1287,7 @@ deriving instance NFData SyntaxInfo
 deriving instance Binary SyntaxInfo
 !-}
 
-defaultSyntax = Syn [] [] [] [] id False False Nothing 0 initDSL 0
+defaultSyntax = Syn [] [] [] [] [] id False False Nothing 0 initDSL 0
 
 expandNS :: SyntaxInfo -> Name -> Name
 expandNS syn n@(NS _ _) = n
@@ -1797,7 +1811,7 @@ showDeclImp o (PData _ _ _ _ _ d) = showDImp o { ppopt_impl = True } d
 showDeclImp o (PParams _ ns ps) = text "params" <+> braces (text (show ns) <> line <> showDecls o ps <> line)
 showDeclImp o (PNamespace n ps) = text "namespace" <+> text n <> braces (line <> showDecls o ps <> line)
 showDeclImp _ (PSyntax _ syn) = text "syntax" <+> text (show syn)
-showDeclImp o (PClass _ _ _ cs n ps _ ds)
+showDeclImp o (PClass _ _ _ cs n ps _ _ ds)
    = text "class" <+> text (show cs) <+> text (show n) <+> text (show ps) <> line <> showDecls o ds
 showDeclImp o (PInstance _ _ _ _ cs n _ t _ ds)
    = text "instance" <+> text (show cs) <+> text (show n) <+> prettyImp o t <> line <> showDecls o ds
