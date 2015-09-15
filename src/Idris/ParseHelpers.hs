@@ -242,7 +242,7 @@ idrisStyle = IdentifierStyle _styleName _styleStart _styleLetter _styleReserved 
         _styleLetter = satisfy isAlphaNum <|> oneOf "_'."
         _styleReserved = HS.fromList ["let", "in", "data", "codata", "record", "corecord", "Type",
                                       "do", "dsl", "import", "impossible",
-                                      "case", "of", "total", "partial", "mutual",
+                                      "case", "of", "total", "partial", "mutual", "copatterns",
                                       "infix", "infixl", "infixr", "rewrite",
                                       "where", "with", "syntax", "proof", "postulate",
                                       "using", "namespace", "class", "instance", "parameters",
@@ -637,6 +637,14 @@ fixErrorMsg msg fixes = msg ++ ", possible fixes:\n" ++ (concat $ intersperse "\
 
 -- | Collect 'PClauses' with the same function name
 collect :: [PDecl] -> [PDecl]
+collect (c@(PClauses fc o n (PCoClause _ _ _ _ _ : _)) : ds)
+    -- All PCoClauses defined in the same copatterns block are collected into one PClauses
+    -- Resolution happens during elaboration
+    = coclauses [] (c : ds)
+  where coclauses :: [PClause] -> [PDecl] -> [PDecl]
+        coclauses acc (PClauses _ _ _ [PCoClause fc' n' a' r' w'] : ds) =
+          coclauses (PCoClause fc' n' a' r' (collect w') : acc) ds
+        coclauses acc ds = PClauses fc o n (reverse acc) : collect ds
 collect (c@(PClauses _ o _ _) : ds)
     = clauses (cname c) [] (c : ds)
   where clauses :: Maybe Name -> [PClause] -> [PDecl] -> [PDecl]
@@ -662,5 +670,6 @@ collect (PClass doc f s cs n nfc ps pdocs fds ds cn cd : ds')
     = PClass doc f s cs n nfc ps pdocs fds (collect ds) cn cd : collect ds'
 collect (PInstance doc argDocs f s cs n nfc ps t en ds : ds')
     = PInstance doc argDocs f s cs n nfc ps t en (collect ds) : collect ds'
+collect (PCopatterns fc cs : ds) = PCopatterns fc (collect cs) : collect ds
 collect (d : ds) = d : collect ds
 collect [] = []

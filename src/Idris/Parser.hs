@@ -213,6 +213,7 @@ internalDecl syn
                    <|> provider syn
                    <|> transform syn
                    <|> do import_; fail "imports must be at top of file"
+                   <|> copatterns syn
                    <?> "declaration"
         declBody' :: IdrisParser [PDecl]
         declBody' = do d <- decl' syn
@@ -752,6 +753,27 @@ mutual syn =
        return [PMutual fc (concat ds)]
     <?> "mutual block"
 
+{- | Parses a copatterns declaration
+
+@
+Copatterns ::=
+  'copatterns' OpenBlock Decl* CloseBlock
+  ;
+@
+-}
+copatterns :: SyntaxInfo -> IdrisParser [PDecl]
+copatterns syn
+  | not (in_copatterns syn) =
+     do reservedHL "copatterns"
+        openBlock
+        ds <- many (decl (syn { in_copatterns = True }))
+        closeBlock
+        fc <- getFC
+        return [PCopatterns fc (concat ds)]
+     <?> "copatterns block"
+  | otherwise =
+     fail "Nested 'copatterns' block not supported"
+
 {-| Parses a namespace declaration
 
 @
@@ -1062,6 +1084,29 @@ WhereOrTerminator ::= WhereBlock | Terminator;
 -}
 clause :: SyntaxInfo -> IdrisParser PClause
 clause syn
+ | in_copatterns syn
+         = do pushIndent
+              (n_in, nfc) <- fnName; let n = expandNS syn n_in
+              cargs <- many (constraintArg syn)
+              fc <- getFC
+              args <- many (try (implicitArg (syn { inPattern = True } ))
+                            <|> (fmap pexp (argExpr syn)))
+              wargs <- many (wExpr syn)
+              let capp = PApp fc (PRef nfc [nfc] n)
+                           (cargs ++ args)
+              (do r <- rhs syn n
+                  ist <- get
+                  let ctxt = tt_ctxt ist
+                  let wsyn = syn { syn_namespace = [] }
+                  (wheres, nmap) <- choice [do x <- whereBlock n wsyn
+                                               popIndent
+                                               return x,
+                                            do terminator
+                                               return ([], [])]
+                  ist <- get
+                  put (ist { lastParse = Just n })
+                  return $ PCoClause fc n capp r wheres)
+ | otherwise
          = do wargs <- try (do pushIndent; some (wExpr syn))
               fc <- getFC
               ist <- get
@@ -1113,7 +1158,7 @@ clause syn
                 l <- argExpr syn
                 (op, nfc) <- operatorFC
                 when (op == "=" || op == "?=" ) $
-                     fail "infix clause definition with \"=\" and \"?=\" not supported "
+                     fail ("infix clause definition with" ++ "\"=\"" ++ "and" ++ "\"?=\"" ++ " not supported ")
                 return (l, op, nfc))
               let n = expandNS syn (sUN op)
               r <- argExpr syn

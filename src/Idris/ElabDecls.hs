@@ -269,4 +269,10 @@ elabDecl' what info (PTransform fc safety old new)
 elabDecl' what info (PRunElabDecl fc script ns)
     = do elabRunElab info fc script ns
          return ()
+elabDecl' _ info (PCopatterns fc clauses) 
+    = do -- Partition clauses into copattern clauses and regular pattern clauses
+         -- Elaborate regular pattern clauses as expected
+         -- Collect coclauses 
+         -- Copattern clause elaboration: Unnest and generate auxiliary functions
+         fail "Copatterns encountered"
 elabDecl' _ _ _ = return () -- skipped this time

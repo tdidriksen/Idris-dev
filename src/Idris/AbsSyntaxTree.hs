@@ -679,6 +679,7 @@ data PDecl' t
                             -- bool is True, lhs and rhs must be convertible
    | PRunElabDecl FC t [String] -- ^ FC is decl-level, for errors, and
                                 -- Strings represent the namespace
+   | PCopatterns FC [PDecl' t]
  deriving Functor
 {-!
 deriving instance Binary PDecl'
@@ -734,10 +735,11 @@ highlightSource fc annot =
 --
 -- 4. The where block (PDecl' t)
 
-data PClause' t = PClause  FC Name t [t] t                    [PDecl' t] -- ^ A normal top-level definition.
-                | PWith    FC Name t [t] t (Maybe (Name, FC)) [PDecl' t]
-                | PClauseR FC        [t] t                    [PDecl' t]
-                | PWithR   FC        [t] t (Maybe (Name, FC)) [PDecl' t]
+data PClause' t = PClause   FC Name t [t] t                    [PDecl' t] -- ^ A normal top-level definition.
+                | PWith     FC Name t [t] t (Maybe (Name, FC)) [PDecl' t]
+                | PClauseR  FC        [t] t                    [PDecl' t]
+                | PWithR    FC        [t] t (Maybe (Name, FC)) [PDecl' t]
+                | PCoClause FC Name t     t                    [PDecl' t]
     deriving Functor
 {-!
 deriving instance Binary PClause'
@@ -1440,14 +1442,15 @@ data SyntaxInfo = Syn { using :: [Using],
                         maxline :: Maybe Int,
                         mut_nesting :: Int,
                         dsl_info :: DSL,
-                        syn_in_quasiquote :: Int }
+                        syn_in_quasiquote :: Int,
+                        in_copatterns :: Bool }
     deriving Show
 {-!
 deriving instance NFData SyntaxInfo
 deriving instance Binary SyntaxInfo
 !-}
 
-defaultSyntax = Syn [] [] [] [] [] id False False Nothing 0 initDSL 0
+defaultSyntax = Syn [] [] [] [] [] id False False Nothing 0 initDSL 0 False
 
 expandNS :: SyntaxInfo -> Name -> Name
 expandNS syn n@(NS _ _) = n
