@@ -274,5 +274,81 @@ elabDecl' _ info (PCopatterns fc clauses)
          -- Elaborate regular pattern clauses as expected
          -- Collect coclauses 
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
-         fail "Copatterns encountered"
+         ds <- collectDecls Nothing [] clauses
+         elabDecls info ds
+      where
+       collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]
+       collectDecls targetName cs ((PClauses _ opts _ [c@(PCoClause fc n lhs rhs wheres path)]) : clauses) =
+         do clause <- extractPath c
+            case (targetName, clauseName clause) of
+             (Just tn, Just cn) -> if tn == cn
+                                   then collectDecls targetName (c:cs) clauses
+                                   else do ds <- collectDecls (Just cn) [c] clauses
+                                           return $ PClauses fc opts tn (reverse cs) : ds
+             (Nothing, Just cn) -> collectDecls (Just cn) [c] clauses
+             (_,       Nothing) -> collectDecls targetName cs clauses
+       collectDecls targetName cs (d : ds) = do ds' <- collectDecls targetName cs ds
+                                                return $ d : ds'
+       collectDecls _          _  []       = return []
+
+       extractPath :: PClause -> Idris PClause
+       extractPath c@(PCoClause fc n lhs rhs wheres path) =
+         do projection <- findProjection n
+            case (projection, nextNameUnderProjection lhs) of
+             (Just (pn, recordInfo), Just (nextFn, nextLhs)) -> 
+               extractPath (PCoClause fc nextFn nextLhs rhs wheres ((pn,recordInfo):path))
+             (Nothing, _) -> return c
+       extractPath c = return c
+
+       nextNameUnderProjection :: PTerm -> Maybe (Name, PTerm)
+       nextNameUnderProjection (PApp _ (PRef _ _ n) (arg : _)) = Just (n, getTm arg)
+       nextNameUnderProjection _ = Nothing
+
+       clauseName :: PClause -> Maybe Name
+       clauseName (PClause _ n _ _ _ _) = Just n
+       clauseName (PWith _ n _ _ _ _ _) = Just n
+       clauseName (PClauseR _ _ _ _ ) = Nothing
+       clauseName (PWithR _ _ _ _ _) = Nothing
+       clauseName (PCoClause _ n _ _ _ _) = Just n
+
+       findProjection :: Name -> Idris (Maybe (Name, RecordInfo))
+       findProjection n = 
+         do ctxt <- getIState
+            let recordCtxt = idris_records ctxt
+            return $ fmap (\ri -> (n, ri)) (lookupCtxtExact n recordCtxt)
+
+       -- hasCopatterns :: PClause -> Bool
+       -- hasCopatterns (PCoClause _ _ _ _ _ [_ : _]) = True
+       -- hasCopatterns _ = False
+
+       -- toRegularPatternClause :: PClause -> Maybe PClause
+       -- toRegularPatternClause (PCoClause fc n lhs rhs wheres (_ : _) = Nothing
+       -- toRegularPatternClause (PCoClause fc n lhs rhs wheres []) = Just $ PClause fc n lhs [] rhs wheres
+       -- toRegularPatternClause c = Just c
+             
+
+       -- partitionClauses :: Name -> FnOpts -> [PClause] -> [PClause] -> Idris [PDecl]
+       -- partitionClauses fn fnOpts acc (c@(PCoClause fc n lhs rhs wheres path) : clauses)
+       --   do projection <- findProjection n
+       --      case (projection, nextNameUnderProjection lhs) of
+       --       (Just (pn, recordInfo), Just (nextFn, nextLhs)) -> 
+       --         partitionClauses nextFn fnOpts acc (PCoClause fc nextFn nextLhs rhs wheres ((pn,recordInfo):path) : clauses)
+       --       (Nothing, _) -> if fn == n 
+       --                       then partitionClauses nextFn (c : acc) clauses
+       --                       else let clauses' = reverse acc
+       --                            in PClauses (fcOf $ head clauses') fn clauses' : partitionClauses n [] clauses
+            
+        -- 1) is n the name of a projection?
+        -- 2) If yes, put it into the path and look at next applied name from lhs
+        -- 3) If no, a function name has been found
+        -- 4) Recursively find related clauses
+
+       -- fcOf :: PClause -> FC
+       -- fcOf (PClause fc _ _ _ _ _) = fc
+       -- fcOf (PWith fc _ _ _ _ _ _) = fc
+       -- fcOf (PClauseR fc _ _ _ _ _) = fc
+       -- fcOf (PWithR fc _ _ _ _ _) = fc
+       -- fcOf (PCoClause fc _ _ _ _ _) = fc
+       
+         
 elabDecl' _ _ _ = return () -- skipped this time

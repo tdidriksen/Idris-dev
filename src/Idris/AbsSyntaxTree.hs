@@ -739,7 +739,7 @@ data PClause' t = PClause   FC Name t [t] t                    [PDecl' t] -- ^ A
                 | PWith     FC Name t [t] t (Maybe (Name, FC)) [PDecl' t]
                 | PClauseR  FC        [t] t                    [PDecl' t]
                 | PWithR    FC        [t] t (Maybe (Name, FC)) [PDecl' t]
-                | PCoClause FC Name t     t                    [PDecl' t]
+                | PCoClause FC Name t     t                    [PDecl' t] [(Name, RecordInfo)]
     deriving Functor
 {-!
 deriving instance Binary PClause'

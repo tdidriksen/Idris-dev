@@ -637,13 +637,13 @@ fixErrorMsg msg fixes = msg ++ ", possible fixes:\n" ++ (concat $ intersperse "\
 
 -- | Collect 'PClauses' with the same function name
 collect :: [PDecl] -> [PDecl]
-collect (c@(PClauses fc o n (PCoClause _ _ _ _ _ : _)) : ds)
+collect (c@(PClauses fc o n (PCoClause _ _ _ _ _ _ : _)) : ds)
     -- All PCoClauses defined in the same copatterns block are collected into one PClauses
     -- Resolution happens during elaboration
     = coclauses [] (c : ds)
   where coclauses :: [PClause] -> [PDecl] -> [PDecl]
-        coclauses acc (PClauses _ _ _ [PCoClause fc' n' a' r' w'] : ds) =
-          coclauses (PCoClause fc' n' a' r' (collect w') : acc) ds
+        coclauses acc (PClauses _ _ _ [PCoClause fc' n' a' r' w' path] : ds) =
+          coclauses (PCoClause fc' n' a' r' (collect w') path : acc) ds
         coclauses acc ds = PClauses fc o n (reverse acc) : collect ds
 collect (c@(PClauses _ o _ _) : ds)
     = clauses (cname c) [] (c : ds)

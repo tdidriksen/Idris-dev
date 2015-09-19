@@ -1105,7 +1105,7 @@ clause syn
                                                return ([], [])]
                   ist <- get
                   put (ist { lastParse = Just n })
-                  return $ PCoClause fc n capp r wheres)
+                  return $ PCoClause fc n capp r wheres [])
  | otherwise
          = do wargs <- try (do pushIndent; some (wExpr syn))
               fc <- getFC

@@ -1280,6 +1280,9 @@ instance (Binary t) => Binary (PDecl' t) where
                                             put x1
                                             put x2
                                             put x3
+                PCopatterns x1 x2 -> do putWord8 18
+                                        put x1
+                                        put x2
         get
           = do i <- getWord8
                case i of
@@ -1470,6 +1473,13 @@ instance (Binary t) => Binary (PClause' t) where
                                             put x3
                                             put x4
                                             put x5
+                PCoClause x1 x2 x3 x4 x5 x6 -> do putWord8 4
+                                                  put x1
+                                                  put x2
+                                                  put x3
+                                                  put x4
+                                                  put x5
+                                                  put x6
         get
           = do i <- getWord8
                case i of
