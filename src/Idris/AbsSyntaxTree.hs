@@ -2042,6 +2042,12 @@ showCImp ppo (PWith _ n l ws r pn w)
   where
     showWs [] = empty
     showWs (x : xs) = text "|" <+> prettyImp ppo x <+> showWs xs
+showCImp ppo (PCoClause _ n l r w p)
+ = text "co" <+> text (show (map (\(pn,_) -> pn) p)) <+> prettyImp ppo l <+> text "=" <+> prettyImp ppo r
+             <+> text "where" <+> text (show w)
+  where
+    showWs [] = empty
+    showWs (x : xs) = text "|" <+> prettyImp ppo x <+> showWs xs
 
 
 showDImp :: PPOption -> PData -> Doc OutputAnnotation

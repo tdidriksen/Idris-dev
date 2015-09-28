@@ -1026,4 +1026,5 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
     abstract wn wv wty (n, argty) = (n, substTerm wv (P Bound wn wty) argty)
 
 elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock []) =
-  elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
+  do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
+     elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)

@@ -275,34 +275,43 @@ elabDecl' _ info (PCopatterns fc clauses)
          -- Collect coclauses 
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
          ds <- collectDecls Nothing [] clauses
+         logLvl 0 $ "Decls: " ++ show ds
          elabDecls info ds
       where
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]
-       collectDecls targetName cs ((PClauses _ opts _ [c@(PCoClause fc n lhs rhs wheres path)]) : clauses) =
-         do clause <- extractPath c
+       collectDecls targetName cs ((PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)) : ds) =
+         do logLvl 0 $ "Encountered CoClause: " ++ show n
+            clause <- extractPath c
             case (targetName, clauseName clause) of
              (Just tn, Just cn) -> if tn == cn
-                                   then collectDecls targetName (c:cs) clauses
-                                   else do ds <- collectDecls (Just cn) [c] clauses
-                                           return $ PClauses fc opts tn (reverse cs) : ds
-             (Nothing, Just cn) -> collectDecls (Just cn) [c] clauses
-             (_,       Nothing) -> collectDecls targetName cs clauses
-       collectDecls targetName cs (d : ds) = do ds' <- collectDecls targetName cs ds
+                                   then collectDecls targetName (clause:cs) (PClauses pfc opts pn clauses : ds)
+                                   else do ds <- collectDecls (Just cn) [clause] (PClauses pfc opts pn clauses : ds)
+                                           return $ PClauses pfc opts tn (reverse cs) : ds
+             (Nothing, Just cn) -> collectDecls (Just cn) [clause] (PClauses pfc opts pn clauses : ds)
+             (_,       Nothing) -> collectDecls targetName cs (PClauses pfc opts pn clauses : ds)
+       collectDecls (Just tn) cs (PClauses fc opts pn [] : []) =
+         return [PClauses fc opts tn (reverse cs)]
+       collectDecls targetName cs (PClauses fc opts pn [] : ds) = collectDecls targetName cs ds
+       collectDecls targetName cs (d : ds) = do logLvl 0 $ "Encountered decl: " ++ show d
+                                                ds' <- collectDecls targetName cs ds
                                                 return $ d : ds'
-       collectDecls _          _  []       = return []
+       collectDecls _          _  [] = return []
 
        extractPath :: PClause -> Idris PClause
-       extractPath c@(PCoClause fc n lhs rhs wheres path) =
-         do projection <- findProjection n
-            case (projection, nextNameUnderProjection lhs) of
+       extractPath c@(PCoClause fc n lhs@(PApp _ (PRef _ _ n') (lhsArg : _)) rhs wheres path) | n == n' =
+         do logLvl 0 $ "Path for name " ++ show n ++ ": " ++ show path
+            projection <- findProjection n
+            case (projection, nextNameUnderProjection (getTm lhsArg)) of
              (Just (pn, recordInfo), Just (nextFn, nextLhs)) -> 
-               extractPath (PCoClause fc nextFn nextLhs rhs wheres ((pn,recordInfo):path))
-             (Nothing, _) -> return c
+               do logLvl 0 $ "Found projection " ++ show pn ++ " for lhs: " ++ show lhs ++ " . Next lhs is: " ++ show nextLhs
+                  extractPath (PCoClause fc nextFn nextLhs rhs wheres ((pn,recordInfo):path))
+             (_, _) -> return c
        extractPath c = return c
 
        nextNameUnderProjection :: PTerm -> Maybe (Name, PTerm)
-       nextNameUnderProjection (PApp _ (PRef _ _ n) (arg : _)) = Just (n, getTm arg)
-       nextNameUnderProjection _ = Nothing
+       nextNameUnderProjection t@(PApp _ (PRef _ _ n) (arg : _)) = Just (n, t)
+       nextNameUnderProjection t@(PRef _ _ n)                    = Just (n, t)
+       nextNameUnderProjection _                                 = Nothing
 
        clauseName :: PClause -> Maybe Name
        clauseName (PClause _ n _ _ _ _) = Just n
@@ -312,10 +321,22 @@ elabDecl' _ info (PCopatterns fc clauses)
        clauseName (PCoClause _ n _ _ _ _) = Just n
 
        findProjection :: Name -> Idris (Maybe (Name, RecordInfo))
-       findProjection n = 
-         do ctxt <- getIState
-            let recordCtxt = idris_records ctxt
-            return $ fmap (\ri -> (n, ri)) (lookupCtxtExact n recordCtxt)
+       findProjection n_in = 
+         do let n = nsroot n_in
+            ctxt <- getIState
+            logLvl 0 $ "Trying to find projection for name " ++ show n
+            let recordCtxt = (map snd . toAlist) $ idris_records ctxt
+            let matchingRecords = map (\ri -> fmap (\pn -> (pn, ri)) (find (n ==) (map nsroot $ record_projections ri))) recordCtxt
+            case catMaybes matchingRecords of
+              [(pn, recordInfo)] -> do logLvl 0 $ "Found projection: " ++ show pn
+                                       return $ Just (pn, recordInfo)
+              _                  -> do logLvl 0 $ "No projection found"
+                                       return Nothing
+            
+            -- logLvl 0 $ "Known projections: " ++ show recordCtxt
+            -- let result = fmap (\ri -> (n, ri)) (lookupCtxtExact n recordCtxt)
+            -- logLvl 0 $ "Found projection: " ++ show (fmap (\(pn, _) -> pn) result)
+            -- return result
 
        -- hasCopatterns :: PClause -> Bool
        -- hasCopatterns (PCoClause _ _ _ _ _ [_ : _]) = True
