@@ -189,11 +189,13 @@ processNetCmd orig i h fn cmd
   where
     processNet fn Reload = processNet fn (Load fn Nothing)
     processNet fn (Load f toline) =
-        do let ist = orig { idris_options = idris_options i
-                          , idris_colourTheme = idris_colourTheme i
-                          , idris_colourRepl = False
-                          }
-           putIState ist
+  -- The $!! here prevents a space leak on reloading.
+  -- This isn't a solution - but it's a temporary stopgap.
+  -- See issue #2386
+        do putIState $!! orig { idris_options = idris_options i
+                              , idris_colourTheme = idris_colourTheme i
+                              , idris_colourRepl = False
+                              }
            setErrContext True
            setOutH h
            setQuiet True
@@ -755,6 +757,9 @@ edit f orig
          let args = line ++ [fixName f]
          runIO $ rawSystem editor args
          clearErr
+  -- The $!! here prevents a space leak on reloading.
+  -- This isn't a solution - but it's a temporary stopgap.
+  -- See issue #2386
          putIState $!! orig { idris_options = idris_options i
                             , idris_colourTheme = idris_colourTheme i
                             }
@@ -937,12 +942,14 @@ process fn (Check (PRef _ _ n))
     putTy :: PPOption -> IState -> Int -> [(Name, Bool)] -> PTerm -> Doc OutputAnnotation
     putTy ppo ist 0 bnd sc = putGoal ppo ist bnd sc
     putTy ppo ist i bnd (PPi _ n _ t sc)
-               = let current = text "  " <>
-                               (case n of
-                                   MN _ _ -> text "_"
-                                   UN nm | ('_':'_':_) <- str nm -> text "_"
-                                   _ -> bindingOf n False) <+>
-                               colon <+> align (tPretty bnd ist t) <> line
+               = let current = case n of
+                                   MN _ _ -> text ""
+                                   UN nm | ('_':'_':_) <- str nm -> text ""
+                                   _ -> text "  " <> 
+                                        bindingOf n False
+                                            <+> colon 
+                                            <+> align (tPretty bnd ist t) 
+                                            <> line
                  in
                     current <> putTy ppo ist (i-1) ((n,False):bnd) sc
     putTy ppo ist _ bnd sc = putGoal ppo ist ((n,False):bnd) sc
@@ -1218,12 +1225,16 @@ process fn (Pattelab t)
 
 process fn (Missing n)
     = do i <- getIState
-         let i' = i { idris_options = (idris_options i) { opt_showimp = True } }
+         ppOpts <- fmap ppOptionIst getIState
          case lookupCtxt n (idris_patdefs i) of
-                  [] -> iPrintError $ "Unknown operator " ++ show n
-                  [(_, tms)] ->
-                       iPrintResult (showSep "\n" (map (showTm i') tms))
-                  _ -> iPrintError $ "Ambiguous name"
+           [] -> iPrintError $ "Unknown operator " ++ show n
+           [(_, tms)] ->
+             iRenderResult (vsep (map (pprintPTerm ppOpts {ppopt_impl = True}
+                                                   []
+                                                   []
+                                                   (idris_infixes i))
+                                      tms))
+           _ -> iPrintError $ "Ambiguous name"
 process fn (DynamicLink l)
                            = do i <- getIState
                                 let importdirs = opt_importdirs (idris_options i)
@@ -1704,6 +1715,7 @@ idrisMain opts =
          iputStrLn banner
 
        orig <- getIState
+
        mods <- if idesl then return [] else loadInputs inputs Nothing
        let efile = case inputs of
                         [] -> ""
