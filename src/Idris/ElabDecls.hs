@@ -302,9 +302,9 @@ elabDecl' _ info (PCopatterns fc clauses)
          do logLvl 0 $ "Path for name " ++ show n ++ ": " ++ show path
             projection <- findProjection n
             case (projection, nextNameUnderProjection (getTm lhsArg)) of
-             (Just (pn, recordInfo), Just (nextFn, nextLhs)) -> 
+             (Just (pn, rn, ri), Just (nextFn, nextLhs)) -> 
                do logLvl 0 $ "Found projection " ++ show pn ++ " for lhs: " ++ show lhs ++ " . Next lhs is: " ++ show nextLhs
-                  extractPath (PCoClause fc nextFn nextLhs rhs wheres ((pn,recordInfo):path))
+                  extractPath (PCoClause fc nextFn nextLhs rhs wheres ((pn, rn, ri):path))
              (_, _) -> return c
        extractPath c = return c
 
@@ -320,18 +320,20 @@ elabDecl' _ info (PCopatterns fc clauses)
        clauseName (PWithR _ _ _ _ _) = Nothing
        clauseName (PCoClause _ n _ _ _ _) = Just n
 
-       findProjection :: Name -> Idris (Maybe (Name, RecordInfo))
+       findProjection :: Name -> Idris (Maybe (Name, Name, RecordInfo))
        findProjection n_in = 
          do let n = nsroot n_in
             ctxt <- getIState
             logLvl 0 $ "Trying to find projection for name " ++ show n
-            let recordCtxt = (map snd . toAlist) $ idris_records ctxt
-            let matchingRecords = map (\ri -> fmap (\pn -> (pn, ri)) (find (n ==) (map nsroot $ record_projections ri))) recordCtxt
+            let recordCtxt = toAlist $ idris_records ctxt
+            let matchingRecords = map (\(rn, ri) -> fmap (\pn -> (pn, rn, ri)) (find (\m -> n == nsroot m) $ record_projections ri)) recordCtxt
             case catMaybes matchingRecords of
-              [(pn, recordInfo)] -> do logLvl 0 $ "Found projection: " ++ show pn
-                                       return $ Just (pn, recordInfo)
-              _                  -> do logLvl 0 $ "No projection found"
-                                       return Nothing
+              [(pn, recordName, recordInfo)] ->
+                do logLvl 0 $ "Found projection: " ++ show pn
+                   return $ Just (pn, recordName, recordInfo)
+              _ -> 
+                do logLvl 0 $ "No projection found"
+                   return Nothing
             
             -- logLvl 0 $ "Known projections: " ++ show recordCtxt
             -- let result = fmap (\ri -> (n, ri)) (lookupCtxtExact n recordCtxt)

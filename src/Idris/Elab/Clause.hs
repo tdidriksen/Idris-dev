@@ -1028,3 +1028,148 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
 elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock []) =
   do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
+
+elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock path) = -- Copatterns clauses
+  -- do i <- getIState
+  --    logLvl 0 $ "matchClauseTest: " ++ show (matchClause i lhs_in_as rhs_in_as)
+  --    elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
+  do let tcgen = Dictionary `elem` opts
+     push_estack fname False
+     i <- getIState
+     let ctxt = tt_ctxt i
+     let (lhs_in, rhs_in) = desugarAs lhs_in_as rhs_in_as
+
+     -- Build the LHS as an "Infer", and pull out its type and
+     -- pattern bindings
+     inf <- isTyInferred fname
+     -- get the parameters first, to pass through to any where block
+     let fn_ty = case lookupTy fname ctxt of
+                      [t] -> t
+                      _ -> error "Can't happen (elabClause function type)"
+     let fn_is = case lookupCtxt fname (idris_implicits i) of
+                      [t] -> t
+                      _ -> []
+     let norm_ty = normalise ctxt [] fn_ty
+     let params = getParamsInType i [] fn_is norm_ty
+
+     let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params norm_ty (addImplPat i lhs_in)
+     let colhs = mkPApp lhs path
+     logLvl 0 ("LHS: " ++ show fc ++ " " ++ showTmImpls lhs)
+     logLvl 0 ("Fixed parameters: " ++ show params ++ " from " ++ show lhs_in ++ "\n" ++ show (fn_ty, fn_is))
+     logLvl 0 ("coLHS: " ++ show fc ++ " " ++ showTmImpls colhs)
+     -- ((ElabResult lhs' dlhs [] ctxt' newDecls highlights, probs, inj), _) <-
+     --    tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+     --             (do res <- errAt "left hand side of " fname
+     --                          (erun fc (buildTC i info ELHS opts fname (infTerm lhs)))
+     --                 probs <- get_probs
+     --                 inj <- get_inj
+     --                 return (res, probs, inj))
+     ((ElabResult colhs' codlhs [] coctxt' conewDecls cohighlights, coprobs, coinj), _) <-
+        tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+                 (do res <- errAt "left hand side of " fname
+                              (erun fc (buildTC i info ELHS opts fname (infTerm colhs)))
+                     probs <- get_probs
+                     inj <- get_inj
+                     return (res, probs, inj))
+     setContext coctxt'
+     processTacticDecls info conewDecls
+     sendHighlighting cohighlights
+
+     when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) coprobs)
+
+     let lhs_tm = orderPats (getInferTerm colhs')
+     let lhs_ty = getInferType colhs'
+     let ret_ty = getRetTy (explicitNames (normalise ctxt [] lhs_ty))
+     logLvl 0 ("lhs_tm: " ++ show lhs_tm)
+     logLvl 0 ("lhs_ty: " ++ show lhs_ty)
+     logLvl 0 ("ret_ty: " ++ show ret_ty)
+     elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
+  where
+    mkPApp :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
+    mkPApp t ((pn,_,_) : path') = mkPApp (PApp fc (PRef fc [] pn) [pexp t]) path'
+    mkPApp t []                 = t
+
+    -- typeWithProjections :: Type -> Type
+    -- typeWithProjections _ = undefined
+
+
+        -- let fn_ty = case lookupTy fname (tt_ctxt i) of
+        --                  [t] -> t
+        --                  _ -> error "Can't happen (elabClause function type)"
+        -- let fn_is = case lookupCtxt fname (idris_implicits i) of
+        --                  [t] -> t
+        --                  _ -> []
+        -- let params = getParamsInType i [] fn_is (normalise ctxt [] fn_ty)
+        -- let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params fn_ty (addImplPat i lhs_in)
+        -- logLvl 2 ("LHS: " ++ show lhs)
+        -- (ElabResult lhs' dlhs [] ctxt' newDecls highlights, _) <-
+        --     tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+        --       (errAt "left hand side of with in " fname
+        --         (erun fc (buildTC i info ELHS opts fname (infTerm lhs))) )
+        -- setContext ctxt'
+        -- processTacticDecls info newDecls
+        -- sendHighlighting highlights
+
+        -- let lhs_tm = orderPats (getInferTerm lhs')
+        -- let lhs_ty = getInferType lhs'
+        -- let ret_ty = getRetTy (explicitNames (normalise ctxt [] lhs_ty))
+        -- let static_names = getStaticNames i lhs_tm
+
+     -- let tcgen = Dictionary `elem` opts
+     -- push_estack fname False
+     -- ctxt <- getContext
+     -- let (lhs_in, rhs_in) = desugarAs lhs_in_as rhs_in_as
+
+     -- -- Build the LHS as an "Infer", and pull out its type and
+     -- -- pattern bindings
+     -- i <- getIState
+     -- inf <- isTyInferred fname
+     -- -- get the parameters first, to pass through to any where block
+     -- let fn_ty = case lookupTy fname (tt_ctxt i) of
+     --                  [t] -> t
+     --                  _ -> error "Can't happen (elabClause function type)"
+     -- let fn_is = case lookupCtxt fname (idris_implicits i) of
+     --                  [t] -> t
+     --                  _ -> []
+     -- let norm_ty = normalise ctxt [] fn_ty
+     -- let params = getParamsInType i [] fn_is norm_ty
+     -- let tcparams = getTCParamsInType i [] fn_is norm_ty
+
+     -- let lhs = mkLHSapp $ stripLinear i $ stripUnmatchable i $
+     --             propagateParams i params norm_ty (addImplPat i lhs_in)
+     -- logLvl 10 (show (params, fn_ty) ++ " " ++ showTmImpls (addImplPat i lhs_in))
+     -- logLvl 5 ("LHS: " ++ show fc ++ " " ++ showTmImpls lhs)
+     -- logLvl 4 ("Fixed parameters: " ++ show params ++ " from " ++ show lhs_in ++
+     --           "\n" ++ show (fn_ty, fn_is))
+
+     -- ((ElabResult lhs' dlhs [] ctxt' newDecls highlights, probs, inj), _) <-
+     --    tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+     --             (do res <- errAt "left hand side of " fname
+     --                          (erun fc (buildTC i info ELHS opts fname (infTerm lhs)))
+     --                 probs <- get_probs
+     --                 inj <- get_inj
+     --                 return (res, probs, inj))
+     -- setContext ctxt'
+     -- processTacticDecls info newDecls
+     -- sendHighlighting highlights
+
+     -- when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) probs)
+
+     -- let lhs_tm = orderPats (getInferTerm lhs')
+     -- let lhs_ty = getInferType lhs'
+     -- let static_names = getStaticNames i lhs_tm
+
+     -- logLvl 3 ("Elaborated: " ++ show lhs_tm)
+     -- logLvl 3 ("Elaborated type: " ++ show lhs_ty)
+     -- logLvl 5 ("Injective: " ++ show fname ++ " " ++ show inj)
+
+     -- -- If we're inferring metavariables in the type, don't recheck,
+     -- -- because we're only doing this to try to work out those metavariables
+     -- (clhs_c, clhsty) <- if not inf
+     --                        then recheckC_borrowing False (PEGenerated `notElem` opts)
+     --                                                [] fc id [] lhs_tm
+     --                        else return (lhs_tm, lhs_ty)
+     -- let clhs = normalise ctxt [] clhs_c
+     -- let borrowed = borrowedNames [] clhs
+--   do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
+--      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)

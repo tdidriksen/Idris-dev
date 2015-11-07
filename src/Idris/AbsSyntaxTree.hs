@@ -748,7 +748,7 @@ data PClause' t = PClause   FC Name t [t] t                    [PDecl' t] -- ^ A
                 | PWith     FC Name t [t] t (Maybe (Name, FC)) [PDecl' t]
                 | PClauseR  FC        [t] t                    [PDecl' t]
                 | PWithR    FC        [t] t (Maybe (Name, FC)) [PDecl' t]
-                | PCoClause FC Name t     t                    [PDecl' t] [(Name, RecordInfo)]
+                | PCoClause FC Name t     t                    [PDecl' t] [(Name, Name, RecordInfo)]
     deriving Functor
 {-!
 deriving instance Binary PClause'
@@ -2045,7 +2045,7 @@ showCImp ppo (PWith _ n l ws r pn w)
     showWs [] = empty
     showWs (x : xs) = text "|" <+> prettyImp ppo x <+> showWs xs
 showCImp ppo (PCoClause _ n l r w p)
- = text "co" <+> text (show (map (\(pn,_) -> pn) p)) <+> prettyImp ppo l <+> text "=" <+> prettyImp ppo r
+ = text "co" <+> text (show (map (\(pn,_,_) -> pn) p)) <+> prettyImp ppo l <+> text "=" <+> prettyImp ppo r
              <+> text "where" <+> text (show w)
   where
     showWs [] = empty
