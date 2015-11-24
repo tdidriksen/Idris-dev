@@ -28,9 +28,10 @@ import qualified Util.Pretty as U
 import Control.Applicative ((<$>))
 import Control.Monad
 import Control.Monad.State.Strict
+import Data.Foldable (for_)
 import Data.List
 import qualified Data.Map as M
-import Data.Maybe (mapMaybe, fromMaybe, catMaybes)
+import Data.Maybe (mapMaybe, fromMaybe, catMaybes, maybeToList)
 import qualified Data.Set as S
 import qualified Data.Text as T
 
@@ -137,15 +138,16 @@ build ist info emode opts fn tm
 -- (Separate, so we don't go overboard resolving things that we don't
 -- know about yet on the LHS of a pattern def)
 
-buildTC :: IState -> ElabInfo -> ElabMode -> FnOpts -> Name -> PTerm ->
+buildTC :: IState -> ElabInfo -> ElabMode -> FnOpts -> Name -> 
+         [Name] -> -- Cached names in the PTerm, before adding PAlternatives
+         PTerm ->
          ElabD ElabResult
-buildTC ist info emode opts fn tm
-    = do -- set name supply to begin after highest index in tm
-         let ns = allNamesIn tm
-         let tmIn = tm
+buildTC ist info emode opts fn ns tm
+    = do let tmIn = tm
          let inf = case lookupCtxt fn (idris_tyinfodata ist) of
                         [TIPartial] -> True
                         _ -> False
+         -- set name supply to begin after highest index in tm 
          initNextNameFrom ns
          elab ist info emode opts fn tm
          probs <- get_probs
@@ -308,7 +310,7 @@ elab ist info emode opts fn tm
     forceErr orig env (InfiniteUnify _ t _)
        | (P _ (UN ht) _, _) <- unApply (normalise (tt_ctxt ist) env t),
             ht == txt "Lazy'" = notDelay orig
-    forceErr orig env (Elaborating _ _ t) = forceErr orig env t
+    forceErr orig env (Elaborating _ _ _ t) = forceErr orig env t
     forceErr orig env (ElaboratingArg _ _ _ t) = forceErr orig env t
     forceErr orig env (At _ t) = forceErr orig env t
     forceErr orig env t = False
@@ -361,7 +363,7 @@ elab ist info emode opts fn tm
     elab' ina fc (PResolveTC (FC "HACK" _ _)) -- for chasing parent classes
        = do g <- goal; resolveTC' False False 5 g fn ist
     elab' ina fc (PResolveTC fc')
-        = do c <- getNameFrom (sMN 0 "class")
+        = do c <- getNameFrom (sMN 0 "__class")
              instanceArg c
     -- Elaborate the equality type first homogeneously, then
     -- heterogeneously as a fallback
@@ -442,16 +444,17 @@ elab ist info emode opts fn tm
              uns <- get_usedns
              let as' = map (mkUniqueNames (uns ++ map snd ms) ms) as_pruned
              (h : hs) <- get_holes
---              trace (show (map showHd as')) $ 
              ty <- goal
              case as' of
-                  [] -> lift $ tfail $ NoValidAlts (map showHd as)
+                  [] -> do hds <- mapM showHd as
+                           lift $ tfail $ NoValidAlts hds
                   [x] -> elab' ina fc x
                   -- If there's options, try now, and if that fails, postpone
                   -- to later.
                   _ -> handleError isAmbiguous
-                           (tryAll (zip (map (elab' ina fc) as') 
-                                        (map showHd as')))
+                           (do hds <- mapM showHd as'
+                               tryAll (zip (map (elab' ina fc) as')
+                                           hds))
                         (do movelast h
                             delayElab 5 $ do
                               hs <- get_holes
@@ -460,16 +463,17 @@ elab ist info emode opts fn tm
                                   as'' <- doPrune as'
                                   case as'' of
                                        [x] -> elab' ina fc x
-                                       _ -> tryAll (zip (map (elab' ina fc) as'') 
-                                                        (map showHd as'')))
+                                       _ -> do hds <- mapM showHd as''
+                                               tryAll (zip (map (elab' ina fc) as'')
+                                                           hds))
         where showHd (PApp _ (PRef _ _ (UN l)) [_, _, arg])
                  | l == txt "Delay" = showHd (getTm arg)
-              showHd (PApp _ (PRef _ _ n) _) = n
-              showHd (PRef _ _ n) = n
+              showHd (PApp _ (PRef _ _ n) _) = return n
+              showHd (PRef _ _ n) = return n
               showHd (PApp _ h _) = showHd h
-              showHd x = NErased -- We probably should do something better than this here
+              showHd x = getNameFrom (sMN 0 "_") -- We probably should do something better than this here
 
-              doPrune as = 
+              doPrune as =
                   do compute
                      ty <- goal
                      let (tc, _) = unApply (unDelay ty)
@@ -479,10 +483,9 @@ elab ist info emode opts fn tm
               unDelay t | (P _ (UN l) _, [_, arg]) <- unApply t,
                           l == txt "Lazy'" = unDelay arg
                         | otherwise = t
-                 
 
               isAmbiguous (CantResolveAlts _) = delayok
-              isAmbiguous (Elaborating _ _ e) = isAmbiguous e
+              isAmbiguous (Elaborating _ _ _ e) = isAmbiguous e
               isAmbiguous (ElaboratingArg _ _ _ e) = isAmbiguous e
               isAmbiguous (At _ e) = isAmbiguous e
               isAmbiguous _ = False
@@ -711,8 +714,9 @@ elab ist info emode opts fn tm
                                    g <- goal
                                    hs <- get_holes
                                    if all (\n -> n == tyn || not (n `elem` hs)) (freeNames g)
-                                    then try (resolveTC' True False 10 g fn ist)
-                                             (movelast n)
+                                    then handleError (tcRecoverable emode)
+                                           (resolveTC' True False 10 g fn ist)
+                                           (movelast n)
                                     else movelast n)
                          (ivs' \\ ivs)
                -- HACK: If the name leaks into its type, it may leak out of
@@ -883,7 +887,8 @@ elab ist info emode opts fn tm
                                                     env <- get_env
                                                     hs <- get_holes
                                                     if all (\n -> not (n `elem` hs)) (freeNames g)
-                                                     then try (resolveTC' False False 10 g fn ist)
+                                                     then handleError (tcRecoverable emode)
+                                                              (resolveTC' False False 10 g fn ist)
                                                               (movelast n)
                                                      else movelast n)
                                           (ivs' \\ ivs)
@@ -1023,12 +1028,22 @@ elab ist info emode opts fn tm
                    solve
     elab' ina _ c@(PCase fc scr opts)
         = do attack
+             
              tyn <- getNameFrom (sMN 0 "scty")
              claim tyn RType
              valn <- getNameFrom (sMN 0 "scval")
              scvn <- getNameFrom (sMN 0 "scvar")
              claim valn (Var tyn)
              letbind scvn (Var tyn) (Var valn)
+             
+             -- Start filling in the scrutinee type, if we can work one
+             -- out from the case options
+             let scrTy = getScrType (map fst opts)
+             case scrTy of
+                  Nothing -> return ()
+                  Just ty -> do focus tyn
+                                elabE ina (Just fc) ty
+
              focus valn
              elabE (ina { e_inarg = True }) (Just fc) scr
              -- Solve any remaining implicits - we need to solve as many
@@ -1057,7 +1072,7 @@ elab ist info emode opts fn tm
              let args' = filter (\(n, _) -> n `notElem` argsDropped) args
 
              attack
-             cname' <- defer argsDropped (mkN (mkCaseName fn))
+             cname' <- defer argsDropped (mkN (mkCaseName fc fn))
              solve
 
              -- if the scrutinee is one of the 'args' in env, we should
@@ -1070,14 +1085,29 @@ elab ist info emode opts fn tm
              -- if we haven't got the type yet, hopefully we'll get it later!
              movelast tyn
              solve
-        where mkCaseName (NS n ns) = NS (mkCaseName n) ns
-              mkCaseName n = SN (CaseN n)
+        where mkCaseName fc (NS n ns) = NS (mkCaseName fc n) ns
+              mkCaseName fc n = SN (CaseN (FC' fc) n)
 --               mkCaseName (UN x) = UN (x ++ "_case")
 --               mkCaseName (MN i x) = MN i (x ++ "_case")
               mkN n@(NS _ _) = n
               mkN n = case namespace info of
                         Just xs@(_:_) -> sNS n xs
                         _ -> n
+
+              getScrType [] = Nothing
+              getScrType (f : os) = maybe (getScrType os) Just (getAppType f)
+
+              getAppType (PRef _ _ n) = 
+                 case lookupTyName n (tt_ctxt ist) of
+                      [(n', ty)] | isDConName n' (tt_ctxt ist) -> 
+                         case unApply (getRetTy ty) of
+                           (P _ tyn _, args) ->
+                               Just (PApp fc (PRef fc [] tyn)
+                                    (map pexp (map (const Placeholder) args)))
+                           _ -> Nothing
+                      _ -> Nothing -- ambiguity is no help to us!
+              getAppType (PApp _ t as) = getAppType t
+              getAppType _ = Nothing
 
               inApp (P _ n _) = [n]
               inApp (App _ f a) = inApp f ++ inApp a
@@ -1237,17 +1267,18 @@ elab ist info emode opts fn tm
     elab' ina fc (PRunElab fc' tm ns) =
       do attack
          n <- getNameFrom (sMN 0 "tacticScript")
-         n' <- getNameFrom (sMN 0 "tacticExpr")
          let scriptTy = RApp (Var (sNS (sUN "Elab")
                                   ["Elab", "Reflection", "Language"]))
                              (Var unitTy)
          claim n scriptTy
-         movelast n
-         letbind n' scriptTy (Var n)
          focus n
+         attack -- to get an extra hole
          elab' ina (Just fc') tm
+         script <- get_guess
+         fullyElaborated script
+         solve -- eliminate the hole. Becuase there are no references, the script is only in the binding
          env <- get_env
-         runElabAction ist (maybe fc' id fc) env (P Bound n' Erased) ns
+         runElabAction ist (maybe fc' id fc) env script ns
          solve
     elab' ina fc (PConstSugar constFC tm) =
       -- Here we elaborate the contained term, then calculate
@@ -1360,6 +1391,19 @@ elab ist info emode opts fn tm
     getFC d (PAlternative _ _ (x:_)) = getFC d x
     getFC d x = d
 
+    -- Fail if a term is not yet fully elaborated (e.g. if it contains
+    -- case block functions that don't yet exist)
+    fullyElaborated :: Term -> ElabD ()
+    fullyElaborated (P _ n _) =
+      do EState cases _ _ _ <- getAux
+         case lookup n cases of
+           Nothing -> return ()
+           Just _  -> lift . tfail $ ElabScriptStaging n
+    fullyElaborated (Bind n b body) = fullyElaborated body >> for_ b fullyElaborated
+    fullyElaborated (App _ l r) = fullyElaborated l >> fullyElaborated r
+    fullyElaborated (Proj t _) = fullyElaborated t
+    fullyElaborated _ = return ()
+
     insertLazy :: PTerm -> ElabD PTerm
     insertLazy t@(PApp _ (PRef _ _ (UN l)) _) | l == txt "Delay" = return t
     insertLazy t@(PApp _ (PRef _ _ (UN l)) _) | l == txt "Force" = return t
@@ -1396,9 +1440,9 @@ elab ist info emode opts fn tm
     notImplicitable _ = False
 
     insertScopedImps fc (Bind n (Pi im@(Just i) _ _) sc) xs
-      | tcinstance i
+      | tcinstance i && not (toplevel_imp i)
           = pimp n (PResolveTC fc) True : insertScopedImps fc sc xs
-      | otherwise
+      | not (toplevel_imp i)
           = pimp n Placeholder True : insertScopedImps fc sc xs
     insertScopedImps fc (Bind n (Pi _ _ _) sc) (x : xs)
         = x : insertScopedImps fc sc xs
@@ -1646,7 +1690,7 @@ solveAuto ist fn ambigok (n, failc)
         cantsolve (CantSolveGoal _ _) = True
         cantsolve (InternalMsg _) = True
         cantsolve (At _ e) = cantsolve e
-        cantsolve (Elaborating _ _ e) = cantsolve e
+        cantsolve (Elaborating _ _ _ e) = cantsolve e
         cantsolve (ElaboratingArg _ _ _ e) = cantsolve e
         cantsolve _ = False
 
@@ -1654,6 +1698,15 @@ solveAutos :: IState -> Name -> Bool -> ElabD ()
 solveAutos ist fn ambigok
            = do autos <- get_autos
                 mapM_ (solveAuto ist fn ambigok) (map (\(n, (fc, _)) -> (n, fc)) autos)
+
+-- Return true if the given error suggests a type class failure is
+-- recoverable
+tcRecoverable :: ElabMode -> Err -> Bool
+tcRecoverable ERHS (CantResolve f g) = f
+tcRecoverable ETyDecl (CantResolve f g) = f
+tcRecoverable e (ElaboratingArg _ _ _ err) = tcRecoverable e err
+tcRecoverable e (At _ err) = tcRecoverable e err
+tcRecoverable _ _ = True
 
 trivial' ist
     = trivial (elab ist toplevel ERHS [] (sMN 0 "tac")) ist
@@ -1668,38 +1721,25 @@ resolveTC' di mv depth tm n ist
 
 collectDeferred :: Maybe Name -> [Name] -> Context ->
                    Term -> State [(Name, (Int, Maybe Name, Type, [Name]))] Term
-collectDeferred top casenames ctxt (Bind n (GHole i psns t) app) =
-    do ds <- get
-       t' <- collectDeferred top casenames ctxt t
-       when (not (n `elem` map fst ds)) $ put (ds ++ [(n, (i, top, tidyArg [] t', psns))])
-       collectDeferred top casenames ctxt app
+collectDeferred top casenames ctxt tm = cd [] tm
   where
-    -- Evaluate the top level functions in arguments, if possible, and if it's
-    -- not a name we're immediately going to define in a case block, so that
-    -- any immediate specialisation of the function applied to constructors 
-    -- can be done
-    tidyArg env (Bind n b@(Pi im t k) sc) 
-        = Bind n (Pi im (tidy ctxt env t) k)
-                 (tidyArg ((n, b) : env) sc)
-    tidyArg env t = tidy ctxt env t
-
-    tidy ctxt env t = normalise ctxt env t
-
-    getFn (Bind n (Lam _) t) = getFn t
-    getFn t | (f, a) <- unApply t = f
-
-collectDeferred top ns ctxt (Bind n b t) 
-     = do b' <- cdb b
-          t' <- collectDeferred top ns ctxt t
-          return (Bind n b' t')
-  where
-    cdb (Let t v)   = liftM2 Let (collectDeferred top ns ctxt t) (collectDeferred top ns ctxt v)
-    cdb (Guess t v) = liftM2 Guess (collectDeferred top ns ctxt t) (collectDeferred top ns ctxt v)
-    cdb b           = do ty' <- collectDeferred top ns ctxt (binderTy b)
-                         return (b { binderTy = ty' })
-collectDeferred top ns ctxt (App s f a) = liftM2 (App s) (collectDeferred top ns ctxt f) 
-                                                         (collectDeferred top ns ctxt a)
-collectDeferred top ns ctxt t = return t
+    cd env (Bind n (GHole i psns t) app) =
+        do ds <- get
+           t' <- collectDeferred top casenames ctxt t
+           when (not (n `elem` map fst ds)) $ put (ds ++ [(n, (i, top, t', psns))])
+           cd env app
+    cd env (Bind n b t) 
+         = do b' <- cdb b
+              t' <- cd ((n, b) : env) t
+              return (Bind n b' t')
+      where
+        cdb (Let t v)   = liftM2 Let (cd env t) (cd env v)
+        cdb (Guess t v) = liftM2 Guess (cd env t) (cd env v)
+        cdb b           = do ty' <- cd env (binderTy b)
+                             return (b { binderTy = ty' })
+    cd env (App s f a) = liftM2 (App s) (cd env f) 
+                                        (cd env a)
+    cd env t = return t
 
 case_ :: Bool -> Bool -> IState -> Name -> PTerm -> ElabD ()
 case_ ind autoSolve ist fn tm = do
@@ -1785,10 +1825,10 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
     -- step, the output is the (reflected) term returned.
     runTacTm :: Term -> ElabD Term
     runTacTm (unApply -> tac@(P _ n _, args))
-      | n == tacN "prim__Solve", [] <- args
+      | n == tacN "Prim__Solve", [] <- args
       = do solve
            returnUnit
-      | n == tacN "prim__Goal", [] <- args
+      | n == tacN "Prim__Goal", [] <- args
       = do hs <- get_holes
            case hs of
              (h : _) -> do t <- goal
@@ -1798,27 +1838,19 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
              [] -> lift . tfail . Msg $
                      "Elaboration is complete. There are no goals."
 
-      | n == tacN "prim__Holes", [] <- args
+      | n == tacN "Prim__Holes", [] <- args
       = do hs <- get_holes
            fmap fst . checkClosed $
              mkList (Var $ reflm "TTName") (map reflectName hs)
-      | n == tacN "prim__Guess", [] <- args
-      = do ok <- is_guess
-           if ok
-              then do guess <- fmap forget get_guess
-                      fmap fst . get_type_val $
-                        RApp (RApp (Var (sNS (sUN "Just") ["Maybe", "Prelude"]))
-                                   (Var (reflm "TT")))
-                             guess
-              else fmap fst . checkClosed $
-                     RApp (Var (sNS (sUN "Nothing") ["Maybe", "Prelude"]))
-                          (Var (reflm "TT"))
-      | n == tacN "prim__LookupTy", [n] <- args
+      | n == tacN "Prim__Guess", [] <- args
+      = do g <- get_guess
+           fmap fst . checkClosed $ reflect g
+      | n == tacN "Prim__LookupTy", [n] <- args
       = do n' <- reifyTTName n
            ctxt <- get_context
-           let getNameTypeAndType = \case Function ty _ -> (Ref, ty)
-                                          TyDecl nt ty -> (nt, ty)
-                                          Operator ty _ _ -> (Ref, ty)
+           let getNameTypeAndType = \case Function ty _       -> (Ref, ty)
+                                          TyDecl nt ty        -> (nt, ty)
+                                          Operator ty _ _     -> (Ref, ty)
                                           CaseOp _ ty _ _ _ _ -> (Ref, ty)
                -- Idris tuples nest to the right
                reflectTriple (x, y, z) =
@@ -1835,46 +1867,70 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
                                              , raw_apply (Var pairTy) [ Var (reflm "NameType")
                                                                        , Var (reflm "TT")]])
                      defs
-      | n == tacN "prim__LookupDatatype", [name] <- args
+      | n == tacN "Prim__LookupDatatype", [name] <- args
       = do n' <- reifyTTName name
            datatypes <- get_datatypes
            ctxt <- get_context
            fmap fst . checkClosed $
              rawList (Var (tacN "Datatype"))
                      (map reflectDatatype (buildDatatypes ist n'))
-      | n == tacN "prim__SourceLocation", [] <- args
+      | n == tacN "Prim__LookupArgs", [name] <- args
+      = do n' <- reifyTTName name
+           let listTy = Var (sNS (sUN "List") ["List", "Prelude"])
+               listFunArg = RApp listTy (Var (tacN "FunArg"))
+            -- Idris tuples nest to the right
+           let reflectTriple (x, y, z) =
+                 raw_apply (Var pairCon) [ Var (reflm "TTName")
+                                         , raw_apply (Var pairTy) [listFunArg, Var (reflm "Raw")]
+                                         , x
+                                         , raw_apply (Var pairCon) [listFunArg, Var (reflm "Raw")
+                                                                   , y, z]]
+           let out =
+                 [ reflectTriple (reflectName fn, reflectList (Var (tacN "FunArg")) (map reflectArg args), reflectRaw res)
+                 | (fn, pargs) <- lookupCtxtName n' (idris_implicits ist)
+                 , (args, res) <- getArgs pargs . forget <$>
+                                   maybeToList (lookupTyExact fn (tt_ctxt ist))
+                 ]
+
+           fmap fst . checkClosed $
+             rawList (raw_apply (Var pairTy) [Var (reflm "TTName")
+                                             , raw_apply (Var pairTy) [ RApp listTy
+                                                                             (Var (tacN "FunArg"))
+                                                                      , Var (reflm "Raw")]])
+                     out
+      | n == tacN "Prim__SourceLocation", [] <- args
       = fmap fst . checkClosed $
           reflectFC fc
-      | n == tacN "prim__Namespace", [] <- args
+      | n == tacN "Prim__Namespace", [] <- args
       = fmap fst . checkClosed $
           rawList (RConstant StrType) (map (RConstant . Str) ns)
-      | n == tacN "prim__Env", [] <- args
+      | n == tacN "Prim__Env", [] <- args
       = do env <- get_env
            fmap fst . checkClosed $ reflectEnv env
-      | n == tacN "prim__Fail", [_a, errs] <- args
+      | n == tacN "Prim__Fail", [_a, errs] <- args
       = do errs' <- eval errs
            parts <- reifyReportParts errs'
            lift . tfail $ ReflectionError [parts] (Msg "")
-      | n == tacN "prim__PureElab", [_a, tm] <- args
+      | n == tacN "Prim__PureElab", [_a, tm] <- args
       = return tm
-      | n == tacN "prim__BindElab", [_a, _b, first, andThen] <- args
+      | n == tacN "Prim__BindElab", [_a, _b, first, andThen] <- args
       = do first' <- eval first
            res <- eval =<< runTacTm first'
            next <- eval (App Complete andThen res)
            runTacTm next
-      | n == tacN "prim__Try", [_a, first, alt] <- args
+      | n == tacN "Prim__Try", [_a, first, alt] <- args
       = do first' <- eval first
            alt' <- eval alt
            try' (runTacTm first') (runTacTm alt') True
-      | n == tacN "prim__Fill", [raw] <- args
+      | n == tacN "Prim__Fill", [raw] <- args
       = do raw' <- reifyRaw =<< eval raw
-           fill raw'
+           apply raw' []
            returnUnit
-      | n == tacN "prim__Apply" || n == tacN "prim__MatchApply"
+      | n == tacN "Prim__Apply" || n == tacN "Prim__MatchApply"
       , [raw, argSpec] <- args
       = do raw' <- reifyRaw =<< eval raw
-           argSpec' <- reifyList (reifyPair reifyBool reifyInt) argSpec
-           let op = if n == tacN "prim__Apply"
+           argSpec' <- map (\b -> (b, 0)) <$> reifyList reifyBool argSpec
+           let op = if n == tacN "Prim__Apply"
                        then apply
                        else match_apply
            ns <- op raw' argSpec'
@@ -1884,91 +1940,88 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
                                (reflectName n1, reflectName n2)
                      | (n1, n2) <- ns
                      ]
-      | n == tacN "prim__Gensym", [hint] <- args
+      | n == tacN "Prim__Gensym", [hint] <- args
       = do hintStr <- eval hint
            case hintStr of
              Constant (Str h) -> do
                n <- getNameFrom (sMN 0 h)
                fmap fst $ get_type_val (reflectName n)
              _ -> fail "no hint"
-      | n == tacN "prim__Claim", [n, ty] <- args
+      | n == tacN "Prim__Claim", [n, ty] <- args
       = do n' <- reifyTTName n
            ty' <- reifyRaw ty
            claim n' ty'
            returnUnit
-      | n == tacN "prim__Check", [raw] <- args
-      = do raw' <- reifyRaw =<< eval raw
+      | n == tacN "Prim__Check", [env', raw] <- args
+      = do env <- reifyEnv env'
+           raw' <- reifyRaw =<< eval raw
            ctxt <- get_context
-           env <- get_env
            (tm, ty) <- lift $ check ctxt env raw'
            fmap fst . checkClosed $
              rawPair (Var (reflm "TT"), Var (reflm "TT"))
                      (reflect tm,       reflect ty)
-      | n == tacN "prim__Forget", [tt] <- args
-      = do tt' <- reifyTT tt
-           fmap fst . checkClosed . reflectRaw $ forget tt'
-      | n == tacN "prim__Attack", [] <- args
+      | n == tacN "Prim__Attack", [] <- args
       = do attack
            returnUnit
-      | n == tacN "prim__Rewrite", [rule] <- args
+      | n == tacN "Prim__Rewrite", [rule] <- args
       = do r <- reifyRaw rule
            rewrite r
            returnUnit
-      | n == tacN "prim__Focus", [what] <- args
+      | n == tacN "Prim__Focus", [what] <- args
       = do n' <- reifyTTName what
            hs <- get_holes
            if elem n' hs
               then focus n' >> returnUnit
               else lift . tfail . Msg $ "The name " ++ show n' ++ " does not denote a hole"
-      | n == tacN "prim__Unfocus", [what] <- args
+      | n == tacN "Prim__Unfocus", [what] <- args
       = do n' <- reifyTTName what
            movelast n'
            returnUnit
-      | n == tacN "prim__Intro", [mn] <- args
+      | n == tacN "Prim__Intro", [mn] <- args
       = do n <- case fromTTMaybe mn of
                   Nothing -> return Nothing
                   Just name -> fmap Just $ reifyTTName name
            intro n
            returnUnit
-      | n == tacN "prim__Forall", [n, ty] <- args
+      | n == tacN "Prim__Forall", [n, ty] <- args
       = do n' <- reifyTTName n
            ty' <- reifyRaw ty
            forall n' Nothing ty'
            returnUnit
-      | n == tacN "prim__PatVar", [n] <- args
+      | n == tacN "Prim__PatVar", [n] <- args
       = do n' <- reifyTTName n
            patvar' n'
            returnUnit
-      | n == tacN "prim__PatBind", [n] <- args
+      | n == tacN "Prim__PatBind", [n] <- args
       = do n' <- reifyTTName n
            patbind n'
            returnUnit
-      | n == tacN "prim__LetBind", [n, ty, tm] <- args
+      | n == tacN "Prim__LetBind", [n, ty, tm] <- args
       = do n' <- reifyTTName n
            ty' <- reifyRaw ty
            tm' <- reifyRaw tm
            letbind n' ty' tm'
            returnUnit
-      | n == tacN "prim__Compute", [] <- args
+      | n == tacN "Prim__Compute", [] <- args
       = do compute ; returnUnit
-      | n == tacN "prim__Normalise", [env, tm] <- args
+      | n == tacN "Prim__Normalise", [env, tm] <- args
       = do env' <- reifyEnv env
            tm' <- reifyTT tm
            ctxt <- get_context
            let out = normaliseAll ctxt env' (finalise tm')
            fmap fst . checkClosed $ reflect out
-      | n == tacN "prim__Whnf", [tm] <- args
+      | n == tacN "Prim__Whnf", [tm] <- args
       = do tm' <- reifyTT tm
            ctxt <- get_context
            fmap fst . checkClosed . reflect $ whnf ctxt tm'
-      | n == tacN "prim__Converts", [env, tm1, tm2] <- args
+      | n == tacN "Prim__Converts", [env, tm1, tm2] <- args
       = do env' <- reifyEnv env
            tm1' <- reifyTT tm1
            tm2' <- reifyTT tm2
            ctxt <- get_context
            lift $ converts ctxt env' tm1' tm2'
            returnUnit
-      | n == tacN "prim__DeclareType", [decl] <- args
+      | n == tacN "Prim__DeclareType", [decl] <- args
       = do (RDeclare n args res) <- reifyTyDecl decl
            ctxt <- get_context
            let mkPi arg res = RBind (argName arg)
@@ -1991,27 +2044,27 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
            updateAux $ \e -> e { new_tyDecls = (RTyDeclInstrs n fc (map rFunArgToPArg args) checked) :
                                                new_tyDecls e }
            returnUnit
-      | n == tacN "prim__DefineFunction", [decl] <- args
+      | n == tacN "Prim__DefineFunction", [decl] <- args
       = do defn <- reifyFunDefn decl
            defineFunction defn
            returnUnit
-      | n == tacN "prim__AddInstance", [cls, inst] <- args
+      | n == tacN "Prim__AddInstance", [cls, inst] <- args
       = do className <- reifyTTName cls
            instName <- reifyTTName inst
            updateAux $ \e -> e { new_tyDecls = RAddInstance className instName :
                                                new_tyDecls e}
            returnUnit
-      | n == tacN "prim__IsTCName", [n] <- args
+      | n == tacN "Prim__IsTCName", [n] <- args
       = do n' <- reifyTTName n
            case lookupCtxtExact n' (idris_classes ist) of
              Just _ -> fmap fst . checkClosed $ Var (sNS (sUN "True") ["Bool", "Prelude"])
              Nothing -> fmap fst . checkClosed $ Var (sNS (sUN "False") ["Bool", "Prelude"])
-      | n == tacN "prim__ResolveTC", [fn] <- args
+      | n == tacN "Prim__ResolveTC", [fn] <- args
       = do g <- goal
            fn <- reifyTTName fn
            resolveTC' False True 100 g fn ist
            returnUnit
-      | n == tacN "prim__Search", [depth, hints] <- args
+      | n == tacN "Prim__Search", [depth, hints] <- args
       = do d <- eval depth
            hints' <- eval hints
            case (d, unList hints') of
@@ -2024,7 +2077,7 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
              (Constant (I _), Nothing ) ->
                lift . tfail . InternalMsg $ "Not a list: " ++ show hints'
              (_, _) -> lift . tfail . InternalMsg $ "Can't reify int " ++ show d
-      | n == tacN "prim__RecursiveElab", [goal, script] <- args
+      | n == tacN "Prim__RecursiveElab", [goal, script] <- args
       = do goal' <- reifyRaw goal
            ctxt <- get_context
            script <- eval script
@@ -2055,7 +2108,7 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
            fmap fst . checkClosed $
              rawPair (Var $ reflm "TT", Var $ reflm "TT")
                      (tm', ty')
-      | n == tacN "prim__Metavar", [n] <- args
+      | n == tacN "Prim__Metavar", [n] <- args
       = do n' <- reifyTTName n
            ctxt <- get_context
            ptm <- get_term
@@ -2066,7 +2119,7 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
            defer unique_used mvn
            solve
            returnUnit
-      | n == tacN "prim__Fixity", [op'] <- args
+      | n == tacN "Prim__Fixity", [op'] <- args
       = do opTm <- eval op'
            case opTm of
              Constant (Str op) -> 
@@ -2080,7 +2133,7 @@ runElabAction ist fc env tm ns = do tm' <- eval tm
                             [f]  -> fmap fst . checkClosed $ reflectFixity f
                             many -> lift . tfail . InternalMsg $ "Ambiguous fixity for '" ++ op ++ "'!  Found " ++ show many
              _ -> lift . tfail . Msg $ "Not a constant string for an operator name: " ++ show opTm
-      | n == tacN "prim__Debug", [ty, msg] <- args
+      | n == tacN "Prim__Debug", [ty, msg] <- args
       = do msg' <- eval msg
            parts <- reifyReportParts msg
            debugElaborator parts
@@ -2359,9 +2412,9 @@ withErrorReflection x = idrisCatch x (\ e -> handle e >>= ierror)
           handle e@(At fc err) = do logLvl 3 "Reflecting body of At"
                                     err' <- handle err
                                     return (At fc err')
-          handle e@(Elaborating what n err) = do logLvl 3 "Reflecting body of Elaborating"
-                                                 err' <- handle err
-                                                 return (Elaborating what n err')
+          handle e@(Elaborating what n ty err) = do logLvl 3 "Reflecting body of Elaborating"
+                                                    err' <- handle err
+                                                    return (Elaborating what n ty err')
           handle e@(ElaboratingArg f a prev err) = do logLvl 3 "Reflecting body of ElaboratingArg"
                                                       hs <- getFnHandlers f a
                                                       err' <- if null hs
@@ -2503,7 +2556,8 @@ processTacticDecls info steps =
           let fc = fileFC "elab_reflected_totality"
           let tcgen = False -- TODO: later we may support dictionary generation
           case elaborate ctxt (idris_datatypes ist) (sMN 0 "refPatLHS") infP initEState
-                (erun fc (buildTC ist info ELHS [] fname (infTerm lhs))) of
+                (erun fc (buildTC ist info ELHS [] fname (allNamesIn lhs_in)
+                                                         (infTerm lhs))) of
             OK (ElabResult lhs' _ _ _ _ _, _) ->
               do -- not recursively calling here, because we don't
                  -- want to run infinitely many times

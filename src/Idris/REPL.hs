@@ -805,7 +805,11 @@ process fn (Eval t)
                       getIState >>= flip warnDisamb t
                       (tm, ty) <- elabREPL recinfo ERHS t
                       ctxt <- getContext
-                      let tm' = perhapsForce $ normaliseAll ctxt [] tm
+                      let tm' = perhapsForce $ normaliseBlocking ctxt [] 
+                                                  [sUN "foreign",
+                                                   sUN "prim_read",
+                                                   sUN "prim_write"]
+                                                 tm
                       let ty' = perhapsForce $ normaliseAll ctxt [] ty
                       -- Add value to context, call it "it"
                       updateContext (addCtxtDef (sUN "it") (Function ty' tm'))
@@ -813,7 +817,8 @@ process fn (Eval t)
                       logLvl 3 $ "Raw: " ++ show (tm', ty')
                       logLvl 10 $ "Debug: " ++ showEnvDbg [] tm'
                       let tmDoc = pprintDelab ist tm'
-                          tyDoc =  pprintDelab ist ty'
+                          -- errReverse to make type more readable
+                          tyDoc =  pprintDelab ist (errReverse ist ty')
                       iPrintTermWithType tmDoc tyDoc
   where perhapsForce tm | termSmallerThan 100 tm = force tm
                         | otherwise = tm
@@ -938,7 +943,8 @@ process fn (Check (PRef _ _ n))
   where
     showMetavarInfo ppo ist n i
          = case lookupTy n (tt_ctxt ist) of
-                (ty:_) -> putTy ppo ist i [] (delab ist (errReverse ist ty))
+                (ty:_) -> let ty' = normaliseC (tt_ctxt ist) [] ty in
+                              putTy ppo ist i [] (delab ist (errReverse ist ty'))
     putTy :: PPOption -> IState -> Int -> [(Name, Bool)] -> PTerm -> Doc OutputAnnotation
     putTy ppo ist 0 bnd sc = putGoal ppo ist bnd sc
     putTy ppo ist i bnd (PPi _ n _ t sc)
@@ -1059,6 +1065,8 @@ process fn (DebugInfo n)
         when (not (null si)) $ iputStrLn (show si)
         let di = lookupCtxt n (idris_datatypes i)
         when (not (null di)) $ iputStrLn (show di)
+        let imps = lookupCtxt n (idris_implicits i)
+        when (not (null imps)) $ iputStrLn (show imps)
         let d = lookupDef n (tt_ctxt i)
         when (not (null d)) $ iputStrLn $ "Definition: " ++ (show (head d))
         let cg = lookupCtxtName n (idris_callgraph i)
@@ -1189,7 +1197,7 @@ process fn (Execute tm)
                    = idrisCatch
                        (do ist <- getIState
                            (m, _) <- elabVal recinfo ERHS (elabExec fc tm)
-                           (tmpn, tmph) <- runIO tempfile
+                           (tmpn, tmph) <- runIO $ tempfile ""
                            runIO $ hClose tmph
                            t <- codegen
                            -- gcc adds .exe when it builds windows programs
@@ -1227,7 +1235,7 @@ process fn (Missing n)
     = do i <- getIState
          ppOpts <- fmap ppOptionIst getIState
          case lookupCtxt n (idris_patdefs i) of
-           [] -> iPrintError $ "Unknown operator " ++ show n
+           [] -> iPrintError $ "Unknown name " ++ show n
            [(_, tms)] ->
              iRenderResult (vsep (map (pprintPTerm ppOpts {ppopt_impl = True}
                                                    []
@@ -1513,11 +1521,16 @@ loadInputs inputs toline -- furthest line to read in input source files
            -- For each ifile list, check it and build ibcs in the same clean IState
            -- so that they don't interfere with each other when checking
 
+           importlists <- getImports [] inputs
+
+           logLvl 1 (show (map (\(i,m) -> (i, map import_path m)) importlists))
+
            let ninputs = zip [1..] inputs
            ifiles <- mapWhileOK (\(num, input) ->
                 do putIState ist
-                   modTree <- buildTree
+                   modTree <- buildTree 
                                    (map snd (take (num-1) ninputs))
+                                   importlists
                                    input
                    let ifiles = getModuleFiles modTree
                    logLvl 1 ("MODULE TREE : " ++ show modTree)
@@ -1529,7 +1542,6 @@ loadInputs inputs toline -- furthest line to read in input source files
                       ninputs
            inew <- getIState
            let tidata = idris_tyinfodata inew
-           let patdefs = idris_patdefs inew
            -- If it worked, load the whole thing from all the ibcs together
            case errSpan inew of
               Nothing ->
@@ -1537,9 +1549,6 @@ loadInputs inputs toline -- furthest line to read in input source files
                    ibcfiles <- mapM findNewIBC (nub (concat (map snd ifiles)))
                    tryLoad True (mapMaybe id ibcfiles)
               _ -> return ()
-           ist <- getIState
-           putIState $! ist { idris_tyinfodata = tidata,
-                              idris_patdefs = patdefs }
            exports <- findExports
 
            case opt getOutput opts of

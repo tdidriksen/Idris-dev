@@ -346,6 +346,14 @@ getNameHints i n =
 addToCalledG :: Name -> [Name] -> Idris ()
 addToCalledG n ns = return () -- TODO
 
+addDeprecated :: Name -> String -> Idris ()
+addDeprecated n reason = do i <- getIState
+                            putIState $ i { idris_deprecated = addDef n reason (idris_deprecated i) }
+
+getDeprecated :: Name -> Idris (Maybe String)
+getDeprecated n = do i <- getIState
+                     return $ lookupCtxtExact n (idris_deprecated i)
+
 push_estack :: Name -> Bool -> Idris ()
 push_estack n inst
     = do i <- getIState
@@ -1344,7 +1352,7 @@ addUsingImpls syn n fc t
         let badnames = filter (\n -> not (implicitable n) &&
                                      n `notElem` (map iname uimpls)) ns
         when (not (null badnames)) $
-           throwError (At fc (Elaborating "type of " n
+           throwError (At fc (Elaborating "type of " n Nothing
                          (NoSuchVariable (head badnames))))
         let cs = getArgnames t -- get already bound names
         let addimpls = filter (\n -> iname n `notElem` cs) uimpls
@@ -1385,7 +1393,11 @@ getUnboundImplicits i t tm = getImps t (collectImps tm)
             = (n, (p, t)) : collectImps sc
         collectImps _ = []
 
-        getImps (Bind n (Pi (Just _) _ _) sc) imps = getImps sc imps
+        scopedimpl (Just i) = not (toplevel_imp i)
+        scopedimpl _ = False
+
+        getImps (Bind n (Pi i _ _) sc) imps 
+             | scopedimpl i = getImps sc imps
         getImps (Bind n (Pi _ t _) sc) imps
             | Just (p, t') <- lookup n imps = argInfo n p t' : getImps sc imps
          where
@@ -1548,9 +1560,9 @@ implicitise syn ignore ist tm = -- trace ("INCOMING " ++ showImp True tm) $
     pibind using []     sc = sc
     pibind using (n:ns) sc
       = case lookup n using of
-            Just ty -> PPi (Imp [] Dynamic False Nothing)
+            Just ty -> PPi (Imp [] Dynamic False (Just (Impl False True)))
                            n NoFC ty (pibind using ns sc)
-            Nothing -> PPi (Imp [InaccessibleArg] Dynamic False Nothing)
+            Nothing -> PPi (Imp [InaccessibleArg] Dynamic False (Just (Impl False True)))
                            n NoFC Placeholder (pibind using ns sc)
 
 -- Add implicit arguments in function calls
@@ -1694,7 +1706,9 @@ aiFn :: Name -> Bool -> Bool -> Bool
      -> [PArg] -- ^ initial arguments (if in an expression)
      -> Either Err PTerm
 aiFn topname inpat True qq imp_meths ist fc f ffc ds [] _
-  = case lookupDef f (tt_ctxt ist) of
+  | inpat && implicitable f && unqualified f = Right $ PPatvar ffc f
+  | otherwise 
+     = case lookupDef f (tt_ctxt ist) of
         [] -> Right $ PPatvar ffc f
         alts -> let ialts = lookupCtxtName f (idris_implicits ist) in
                     -- trace (show f ++ " " ++ show (fc, any (all imp) ialts, ialts, any constructor alts)) $
@@ -1707,6 +1721,10 @@ aiFn topname inpat True qq imp_meths ist fc f ffc ds [] _
           imp _ = True
 --           allImp [] = False
           allImp xs = all imp xs
+
+          unqualified (NS _ _) = False
+          unqualified _ = True
+
           constructor (TyDecl (DCon _ _ _) _) = True
           constructor _ = False
 
@@ -1887,9 +1905,11 @@ stripUnmatchable i (PApp fc fn args) = PApp fc fn (fmap (fmap su) args) where
     su tm@(PRef fc hl f)
        | (Bind n (Pi _ t _) sc :_) <- lookupTy f (tt_ctxt i)
           = Placeholder
-       | (TType _ : _) <- lookupTy f (tt_ctxt i)
+       | (TType _ : _) <- lookupTy f (tt_ctxt i),
+         not (implicitable f)
           = PHidden tm
-       | (UType _ : _) <- lookupTy f (tt_ctxt i)
+       | (UType _ : _) <- lookupTy f (tt_ctxt i),
+         not (implicitable f)
           = PHidden tm
     su (PApp fc f@(PRef _ _ fn) args)
        -- here we use canBeDConName because the impossible pattern

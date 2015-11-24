@@ -9,20 +9,20 @@ import Data.Vect
 
 ||| Get the name of a reflected type constructor argument.
 tyConArgName : TyConArg -> TTName
-tyConArgName (TyConParameter a) = argName a
-tyConArgName (TyConIndex a) = argName a
+tyConArgName (TyConParameter a) = name a
+tyConArgName (TyConIndex a) = name a
 
 ||| Modify the name of a reflected type constructor argument.
 setTyConArgName : TyConArg -> TTName -> TyConArg
-setTyConArgName (TyConParameter a) n = TyConParameter (record {argName = n} a)
-setTyConArgName (TyConIndex a) n = TyConIndex (record {argName = n} a)
+setTyConArgName (TyConParameter a) n = TyConParameter (record {name = n} a)
+setTyConArgName (TyConIndex a) n = TyConIndex (record {name = n} a)
 
 ||| Modify the type of a reflected type constructor argument using some function.
 updateTyConArgTy : (Raw -> Raw) -> TyConArg -> TyConArg
 updateTyConArgTy f (TyConParameter a) =
-    TyConParameter (record {argTy = f (argTy a) } a)
+    TyConParameter (record {type = f (type a) } a)
 updateTyConArgTy f (TyConIndex a) =
-    TyConIndex (record {argTy = f (argTy a) } a)
+    TyConIndex (record {type = f (type a) } a)
 
 unApply : Raw -> (Raw, List Raw)
 unApply tm = unApply' tm []
@@ -63,7 +63,6 @@ getBinderTy : Binder t -> t
 getBinderTy (Lam t) = t
 getBinderTy (Pi t _) = t
 getBinderTy (Let t _) = t
-getBinderTy (NLet t _) = t
 getBinderTy (Hole t) = t
 getBinderTy (GHole t) = t
 getBinderTy (Guess t _) = t
@@ -113,14 +112,15 @@ elabPatternClause lhs rhs =
                        focus patH
                        lhs
                        -- Convert all remaining holes to pattern variables
-                       traverse_ {b=()} (\h => focus h *> patvar h) !getHoles
-     (pvars, `(MkInfer ~rhsTy ~lhsTm)) <- extractBinders <$> (forgetTypes pat)
+                       for_ {b=()} !getHoles $ \h =>
+                         do focus h; patvar h
+     (pvars, `(MkInfer ~rhsTy ~lhsTm)) <- extractBinders <$> forget pat
         | fail [TextPart "Couldn't infer type of left-hand pattern"]
      rhsTm <- runElab (bindPatTys pvars rhsTy) $
                 do -- Introduce all the pattern variables from the LHS
                    repeatUntilFail bindPat <|> return ()
                    rhs
-     realRhs <- forgetTypes (fst rhsTm)
+     realRhs <- forget (fst rhsTm)
      return $ MkFunClause (bindPats pvars lhsTm) realRhs
 
 ||| Introduce a unique binder name, returning it
