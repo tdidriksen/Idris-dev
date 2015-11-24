@@ -1049,7 +1049,7 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock pa
      let norm_ty = normalise ctxt [] fn_ty
      let params = getParamsInType i [] fn_is norm_ty
 
-     let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params norm_ty (addImplPat i lhs_in)
+     let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params norm_ty (allNamesIn lhs_in) (addImplPat i lhs_in)
      let colhs = mkPApp lhs path
      logLvl 0 ("LHS: " ++ show fc ++ " " ++ showTmImpls lhs)
      logLvl 0 ("Fixed parameters: " ++ show params ++ " from " ++ show lhs_in ++ "\n" ++ show (fn_ty, fn_is))
@@ -1061,10 +1061,13 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock pa
      --                 probs <- get_probs
      --                 inj <- get_inj
      --                 return (res, probs, inj))
+     
      ((ElabResult colhs' codlhs [] coctxt' conewDecls cohighlights, coprobs, coinj), _) <-
         tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
-                 (do res <- errAt "left hand side of " fname
-                              (erun fc (buildTC i info ELHS opts fname (infTerm colhs)))
+                 (do res <- errAt "left hand side of " fname Nothing
+                              (erun fc (buildTC i info ELHS opts fname 
+                                       (allNamesIn lhs_in)
+                                       (infTerm colhs)))
                      probs <- get_probs
                      inj <- get_inj
                      return (res, probs, inj))
