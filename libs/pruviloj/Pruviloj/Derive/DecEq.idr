@@ -44,9 +44,7 @@ partial -- TODO make covering/total
 matchCase : List Raw -> Elab ()
 matchCase []          = search
 matchCase (tm :: tms) =
-    do hs <- induction tm
-       y <- unsafeNth 0 hs
-       n <- unsafeNth 1 hs
+    do (y :: n :: _)  <- induction tm
 
        focus n; compute
        contra <- gensym "contra"
@@ -183,7 +181,7 @@ deriveDecEq fn =
                     Nothing => return False
 
     partial -- mkRhs
-    mkCase : Nat -> TTName -> (x, y : (TTName, List CtorArg, Raw)) -> Elab (Maybe FunClause)
+    mkCase : Nat -> TTName -> (x, y : (TTName, List CtorArg, Raw)) -> Elab (Maybe (FunClause Raw))
     mkCase k fam (cn1, args1, _) (cn2, args2, _) =
         perhaps $ elabPatternClause
           (do (h2 :: h1 :: _) <- reverse <$>

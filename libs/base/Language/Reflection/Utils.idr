@@ -129,7 +129,7 @@ instance Show IntTy where
 
 instance Show ArithTy where
   showPrec d (ATInt t) = showCon d "ATInt" $ showArg t
-  showPrec d ATFloat   = "ATFloat"
+  showPrec d ATDouble   = "ATDouble"
 
 instance Show Const where
   showPrec d (I i)      = showCon d "I" $ showArg i
@@ -162,7 +162,7 @@ instance Eq Reflection.IntTy where
 
 instance Eq ArithTy where
   (ATInt x) == (ATInt y) = x == y
-  ATFloat   == ATFloat   = True
+  ATDouble  == ATDouble   = True
   _         == _         = False
 
 instance Eq Const where
@@ -349,3 +349,9 @@ instance Show CtorArg where
 instance Show TyDecl where
   showPrec d (Declare fn args ret) = showCon d "Declare" $ showArg fn ++
                                      showArg args ++ showArg ret
+
+instance Show tm => Show (FunClause tm) where
+  showPrec d (MkFunClause lhs rhs) =
+      showCon d "MkFunClause" $ showArg lhs ++ showArg rhs
+  showPrec d (MkImpossibleClause lhs) =
+      showCon d "MkImpossibleClause" $ showArg lhs
