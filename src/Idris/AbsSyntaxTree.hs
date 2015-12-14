@@ -260,8 +260,9 @@ data IState = IState {
     idris_exports :: [Name], -- ^ Functions with ExportList
     idris_highlightedRegions :: [(FC, OutputAnnotation)], -- ^ Highlighting information to output
     idris_parserHighlights :: [(FC, OutputAnnotation)], -- ^ Highlighting information from the parser
-    idris_deprecated :: Ctxt String -- ^ Deprecated names and explanation
-   }
+    idris_deprecated :: Ctxt String, -- ^ Deprecated names and explanation
+    idris_copatterns :: M.Map Name (RecordInfo, [(Name, Name)])
+}
 
 -- Required for parsers library, and therefore trifecta
 instance Show IState where
@@ -351,7 +352,7 @@ idrisInit = IState initContext S.empty []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing [] Hidden False [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
                    AutomaticWidth S.empty S.empty [] Nothing Nothing [] [] M.empty [] [] []
-                   emptyContext
+                   emptyContext M.empty
 
 -- | The monad for the main REPL - reading and processing files and updating
 -- global state (hence the IO inner monad).

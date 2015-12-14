@@ -1026,6 +1026,48 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock []
   do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
 
+elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(pn, rn, ri)]) = -- Copatterns clauses
+  do (ri', pMap) <-
+       do d <- getDefinition fname
+          case d of
+            Just d  -> return d
+            Nothing -> mkDefinition fname ri
+     auxn <- auxName 0 fname
+     (rec_elabDecl info) ETypes info auxTyDecl
+     case lookup pn pMap of
+       Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
+       Nothing -> do i <- getIState
+                     put $ i { idris_copatterns = Map.adjust (\(ri, ps) -> (ri, (pn, auxn):ps)) fname (idris_copatterns i) }
+                     elabClause info opts (0, auxClause auxn)
+     
+  where
+    getDefinition :: Name -> Idris (Maybe (RecordInfo, [(Name, Name)]))
+    getDefinition fn =
+      do i <- getIState
+         let copDefs = idris_copatterns i
+         return $ Map.lookup fn copDefs
+
+    mkDefinition :: Name -> RecordInfo -> Idris (RecordInfo, [(Name, Name)])
+    mkDefinition fn ri =
+      do i <- getIState
+         let d = (ri, [])
+         put $ i { idris_copatterns = Map.insert fn d (idris_copatterns i) }
+         return d
+
+    auxTyDecl :: PDecl
+    auxTyDecl = undefined
+
+    auxClause :: Name -> PClause
+    auxClause n = undefined -- PClause something
+
+    auxName :: Int -> Name -> Idris Name
+    auxName i n =
+      do ctxt <- getContext
+         let aux = sMN i (showCG n)
+         case lookupNames aux ctxt of
+           [] -> return aux
+           _  -> auxName (i+1) n
+
 elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock path) = -- Copatterns clauses
   -- do i <- getIState
   --    logLvl 0 $ "matchClauseTest: " ++ show (matchClause i lhs_in_as rhs_in_as)
