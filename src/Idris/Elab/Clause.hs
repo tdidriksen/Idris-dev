@@ -1033,12 +1033,12 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(
             Just d  -> return d
             Nothing -> mkDefinition fname ri
      auxn <- auxName 0 fname
-     (rec_elabDecl info) ETypes info auxTyDecl
+     (rec_elabDecl info) ETypes info (auxTyDecl auxn $ PRef NoFC [] (sUN "Nat"))
      case lookup pn pMap of
        Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
        Nothing -> do i <- getIState
                      put $ i { idris_copatterns = Map.adjust (\(ri, ps) -> (ri, (pn, auxn):ps)) fname (idris_copatterns i) }
-                     elabClause info opts (0, auxClause auxn)
+                     elabClause info opts (0, auxClause auxn lhs_in_as rhs_in_as)
      
   where
     getDefinition :: Name -> Idris (Maybe (RecordInfo, [(Name, Name)]))
@@ -1054,11 +1054,11 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(
          put $ i { idris_copatterns = Map.insert fn d (idris_copatterns i) }
          return d
 
-    auxTyDecl :: PDecl
-    auxTyDecl = undefined
+    auxTyDecl :: Name -> PTerm -> PDecl
+    auxTyDecl n ty = PTy emptyDocstring [] defaultSyntax NoFC [] n NoFC ty
 
-    auxClause :: Name -> PClause
-    auxClause n = undefined -- PClause something
+    auxClause :: Name -> PTerm -> PTerm -> PClause
+    auxClause n lhs rhs = PClause NoFC n (substMatch fname (PRef NoFC [] n) lhs) [] rhs [] -- PClause something
 
     auxName :: Int -> Name -> Idris Name
     auxName i n =
