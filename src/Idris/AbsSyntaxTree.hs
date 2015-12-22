@@ -692,7 +692,7 @@ data PDecl' t
                             -- bool is True, lhs and rhs must be convertible
    | PRunElabDecl FC t [String] -- ^ FC is decl-level, for errors, and
                                 -- Strings represent the namespace
-   | PCopatterns FC [PDecl' t]
+   | PCopatterns FC SyntaxInfo [PDecl' t]
  deriving Functor
 {-!
 deriving instance Binary PDecl'

@@ -785,7 +785,7 @@ copatterns syn
         ds <- many (decl (syn { in_copatterns = True }))
         closeBlock
         fc <- getFC
-        return [PCopatterns fc (concat ds)]
+        return [PCopatterns fc syn (concat ds)]
      <?> "copatterns block"
   | otherwise =
      fail "Nested 'copatterns' block not supported"

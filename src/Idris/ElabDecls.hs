@@ -269,7 +269,7 @@ elabDecl' what info (PTransform fc safety old new)
 elabDecl' what info (PRunElabDecl fc script ns)
     = do elabRunElab info fc script ns
          return ()
-elabDecl' _ info (PCopatterns fc clauses) 
+elabDecl' what info (PCopatterns fc syn clauses) 
     = do -- Partition clauses into copattern clauses and regular pattern clauses
          -- Elaborate regular pattern clauses as expected
          -- Collect coclauses 
@@ -277,11 +277,14 @@ elabDecl' _ info (PCopatterns fc clauses)
          ds <- collectDecls Nothing [] clauses
          logLvl 0 $ "Decls: " ++ show ds
          elabDecls info ds
+         --mapM_ (elabCoClause what info) ds
       where
+       
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]
        collectDecls targetName cs ((PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)) : ds) =
          do logLvl 0 $ "Encountered CoClause: " ++ show n
-            clause <- extractPath c
+            c' <- extractPath c
+            let clause = expandNSClause syn c'
             case (targetName, clauseName clause) of
              (Just tn, Just cn) -> if tn == cn
                                    then collectDecls targetName (clause:cs) (PClauses pfc opts pn clauses : ds)
@@ -296,6 +299,12 @@ elabDecl' _ info (PCopatterns fc clauses)
                                                 ds' <- collectDecls targetName cs ds
                                                 return $ d : ds'
        collectDecls _          _  [] = return []
+
+       expandNSClause :: SyntaxInfo -> PClause -> PClause
+       expandNSClause syn (PCoClause fc n lhs rhs wheres path) =
+         let expandedName = expandNS syn n
+         in PCoClause fc expandedName (substMatch n (PRef fc [] expandedName) lhs) rhs wheres path
+       expandNSClause _ c = c
 
        extractPath :: PClause -> Idris PClause
        extractPath c@(PCoClause fc n lhs@(PApp _ (PRef _ _ n') (lhsArg : _)) rhs wheres path) | n == n' =

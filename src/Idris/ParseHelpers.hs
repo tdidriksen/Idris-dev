@@ -671,6 +671,6 @@ collect (PClass doc f s cs n nfc ps pdocs fds ds cn cd : ds')
     = PClass doc f s cs n nfc ps pdocs fds (collect ds) cn cd : collect ds'
 collect (PInstance doc argDocs f s cs n nfc ps t en ds : ds')
     = PInstance doc argDocs f s cs n nfc ps t en (collect ds) : collect ds'
-collect (PCopatterns fc cs : ds) = PCopatterns fc (collect cs) : collect ds
+collect (PCopatterns fc syn cs : ds) = PCopatterns fc syn (collect cs) : collect ds
 collect (d : ds) = d : collect ds
 collect [] = []

@@ -586,6 +586,8 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
                         probs <- get_probs
                         inj <- get_inj
                         return (res, probs, inj))
+        logLvl 0 $ "lhs: " ++ show lhs
+        logLvl 0 $ "lhs': " ++ show lhs'
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
@@ -593,6 +595,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) probs)
 
         let lhs_tm = orderPats (getInferTerm lhs')
+        logLvl 0 $ "lhs_tm: " ++ show lhs_tm
         let lhs_ty = getInferType lhs'
         let static_names = getStaticNames i lhs_tm
 
@@ -607,6 +610,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
                                                        [] fc id [] lhs_tm
                                else return (lhs_tm, lhs_ty)
         let clhs = normalise ctxt [] clhs_c
+        logLvl 0 $ "clhs: " ++ show clhs
         let borrowed = borrowedNames [] clhs
 
         -- These are the names we're not allowed to use on the RHS, because
@@ -1027,19 +1031,28 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock []
      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
 
 elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(pn, rn, ri)]) = -- Copatterns clauses
-  do (ri', pMap) <-
+  do logLvl 0 "Elaborating non-nested coclause"
+     logLvl 0 $ "fname: " ++ show fname
+     logLvl 0 $ "lhs_in_as: " ++ show lhs_in_as
+     logLvl 0 $ "rhs_in_as: " ++ show rhs_in_as
+     logLvl 0 $ "pn: " ++ show pn ++ ", rn: " ++ show rn
+     i <- getIState
+     (ri', pMap) <-
        do d <- getDefinition fname
           case d of
             Just d  -> return d
             Nothing -> mkDefinition fname ri
-     auxn <- auxName 0 fname
-     (rec_elabDecl info) ETypes info (auxTyDecl auxn $ PRef NoFC [] (sUN "Nat"))
+     auxn <- auxName fname
+     pTy <- projTy pn
+     logLvl 0 $ "auxTy: " ++ show (auxTy pTy)
+     (rec_elabDecl info) ETypes info (auxTyDecl auxn (delab i $ auxTy pTy))
+     --put $ i { tt_ctxt = addTyDecl auxn Ref (auxTy pTy) (tt_ctxt i) }
      case lookup pn pMap of
        Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
        Nothing -> do i <- getIState
                      put $ i { idris_copatterns = Map.adjust (\(ri, ps) -> (ri, (pn, auxn):ps)) fname (idris_copatterns i) }
-                     elabClause info opts (0, auxClause auxn lhs_in_as rhs_in_as)
-     
+                     let lhsSubst = substMatch fname (PRef fc [] auxn) lhs_in_as
+                     elabClause info opts (0, auxClause auxn lhsSubst rhs_in_as)
   where
     getDefinition :: Name -> Idris (Maybe (RecordInfo, [(Name, Name)]))
     getDefinition fn =
@@ -1054,19 +1067,29 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(
          put $ i { idris_copatterns = Map.insert fn d (idris_copatterns i) }
          return d
 
+    projTy :: Name -> Idris Type
+    projTy n =
+      do ctxt <- getContext
+         case lookupTyExact n ctxt of
+           Just ty -> return ty
+           Nothing -> ifail $ "No type for left-hand side projection " ++ show n
+
+    auxTy :: Type -> Type -- Will not work with type parameters in record type
+    auxTy (Bind _ (Pi _ _ _) ty) = ty
+    auxTy t = t
+
     auxTyDecl :: Name -> PTerm -> PDecl
     auxTyDecl n ty = PTy emptyDocstring [] defaultSyntax NoFC [] n NoFC ty
 
     auxClause :: Name -> PTerm -> PTerm -> PClause
-    auxClause n lhs rhs = PClause NoFC n (substMatch fname (PRef NoFC [] n) lhs) [] rhs [] -- PClause something
+    auxClause n lhs rhs = PClause NoFC n lhs [] rhs [] -- PClause something
 
-    auxName :: Int -> Name -> Idris Name
-    auxName i n =
+    auxName :: Name -> Idris Name
+    auxName n = --return $ sNS (sUN "fisk") ["cop"]
       do ctxt <- getContext
-         let aux = sMN i (showCG n)
-         case lookupNames aux ctxt of
-           [] -> return aux
-           _  -> auxName (i+1) n
+         case lookupNames n ctxt of
+           [] -> return n
+           _  -> auxName (nextName n)
 
 elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock path) = -- Copatterns clauses
   -- do i <- getIState
@@ -1215,3 +1238,7 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock pa
      -- let borrowed = borrowedNames [] clhs
 --   do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
 --      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
+
+-- elabCoClause :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
+-- elabCoClause what info (PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)
+-- elabCoClause d = (rec_elabDecl info) EAll info d

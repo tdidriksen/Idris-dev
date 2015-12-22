@@ -1287,9 +1287,10 @@ instance (Binary t) => Binary (PDecl' t) where
                                             put x1
                                             put x2
                                             put x3
-                PCopatterns x1 x2 -> do putWord8 18
-                                        put x1
-                                        put x2
+                PCopatterns x1 x2 x3 -> do putWord8 18
+                                           put x1
+                                           put x2
+                                           put x3
         get
           = do i <- getWord8
                case i of
