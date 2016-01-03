@@ -276,8 +276,8 @@ elabDecl' what info (PCopatterns fc syn clauses)
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
          ds <- collectDecls Nothing [] clauses
          logLvl 0 $ "Decls: " ++ show ds
-         elabDecls info ds
-         --mapM_ (elabCoClause what info) ds
+         --elabDecls info ds
+         mapM_ (elabCoClauses what info) ds
       where
        
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]

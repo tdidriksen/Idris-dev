@@ -31,6 +31,7 @@ import Idris.Elab.Data
 import Data.Maybe
 import Data.List
 import Control.Monad
+import qualified Data.Map as Map
 
 -- | Elaborate a record declaration
 elabRecord :: ElabInfo
@@ -318,6 +319,9 @@ elabProjection info cname pname plicity projTy pdoc psyn fc targetTy cn phArgs f
 
        let ty = generateTy
        logElab 1 $ "Type of " ++ show pname ++ ": " ++ show ty
+
+       i <- getIState
+       putIState $ i { idris_proj_type = Map.insert pname projTy (idris_proj_type i) }
 
        let lhs = generateLhs
        logElab 1 $ "LHS of " ++ show pname ++ ": " ++ showTmImpls lhs

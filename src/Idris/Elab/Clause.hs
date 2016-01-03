@@ -1239,6 +1239,122 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock pa
 --   do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
 --      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
 
--- elabCoClause :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
--- elabCoClause what info (PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)
--- elabCoClause d = (rec_elabDecl info) EAll info d
+elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
+elabCoClauses what info (PClauses pfc opts pn cocs) =
+  do let groupedClauses = groupByPath cocs []
+     logLvl 0 $ "Elabbing clauses for name " ++ show pn
+     consArgNames <- mapM (\clauses ->
+             do auxn <- auxName pn
+                cs <- mapM (elabCoClause what info auxn) clauses
+                (rec_elabDecl info) EAll info (PClauses pfc opts auxn cs)
+                return auxn
+           ) groupedClauses
+     let (_, _, recordInfo) = head $ (getPath $ head cocs)
+     let consName = record_constructor recordInfo
+     let consArgs = map (\argName -> pexp $ PRef pfc [] argName) consArgNames
+     let lhs = PRef pfc [] pn
+     let rhs = PApp pfc (PRef pfc [] consName) consArgs
+     let clause = PClause pfc pn lhs [] rhs []
+     (rec_elabDecl info) EAll info $ PClauses pfc [] pn [clause]
+       where
+         groupByPath :: [PClause' PTerm] -> [[PClause' PTerm]] -> [[PClause' PTerm]]
+         groupByPath [] acc = acc
+         groupByPath (c@(PCoClause _ _ _ _ _ path) : clauses) acc = groupByPath clauses (insertByPath c acc)
+           where
+             insertByPath :: PClause' PTerm -> [[PClause' PTerm]] -> [[PClause' PTerm]]
+             insertByPath clause [] = [[clause]]
+             insertByPath clause (clauses : clausess)
+               | pathEquality (getPath clause) (getPath $ head clauses) = (clause : clauses) : clausess
+               | otherwise = clauses : (insertByPath clause clausess)
+         groupByPath (c : clauses) acc = groupByPath clauses ([c] : acc)
+
+         pathEquality :: [(Name, Name, RecordInfo)] -> [(Name, Name, RecordInfo)] -> Bool
+         pathEquality [] [] = True
+         pathEquality _ [] = False
+         pathEquality [] _ = False
+         pathEquality ((pn, rn, _) : path) ((pn', rn', _) : path')
+          | (pn == pn') && (rn == rn') = pathEquality path path'
+          | otherwise = False
+
+         getPath :: PClause' PTerm -> [(Name, Name, RecordInfo)]
+         getPath (PCoClause _ _ _ _ _ path) = path
+         getPath _ = []
+
+         auxName :: Name -> Idris Name
+         auxName n = --return $ sNS (sUN "fisk") ["cop"]
+           do ctxt <- getContext
+              case lookupNames n ctxt of
+                [] -> return n
+                _  -> auxName (nextName n)
+elabCoClauses what info d =
+  do logLvl 0 $ "other"
+     (rec_elabDecl info) EAll info d
+
+elabCoClause :: ElabWhat -> ElabInfo -> Name -> PClause' PTerm -> Idris (PClause' PTerm)
+elabCoClause what info auxn (PCoClause fc fname lhs_in_as rhs_in_as whereblock []) = return $ PClause fc fname lhs_in_as [] rhs_in_as whereblock
+elabCoClause what info auxn (PCoClause fc fname lhs_in_as rhs_in_as whereblock [(pn, rn, ri)]) =
+  do logLvl 0 "Elaborating non-nested coclause"
+     logLvl 0 $ "fname: " ++ show fname
+     logLvl 0 $ "lhs_in_as: " ++ show lhs_in_as
+     logLvl 0 $ "rhs_in_as: " ++ show rhs_in_as
+     logLvl 0 $ "pn: " ++ show pn ++ ", rn: " ++ show rn
+     i <- getIState
+     (ri', pMap) <-
+       do d <- getDefinition fname
+          case d of
+            Just d  -> return d
+            Nothing -> mkDefinition fname ri
+     {-
+     pTy <- projTy pn
+     logLvl 0 $ "auxTy: " ++ show (auxTy pTy)
+     (rec_elabDecl info) ETypes info (auxTyDecl auxn (delab i $ auxTy pTy))
+     -}
+     pTy <- case Map.lookup pn (idris_proj_type i) of
+       Just term -> return term
+       Nothing -> ifail $ "No type for left-hand side projection " ++ show pn
+     (rec_elabDecl info) ETypes info $ auxTyDecl auxn pTy
+     --put $ i { tt_ctxt = addTyDecl auxn Ref (auxTy pTy) (tt_ctxt i) }
+     case lookup pn pMap of
+       Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
+       Nothing -> do i <- getIState
+                     put $ i { idris_copatterns = Map.adjust (\(ri, ps) -> (ri, (pn, auxn):ps)) fname (idris_copatterns i) }
+                     let lhsSubst = substMatch fname (PRef fc [] auxn) lhs_in_as
+                     return $ PClause fc auxn lhsSubst [] rhs_in_as []
+  where
+    getDefinition :: Name -> Idris (Maybe (RecordInfo, [(Name, Name)]))
+    getDefinition fn =
+      do i <- getIState
+         let copDefs = idris_copatterns i
+         return $ Map.lookup fn copDefs
+
+    mkDefinition :: Name -> RecordInfo -> Idris (RecordInfo, [(Name, Name)])
+    mkDefinition fn ri =
+      do i <- getIState
+         let d = (ri, [])
+         put $ i { idris_copatterns = Map.insert fn d (idris_copatterns i) }
+         return d
+
+    projTy :: Name -> Idris Type
+    projTy n =
+      do ctxt <- getContext
+         case lookupTyExact n ctxt of
+           Just ty -> return ty
+           Nothing -> ifail $ "No type for left-hand side projection " ++ show n
+
+    auxTy :: Type -> Type -- Will not work with type parameters in record type
+    auxTy (Bind _ (Pi _ _ _) ty) = ty
+    auxTy t = t
+
+    auxTyDecl :: Name -> PTerm -> PDecl
+    auxTyDecl n ty = PTy emptyDocstring [] defaultSyntax NoFC [] n NoFC ty
+
+    auxClause :: Name -> PTerm -> PTerm -> PClause
+    auxClause n lhs rhs = PClause NoFC n lhs [] rhs [] -- PClause something
+
+    auxName :: Name -> Idris Name
+    auxName n = --return $ sNS (sUN "fisk") ["cop"]
+      do ctxt <- getContext
+         case lookupNames n ctxt of
+           [] -> return n
+           _  -> auxName (nextName n)
+  
