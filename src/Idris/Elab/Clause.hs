@@ -1241,21 +1241,26 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock pa
 
 elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
 elabCoClauses what info (PClauses pfc opts pn cocs) =
-  do let groupedClauses = groupByPath cocs []
-     logLvl 0 $ "Elabbing clauses for name " ++ show pn
-     consArgNames <- mapM (\clauses ->
+  do logLvl 0 $ "Elabbing clauses for name " ++ show pn
+     if hasPath $ head cocs
+       then
+       do let groupedClauses = groupBy pe cocs --groupByPath cocs []
+          consArgNames <- mapM (\clauses ->
              do auxn <- auxName pn
                 cs <- mapM (elabCoClause what info auxn) clauses
                 (rec_elabDecl info) EAll info (PClauses pfc opts auxn cs)
                 return auxn
            ) groupedClauses
-     let (_, _, recordInfo) = head $ (getPath $ head cocs)
-     let consName = record_constructor recordInfo
-     let consArgs = map (\argName -> pexp $ PRef pfc [] argName) consArgNames
-     let lhs = PRef pfc [] pn
-     let rhs = PApp pfc (PRef pfc [] consName) consArgs
-     let clause = PClause pfc pn lhs [] rhs []
-     (rec_elabDecl info) EAll info $ PClauses pfc [] pn [clause]
+          let (_, _, recordInfo) = head $ (getPath $ head cocs)
+          let consName = record_constructor recordInfo
+          let consArgs = map (\argName -> pexp $ PRef pfc [] argName) consArgNames
+          let lhs = PRef pfc [] pn
+          let rhs = PApp pfc (PRef pfc [] consName) consArgs
+          let clause = PClause pfc pn lhs [] rhs []
+          (rec_elabDecl info) EAll info $ PClauses pfc [] pn [clause]
+       else
+         do cs <- mapM (elabCoClause what info pn) cocs
+            (rec_elabDecl info) EAll info (PClauses pfc opts pn cs)
        where
          groupByPath :: [PClause' PTerm] -> [[PClause' PTerm]] -> [[PClause' PTerm]]
          groupByPath [] acc = acc
@@ -1275,6 +1280,14 @@ elabCoClauses what info (PClauses pfc opts pn cocs) =
          pathEquality ((pn, rn, _) : path) ((pn', rn', _) : path')
           | (pn == pn') && (rn == rn') = pathEquality path path'
           | otherwise = False
+
+         pe :: PClause' PTerm -> PClause' PTerm -> Bool
+         pe (PCoClause _ _ _ _ _ path) (PCoClause _ _ _ _ _ path') = pathEquality path path'
+         pe _ _ = False
+
+         hasPath :: PClause' PTerm -> Bool
+         hasPath (PCoClause _ _ _ _ _ (_ : _)) = True
+         hasPath _ = False
 
          getPath :: PClause' PTerm -> [(Name, Name, RecordInfo)]
          getPath (PCoClause _ _ _ _ _ path) = path
