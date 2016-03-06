@@ -8,12 +8,10 @@ module IdrisNet.Socket
 %include C "sys/socket.h"
 %include C "netdb.h"
 
-%access public
-
-ByteLength : Type
+public export ByteLength : Type
 ByteLength = Int
 
-class ToCode a where
+interface ToCode a where
   toCode : a -> Int
 
 ||| Socket Families
@@ -28,12 +26,12 @@ data SocketFamily =
   |||  IP / UDP etc. IPv6
   AF_INET6
 
-instance Show SocketFamily where
+implementation Show SocketFamily where
   show AF_UNSPEC = "AF_UNSPEC"
   show AF_INET   = "AF_INET"
   show AF_INET6  = "AF_INET6"
 
-instance ToCode SocketFamily where
+implementation ToCode SocketFamily where
   toCode AF_UNSPEC = 0
   toCode AF_INET   = 2
   toCode AF_INET6  = 10
@@ -52,13 +50,13 @@ data SocketType =
   ||| Raw sockets
   RawSocket
 
-instance Show SocketType where
+implementation Show SocketType where
   show NotASocket = "Not a socket"
   show Stream     = "Stream"
   show Datagram   = "Datagram"
   show RawSocket  = "Raw"
 
-instance ToCode SocketType where
+implementation ToCode SocketType where
   toCode NotASocket = 0
   toCode Stream     = 1
   toCode Datagram   = 2
@@ -67,8 +65,9 @@ instance ToCode SocketType where
 
 data RecvStructPtr = RSPtr Ptr
 data RecvfromStructPtr = RFPtr Ptr
-data BufPtr = BPtr Ptr
-data SockaddrPtr = SAPtr Ptr
+
+export data BufPtr = BPtr Ptr
+export data SockaddrPtr = SAPtr Ptr
 
 ||| Protocol Number.
 |||
@@ -89,7 +88,7 @@ data SocketAddress = IPv4Addr Int Int Int Int
                    | Hostname String
                    | InvalidAddress -- Used when there's a parse error
 
-instance Show SocketAddress where
+implementation Show SocketAddress where
   show (IPv4Addr i1 i2 i3 i4) = concat $ Prelude.List.intersperse "." (map show [i1, i2, i3, i4])
   show IPv6Addr = "NOT IMPLEMENTED YET"
   show (Hostname host) = host
@@ -120,18 +119,18 @@ record UDPAddrInfo where
   remote_port : Port
 
 ||| Frees a given pointer
-public
+export
 sock_free : BufPtr -> IO ()
 sock_free (BPtr ptr) = foreign FFI_C "idrnet_free" (Ptr -> IO ()) ptr
 
-public
+export
 sockaddr_free : SockaddrPtr -> IO ()
 sockaddr_free (SAPtr ptr) = foreign FFI_C "idrnet_free" (Ptr -> IO ()) ptr
 
 ||| Allocates an amount of memory given by the ByteLength parameter.
 |||
 ||| Used to allocate a mutable pointer to be given to the Recv functions.
-public
+export
 sock_alloc : ByteLength -> IO BufPtr
 sock_alloc bl = map BPtr $ foreign FFI_C "idrnet_malloc" (Int -> IO Ptr) bl
 

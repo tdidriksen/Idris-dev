@@ -4,7 +4,7 @@ import System
 
 %default total
 
-public
+public export
 Vars : Type
 Vars = List (String, String)
 
@@ -23,28 +23,27 @@ add_Headers str st = record { Headers = Headers st ++ str } st
 add_Output : String -> CGIInfo -> CGIInfo
 add_Output str st = record { Output = Output st ++ str } st
 
-abstract
+export
 data CGI : Type -> Type where
     MkCGI : (CGIInfo -> IO (a, CGIInfo)) -> CGI a
 
 getAction : CGI a -> CGIInfo -> IO (a, CGIInfo)
 getAction (MkCGI act) = act
 
-instance Functor CGI where
+implementation Functor CGI where
     map f (MkCGI c) = MkCGI (\s => do (a, i) <- c s
                                       return (f a, i))
 
-instance Applicative CGI where
+implementation Applicative CGI where
     pure v = MkCGI (\s => return (v, s))
 
     (MkCGI a) <*> (MkCGI b) = MkCGI (\s => do (f, i) <- a s
                                               (c, j) <- b i
                                               return (f c, j))
 
-instance Monad CGI where {
+implementation Monad CGI where
     (>>=) (MkCGI f) k = MkCGI (\s => do v <- f s
                                         getAction (k (fst v)) (snd v))
-}
 
 setInfo : CGIInfo -> CGI ()
 setInfo i = MkCGI (\s => return ((), i))
@@ -52,32 +51,32 @@ setInfo i = MkCGI (\s => return ((), i))
 getInfo : CGI CGIInfo
 getInfo = MkCGI (\s => return (s, s))
 
-abstract
+export
 lift : IO a -> CGI a
 lift op = MkCGI (\st => do { x <- op
                              return (x, st) } )
 
-abstract
+export
 output : String -> CGI ()
 output s = do i <- getInfo
               setInfo (add_Output s i)
 
-abstract
+export
 queryVars : CGI Vars
 queryVars = do i <- getInfo
                return (GET i)
 
-abstract
+export
 postVars : CGI Vars
 postVars = do i <- getInfo
               return (POST i)
 
-abstract
+export
 cookieVars : CGI Vars
 cookieVars = do i <- getInfo
                 return (Cookies i)
 
-abstract
+export
 queryVar : String -> CGI (Maybe String)
 queryVar x = do vs <- queryVars
                 return (lookup x vs)
@@ -90,12 +89,12 @@ getHeaders : CGI String
 getHeaders = do i <- getInfo
                 return (Headers i)
 
-abstract
+export
 flushHeaders : CGI ()
 flushHeaders = do o <- getHeaders
                   lift (putStrLn o)
 
-abstract
+export
 flush : CGI ()
 flush = do o <- getOutput
            lift (putStr o)
@@ -120,7 +119,7 @@ getCgiEnv key = do
   val <- getEnv key
   return $ maybe "" id val
 
-abstract
+export
 runCGI : CGI a -> IO a
 runCGI prog = do
     clen_in <- getCgiEnv "CONTENT_LENGTH"

@@ -2,6 +2,8 @@ module Data.List.Quantifiers
 
 import Data.List
 
+%access public export
+
 ||| A proof that some element of a list satisfies some property
 |||
 ||| @ P the property to be satsified
@@ -16,7 +18,7 @@ anyNilAbsurd : {P : a -> Type} -> Any P Nil -> Void
 anyNilAbsurd (Here _) impossible
 anyNilAbsurd (There _) impossible
 
-instance Uninhabited (Any p Nil) where
+implementation Uninhabited (Any p Nil) where
   uninhabited = anyNilAbsurd
 
 ||| Eliminator for `Any`

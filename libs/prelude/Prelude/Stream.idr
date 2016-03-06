@@ -9,7 +9,7 @@ import Prelude.Monad
 import Prelude.Nat
 import Prelude.List
 
-%access public
+%access public export
 %default total
 
 ||| An infinite stream
@@ -22,7 +22,7 @@ codata Stream : Type -> Type where
 -- Usage hints for erasure analysis
 %used Stream.(::) e
 
-instance Functor Stream where
+Functor Stream where
     map f (x::xs) = f x :: map f xs
 
 ||| The first element of an infinite stream
@@ -62,8 +62,12 @@ index : Nat -> Stream a -> a
 index Z     (x::xs) = x
 index (S k) (x::xs) = index k xs
 
-||| Combine two streams element-wise using a function
-zipWith : (a -> b -> c) -> Stream a -> Stream b -> Stream c
+||| Combine two streams element-wise using a function.
+|||
+||| @ f the function to combine elements with
+||| @ xs the first stream of elements
+||| @ ys the second stream of elements
+zipWith : (f : a -> b -> c) -> (xs : Stream a) -> (ys : Stream b) -> Stream c
 zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 
 ||| Combine three streams by applying a function element-wise along them
@@ -90,27 +94,12 @@ unzip3 xs = (map (\(x,_,_) => x) xs, map (\(_,x,_) => x) xs, map (\(_,_,x) => x)
 diag : Stream (Stream a) -> Stream a
 diag ((x::xs)::xss) = x :: diag (map tail xss)
 
-||| Fold a Stream corecursively. Since there is no Nil, no initial value is used.
-||| @ f the combining function
-||| @ xs the Stream to fold up
-partial -- the recursive call isn't guarded!
-foldr : (f : a -> Inf b -> b) -> (xs : Stream a) -> b
-foldr f (x :: xs) = f x (foldr f xs)
-
 ||| Produce a Stream of left folds of prefixes of the given Stream
 ||| @ f the combining function
 ||| @ acc the initial value
 ||| @ xs the Stream to process
 scanl : (f : a -> b -> a) -> (acc : a) -> (xs : Stream b) -> Stream a
 scanl f acc (x :: xs) = acc :: scanl f (f acc x) xs
-
-||| Produce a Stream of (corecursive) right folds of tails of the given Stream
-||| @ f the combining function
-||| @ xs the Stream to fold up
--- Reusing the head of the corecursion in the obvious way doesn't productivity check
-partial -- and the call to foldr isn't guarded anyway!
-scanr : (f : a -> Inf b -> b) -> (xs : Stream a) -> Stream b
-scanr f (x :: xs) = f x (foldr f xs) :: scanr f xs
 
 ||| Produce a Stream repeating a sequence
 ||| @ xs the sequence to repeat
@@ -121,10 +110,10 @@ cycle {a} (x :: xs) {ok = IsNonEmpty} = x :: cycle' xs
         cycle' []        = x :: cycle' xs
         cycle' (y :: ys) = y :: cycle' ys
 
-instance Applicative Stream where
+Applicative Stream where
   pure = repeat
   (<*>) = zipWith apply
 
-instance Monad Stream where
+Monad Stream where
   s >>= f = diag (map f s)
 

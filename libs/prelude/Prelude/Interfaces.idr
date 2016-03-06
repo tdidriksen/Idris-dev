@@ -1,8 +1,10 @@
-module Prelude.Classes
+module Prelude.Interfaces
 
 import Builtins
 import Prelude.Basics
 import Prelude.Bool
+
+%access public export
 
 -- Numerical Operator Precedence
 infixl 5 ==, /=
@@ -19,53 +21,53 @@ intToBool x = True
 boolOp : (a -> a -> Int) -> a -> a -> Bool
 boolOp op x y = intToBool (op x y)
 
--- ---------------------------------------------------------- [ Equality Class ]
-||| The Eq class defines inequality and equality.
-class Eq a where
-    (==) : a -> a -> Bool
-    (/=) : a -> a -> Bool
+-- ---------------------------------------------------------- [ Equality Interface ]
+||| The Eq interface defines inequality and equality.
+interface Eq ty where
+    (==) : ty -> ty -> Bool
+    (/=) : ty -> ty -> Bool
 
     x /= y = not (x == y)
     x == y = not (x /= y)
 
-instance Eq () where
+Eq () where
   () == () = True
 
-instance Eq Int where
+Eq Int where
     (==) = boolOp prim__eqInt
 
-instance Eq Integer where
+Eq Integer where
     (==) = boolOp prim__eqBigInt
 
-instance Eq Double where
+Eq Double where
     (==) = boolOp prim__eqFloat
 
-instance Eq Char where
+Eq Char where
     (==) = boolOp prim__eqChar
 
-instance Eq String where
+Eq String where
     (==) = boolOp prim__eqString
 
-instance Eq Ptr where
+Eq Ptr where
     (==) = boolOp prim__eqPtr
 
-instance Eq ManagedPtr where
+Eq ManagedPtr where
     (==) = boolOp prim__eqManagedPtr
 
-instance Eq Bool where
+Eq Bool where
     True  == True  = True
     True  == False = False
     False == True  = False
     False == False = True
-    
-instance (Eq a, Eq b) => Eq (a, b) where
+
+(Eq a, Eq b) => Eq (a, b) where
   (==) (a, c) (b, d) = (a == b) && (c == d)
 
 
--- ---------------------------------------------------------- [ Ordering Class ]
+-- ---------------------------------------------------------- [ Ordering Interface ]
 %elim data Ordering = LT | EQ | GT
 
-instance Eq Ordering where
+Eq Ordering where
     LT == LT = True
     EQ == EQ = True
     GT == GT = True
@@ -77,163 +79,163 @@ thenCompare LT y = LT
 thenCompare EQ y = y
 thenCompare GT y = GT
 
-||| The Ord class defines comparison operations on ordered data types.
-class Eq a => Ord a where
-    compare : a -> a -> Ordering
+||| The Ord interface defines comparison operations on ordered data types.
+interface Eq ty => Ord ty where
+    compare : ty -> ty -> Ordering
 
-    (<) : a -> a -> Bool
+    (<) : ty -> ty -> Bool
     (<) x y with (compare x y)
         (<) x y | LT = True
         (<) x y | _  = False
 
-    (>) : a -> a -> Bool
+    (>) : ty -> ty -> Bool
     (>) x y with (compare x y)
         (>) x y | GT = True
         (>) x y | _  = False
 
-    (<=) : a -> a -> Bool
+    (<=) : ty -> ty -> Bool
     (<=) x y = x < y || x == y
 
-    (>=) : a -> a -> Bool
+    (>=) : ty -> ty -> Bool
     (>=) x y = x > y || x == y
 
-    max : a -> a -> a
+    max : ty -> ty -> ty
     max x y = if x > y then x else y
 
-    min : a -> a -> a
+    min : ty -> ty -> ty
     min x y = if (x < y) then x else y
 
-instance Ord () where
+Ord () where
     compare () () = EQ
 
-instance Ord Int where
+Ord Int where
     compare x y = if (x == y) then EQ else
                   if (boolOp prim__sltInt x y) then LT else
                   GT
 
 
-instance Ord Integer where
+Ord Integer where
     compare x y = if (x == y) then EQ else
                   if (boolOp prim__sltBigInt x y) then LT else
                   GT
 
 
-instance Ord Double where
+Ord Double where
     compare x y = if (x == y) then EQ else
                   if (boolOp prim__sltFloat x y) then LT else
                   GT
 
 
-instance Ord Char where
+Ord Char where
     compare x y = if (x == y) then EQ else
                   if (boolOp prim__sltChar x y) then LT else
                   GT
 
 
-instance Ord String where
+Ord String where
     compare x y = if (x == y) then EQ else
                   if (boolOp prim__ltString x y) then LT else
                   GT
 
 
-instance Ord Bool where
+Ord Bool where
     compare True True = EQ
     compare False False = EQ
     compare False True = LT
     compare True False = GT
 
 
-instance (Ord a, Ord b) => Ord (a, b) where
+(Ord a, Ord b) => Ord (a, b) where
   compare (xl, xr) (yl, yr) =
     if xl /= yl
       then compare xl yl
       else compare xr yr
 
--- --------------------------------------------------------- [ Numerical Class ]
-||| The Num class defines basic numerical arithmetic.
-class Num a where
-    (+) : a -> a -> a
-    (*) : a -> a -> a
+-- --------------------------------------------------------- [ Numerical Interface ]
+||| The Num interface defines basic numerical arithmetic.
+interface Num ty where
+    (+) : ty -> ty -> ty
+    (*) : ty -> ty -> ty
     ||| Conversion from Integer.
-    fromInteger : Integer -> a
+    fromInteger : Integer -> ty
 
-instance Num Integer where
+Num Integer where
     (+) = prim__addBigInt
     (*) = prim__mulBigInt
 
     fromInteger = id
 
-instance Num Int where
+Num Int where
     (+) = prim__addInt
     (*) = prim__mulInt
 
     fromInteger = prim__truncBigInt_Int
 
 
-instance Num Double where
+Num Double where
     (+) = prim__addFloat
     (*) = prim__mulFloat
 
     fromInteger = prim__toFloatBigInt
 
-instance Num Bits8 where
+Num Bits8 where
   (+) = prim__addB8
   (*) = prim__mulB8
   fromInteger = prim__truncBigInt_B8
 
-instance Num Bits16 where
+Num Bits16 where
   (+) = prim__addB16
   (*) = prim__mulB16
   fromInteger = prim__truncBigInt_B16
 
-instance Num Bits32 where
+Num Bits32 where
   (+) = prim__addB32
   (*) = prim__mulB32
   fromInteger = prim__truncBigInt_B32
 
-instance Num Bits64 where
+Num Bits64 where
   (+) = prim__addB64
   (*) = prim__mulB64
   fromInteger = prim__truncBigInt_B64
 
--- --------------------------------------------------------- [ Negatable Class ]
-||| The `Neg` class defines operations on numbers which can be negative.
-class Num a => Neg a where
-    ||| The underlying implementation of unary minus. `-5` desugars to `negate (fromInteger 5)`.
-    negate : a -> a
-    (-) : a -> a -> a
+-- --------------------------------------------------------- [ Negatable Interface ]
+||| The `Neg` interface defines operations on numbers which can be negative.
+interface Num ty => Neg ty where
+    ||| The underlying of unary minus. `-5` desugars to `negate (fromInteger 5)`.
+    negate : ty -> ty
+    (-) : ty -> ty -> ty
     ||| Absolute value
-    abs : a -> a
+    abs : ty -> ty
 
-instance Neg Integer where
+Neg Integer where
     negate x = prim__subBigInt 0 x
     (-) = prim__subBigInt
     abs x = if x < 0 then -x else x
 
-instance Neg Int where
+Neg Int where
     negate x = prim__subInt 0 x
     (-) = prim__subInt
     abs x = if x < (prim__truncBigInt_Int 0) then -x else x
 
-instance Neg Double where
+Neg Double where
     negate x = prim__negFloat x
     (-) = prim__subFloat
     abs x = if x < (prim__toFloatBigInt 0) then -x else x
 
 -- ------------------------------------------------------------
-instance Eq Bits8 where
+Eq Bits8 where
   x == y = intToBool (prim__eqB8 x y)
 
-instance Eq Bits16 where
+Eq Bits16 where
   x == y = intToBool (prim__eqB16 x y)
 
-instance Eq Bits32 where
+Eq Bits32 where
   x == y = intToBool (prim__eqB32 x y)
 
-instance Eq Bits64 where
+Eq Bits64 where
   x == y = intToBool (prim__eqB64 x y)
 
-instance Ord Bits8 where
+Ord Bits8 where
   (<) = boolOp prim__ltB8
   (>) = boolOp prim__gtB8
   (<=) = boolOp prim__lteB8
@@ -242,7 +244,7 @@ instance Ord Bits8 where
                 else if l > r then GT
                      else EQ
 
-instance Ord Bits16 where
+Ord Bits16 where
   (<) = boolOp prim__ltB16
   (>) = boolOp prim__gtB16
   (<=) = boolOp prim__lteB16
@@ -251,7 +253,7 @@ instance Ord Bits16 where
                 else if l > r then GT
                      else EQ
 
-instance Ord Bits32 where
+Ord Bits32 where
   (<) = boolOp prim__ltB32
   (>) = boolOp prim__gtB32
   (<=) = boolOp prim__lteB32
@@ -260,7 +262,7 @@ instance Ord Bits32 where
                 else if l > r then GT
                      else EQ
 
-instance Ord Bits64 where
+Ord Bits64 where
   (<) = boolOp prim__ltB64
   (>) = boolOp prim__gtB64
   (<=) = boolOp prim__lteB64
@@ -271,52 +273,56 @@ instance Ord Bits64 where
 
 -- ------------------------------------------------------------- [ Bounded ]
 
-class Ord b => MinBound b where
+interface Ord b => MinBound b where
   ||| The lower bound for the type
   minBound : b
 
-class Ord b => MaxBound b where
+interface Ord b => MaxBound b where
   ||| The upper bound for the type
   maxBound : b
 
-instance MinBound Bits8 where
+MinBound Bits8 where
   minBound = 0x0
 
-instance MaxBound Bits8 where
+MaxBound Bits8 where
   maxBound = 0xff
 
-instance MinBound Bits16 where
+MinBound Bits16 where
   minBound = 0x0
 
-instance MaxBound Bits16 where
+MaxBound Bits16 where
   maxBound = 0xffff
 
-instance MinBound Bits32 where
+MinBound Bits32 where
   minBound = 0x0
 
-instance MaxBound Bits32 where
+MaxBound Bits32 where
   maxBound = 0xffffffff
 
-instance MinBound Bits64 where
+MinBound Bits64 where
   minBound = 0x0
 
-instance MaxBound Bits64 where
+MaxBound Bits64 where
   maxBound = 0xffffffffffffffff
 
 
 -- ------------------------------------------------------------- [ Fractionals ]
 
-||| Fractional division of two Doubles.
-(/) : Double -> Double -> Double
-(/) = prim__divFloat
+interface Num ty => Fractional ty where
+  (/) : ty -> ty -> ty
+  recip : ty -> ty
 
+  recip x = 1 / x
+
+Fractional Double where
+  (/) = prim__divFloat
 
 -- --------------------------------------------------------------- [ Integrals ]
 %default partial
 
-class Integral a where
-   div : a -> a -> a
-   mod : a -> a -> a
+interface Num ty => Integral ty where
+   div : ty -> ty -> ty
+   mod : ty -> ty -> ty
 
 -- ---------------------------------------------------------------- [ Integers ]
 divBigInt : Integer -> Integer -> Integer
@@ -327,7 +333,7 @@ modBigInt : Integer -> Integer -> Integer
 modBigInt x y = case y == 0 of
   False => prim__sremBigInt x y
 
-instance Integral Integer where
+Integral Integer where
   div = divBigInt
   mod = modBigInt
 
@@ -341,7 +347,7 @@ modInt : Int -> Int -> Int
 modInt x y = case y == 0 of
   False => prim__sremInt x y
 
-instance Integral Int where
+Integral Int where
   div = divInt
   mod = modInt
 
@@ -353,8 +359,8 @@ divB8 x y = case y == 0 of
 modB8 : Bits8 -> Bits8 -> Bits8
 modB8 x y = case y == 0 of
   False => prim__sremB8 x y
-  
-instance Integral Bits8 where
+
+Integral Bits8 where
   div = divB8
   mod = modB8
 
@@ -367,9 +373,9 @@ modB16 : Bits16 -> Bits16 -> Bits16
 modB16 x y = case y == 0 of
   False => prim__sremB16 x y
 
-instance Integral Bits16 where
-  div = divB16 
-  mod = modB16 
+Integral Bits16 where
+  div = divB16
+  mod = modB16
 
 -- ------------------------------------------------------------------ [ Bits32 ]
 divB32 : Bits32 -> Bits32 -> Bits32
@@ -380,9 +386,9 @@ modB32 : Bits32 -> Bits32 -> Bits32
 modB32 x y = case y == 0 of
   False => prim__sremB32 x y
 
-instance Integral Bits32 where
-  div = divB32 
-  mod = modB32 
+Integral Bits32 where
+  div = divB32
+  mod = modB32
 
 -- ------------------------------------------------------------------ [ Bits64 ]
 divB64 : Bits64 -> Bits64 -> Bits64
@@ -393,8 +399,6 @@ modB64 : Bits64 -> Bits64 -> Bits64
 modB64 x y = case y == 0 of
   False => prim__sremB64 x y
 
-instance Integral Bits64 where
-  div = divB64 
-  mod = modB64 
-
-
+Integral Bits64 where
+  div = divB64
+  mod = modB64

@@ -4,15 +4,17 @@ import Builtins
 
 import Prelude.Basics
 import Prelude.Bool
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.Foldable
 import Prelude.Functor
+
+%access public export
 
 ---- Applicative functors/Idioms
 
 infixl 2 <*>
 
-class Functor f => Applicative (f : Type -> Type) where
+interface Functor f => Applicative (f : Type -> Type) where
     pure  : a -> f a
     (<*>) : f (a -> b) -> f a -> f b
 
@@ -37,7 +39,7 @@ liftA3 : Applicative f => (a -> b -> c -> d) -> f a -> f b -> f c -> f d
 liftA3 f a b c = (map f a) <*> b <*> c
 
 infixl 3 <|>
-class Applicative f => Alternative (f : Type -> Type) where
+interface Applicative f => Alternative (f : Type -> Type) where
     empty : f a
     (<|>) : f a -> f a -> f a
 

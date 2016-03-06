@@ -35,6 +35,8 @@ VM* init_vm(int stack_size, size_t heap_size,
 
     alloc_heap(&(vm->heap), heap_size, heap_size, NULL);
 
+    c_heap_init(&vm->c_heap);
+
     vm->ret = NULL;
     vm->reg1 = NULL;
 #ifdef HAS_PTHREAD
@@ -78,6 +80,14 @@ VM* idris_vm() {
     return vm;
 }
 
+VM* get_vm(void) {
+#ifdef HAS_PTHREAD
+    return pthread_getspecific(vm_key);
+#else
+    return global_vm;
+#endif
+}
+
 void close_vm(VM* vm) {
     terminate(vm);
 }
@@ -95,7 +105,7 @@ void init_threaddata(VM *vm) {
 }
 
 void init_signals() {
-#if (__linux__ || __APPLE__ || __FreeBSD__)
+#if (__linux__ || __APPLE__ || __FreeBSD__ || __DragonFly__)
     signal(SIGPIPE, SIG_IGN);
 #endif
 }
@@ -108,12 +118,13 @@ Stats terminate(VM* vm) {
 #endif
     free(vm->valstack);
     free_heap(&(vm->heap));
+    c_heap_destroy(&(vm->c_heap));
 #ifdef HAS_PTHREAD
     pthread_mutex_destroy(&(vm -> inbox_lock));
     pthread_mutex_destroy(&(vm -> inbox_block));
     pthread_cond_destroy(&(vm -> inbox_waiting));
 #endif
-    // free(vm); 
+    // free(vm);
     // Set the VM as inactive, so that if any message gets sent to it
     // it will not get there, rather than crash the entire system.
     // (TODO: We really need to be cleverer than this if we're going to
@@ -122,6 +133,17 @@ Stats terminate(VM* vm) {
 
     STATS_LEAVE_EXIT(stats)
     return stats;
+}
+
+CData cdata_allocate(size_t size, CDataFinalizer finalizer)
+{
+    void * data = (void *) malloc(size);
+    return cdata_manage(data, size, finalizer);
+}
+
+CData cdata_manage(void * data, size_t size, CDataFinalizer finalizer)
+{
+    return c_heap_create_item(data, size, finalizer);
 }
 
 void idris_requireAlloc(size_t size) {
@@ -262,6 +284,22 @@ char* GETSTROFF(VAL stroff) {
     // Assume STROFF
     StrOffset* root = stroff->info.str_offset;
     return (root->str->info.str + root->offset);
+}
+
+VAL MKCDATA(VM* vm, CHeapItem * item) {
+    c_heap_insert_if_needed(vm, &vm->c_heap, item);
+    Closure* cl = allocate(sizeof(Closure), 0);
+    SETTY(cl, CDATA);
+    cl->info.c_heap_item = item;
+    return cl;
+}
+
+VAL MKCDATAc(VM* vm, CHeapItem * item) {
+    c_heap_insert_if_needed(vm, &vm->c_heap, item);
+    Closure* cl = allocate(sizeof(Closure), 1);
+    SETTY(cl, CDATA);
+    cl->info.c_heap_item = item;
+    return cl;
 }
 
 VAL MKPTR(VM* vm, void* ptr) {
@@ -412,6 +450,18 @@ uint8_t idris_peek(void* ptr, i_int offset) {
 
 void idris_poke(void* ptr, i_int offset, uint8_t data) {
     *(((uint8_t*)ptr) + offset) = data;
+}
+
+
+VAL idris_peekPtr(VM* vm, VAL ptr, VAL offset) {
+    void** addr = GETPTR(ptr) + GETINT(offset);
+    return MKPTR(vm, *addr);
+}
+
+VAL idris_pokePtr(VAL ptr, VAL offset, VAL data) {
+    void** addr = GETPTR(ptr) + GETINT(offset);
+    *addr = GETPTR(data);
+    return MKINT(0);
 }
 
 void idris_memmove(void* dest, void* src, i_int dest_offset, i_int src_offset, i_int size) {
@@ -789,12 +839,12 @@ int idris_sendMessage(VM* sender, VM* dest, VAL msg) {
     }
 
     pthread_mutex_lock(&(dest->inbox_lock));
-    
+
     if (dest->inbox_write >= dest->inbox_end) {
         // FIXME: This is obviously bad in the long run. This should
         // either block, make the inbox bigger, or return an error code,
         // or possibly make it user configurable
-        fprintf(stderr, "Inbox full"); 
+        fprintf(stderr, "Inbox full");
         exit(-1);
     }
 
@@ -820,7 +870,7 @@ VM* idris_checkMessages(VM* vm) {
 
 VM* idris_checkMessagesFrom(VM* vm, VM* sender) {
     Msg* msg;
-    
+
     for (msg = vm->inbox; msg < vm->inbox_end && msg->msg != NULL; ++msg) {
         if (sender == NULL || msg->sender == sender) {
             return msg->sender;
@@ -854,7 +904,7 @@ VM* idris_checkMessagesTimeout(VM* vm, int delay) {
 
 Msg* idris_getMessageFrom(VM* vm, VM* sender) {
     Msg* msg;
-    
+
     for (msg = vm->inbox; msg < vm->inbox_write; ++msg) {
         if (sender == NULL || msg->sender == sender) {
             return msg;

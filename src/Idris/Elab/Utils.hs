@@ -56,21 +56,23 @@ checkDeprecated fc n
 iderr :: Name -> Err -> Err
 iderr _ e = e
 
-checkDef :: FC -> (Name -> Err -> Err) -> [(Name, (Int, Maybe Name, Type, [Name]))]
-         -> Idris [(Name, (Int, Maybe Name, Type, [Name]))]
-checkDef fc mkerr ns = checkAddDef False True fc mkerr ns
+checkDef :: FC -> (Name -> Err -> Err) -> Bool ->
+            [(Name, (Int, Maybe Name, Type, [Name]))] ->
+            Idris [(Name, (Int, Maybe Name, Type, [Name]))]
+checkDef fc mkerr definable ns
+   = checkAddDef False True fc mkerr definable ns
 
-checkAddDef :: Bool -> Bool -> FC -> (Name -> Err -> Err)
+checkAddDef :: Bool -> Bool -> FC -> (Name -> Err -> Err) -> Bool
             -> [(Name, (Int, Maybe Name, Type, [Name]))]
             -> Idris [(Name, (Int, Maybe Name, Type, [Name]))]
-checkAddDef add toplvl fc mkerr [] = return []
-checkAddDef add toplvl fc mkerr ((n, (i, top, t, psns)) : ns)
+checkAddDef add toplvl fc mkerr def [] = return []
+checkAddDef add toplvl fc mkerr definable ((n, (i, top, t, psns)) : ns)
                = do ctxt <- getContext
-                    logElab 5 $ "Rechecking deferred name " ++ show (n, t)
+                    logElab 5 $ "Rechecking deferred name " ++ show (n, t, definable)
                     (t', _) <- recheckC fc (mkerr n) [] t
-                    when add $ do addDeferred [(n, (i, top, t, psns, toplvl))]
+                    when add $ do addDeferred [(n, (i, top, t, psns, toplvl, definable))]
                                   addIBC (IBCDef n)
-                    ns' <- checkAddDef add toplvl fc mkerr ns
+                    ns' <- checkAddDef add toplvl fc mkerr definable ns
                     return ((n, (i, top, t', psns)) : ns')
 
 -- | Get the list of (index, name) of inaccessible arguments from an elaborated
@@ -314,3 +316,19 @@ mkStaticTy ns (PPi p n fc ty sc)
     | n `elem` ns = PPi (p { pstatic = Static }) n fc ty (mkStaticTy ns sc)
     | otherwise = PPi p n fc ty (mkStaticTy ns sc)
 mkStaticTy ns t = t
+
+-- Check that a name has the minimum required accessibility
+checkVisibility :: FC -> Name -> Accessibility -> Accessibility -> Name -> Idris ()
+checkVisibility fc n minAcc acc ref 
+    = do nvis <- getFromHideList ref
+         case nvis of
+              Nothing -> return ()
+              Just acc' -> if acc' > minAcc 
+                              then tclift $ tfail (At fc 
+                                      (Msg $ show acc ++ " " ++ show n ++ 
+                                             " can't refer to " ++ 
+                                             show acc' ++ " " ++ show ref))
+                              else return ()
+
+
+

@@ -5,6 +5,7 @@ module Data.Matrix.Numeric
 import public Data.Matrix
 
 %default total
+%access public export
 
 infixr 2 <:>  -- vector inner product
 infixr 2 ><   -- vector outer product
@@ -22,12 +23,12 @@ infixr 7 <&>  -- matrix tensor product
 --                   Vectors as members of Num
 -----------------------------------------------------------------------
 
-instance Num a => Num (Vect n a) where
+implementation Num a => Num (Vect n a) where
   (+) = zipWith (+)
   (*) = zipWith (*)
   fromInteger n = replicate _ (fromInteger n)
 
-instance Neg a => Neg (Vect n a) where
+implementation Neg a => Neg (Vect n a) where
   (-) = zipWith (-)
   abs = map abs
   negate = map negate

@@ -2,7 +2,6 @@
 module Util.System(tempfile,withTempdir,rmFile,catchIO, isWindows,
                    writeSource, writeSourceText, readSource,
                    setupBundledCC, isATTY) where
-
 -- System helper functions.
 
 import Control.Exception as CE
@@ -24,14 +23,13 @@ import System.IO.Error
 
 #ifdef FREESTANDING
 import Tools_idris
+import System.FilePath (isAbsolute, dropFileName)
+import System.Directory (doesDirectoryExist)
 import System.Environment (getEnv, setEnv, getExecutablePath)
 #endif
 
 catchIO :: IO a -> (IOError -> IO a) -> IO a
 catchIO = CE.catch
-
-throwIO :: IOError -> IO a
-throwIO = CE.throw
 
 isWindows :: Bool
 isWindows = os `elem` ["win32", "mingw32", "cygwin32"]

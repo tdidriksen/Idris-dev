@@ -6,10 +6,10 @@ import Prelude.Algebra
 import Prelude.Basics
 import Prelude.Bool
 import Prelude.Cast
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.Uninhabited
 
-%access public
+%access public export
 %default total
 
 ||| Natural numbers: unbounded, unsigned integers which can be pattern
@@ -23,7 +23,7 @@ import Prelude.Uninhabited
 -- name hints for interactive editing
 %name Nat k,j,i,n,m
 
-instance Uninhabited (Z = S n) where
+Uninhabited (Z = S n) where
   uninhabited Refl impossible
 
 --------------------------------------------------------------------------------
@@ -100,7 +100,7 @@ data LTE  : (n, m : Nat) -> Type where
   ||| If n <= m, then n + 1 <= m + 1
   LTESucc : LTE left right -> LTE (S left) (S right)
 
-instance Uninhabited (LTE (S n) Z) where
+Uninhabited (LTE (S n) Z) where
   uninhabited LTEZero impossible
 
 ||| Greater than or equal to
@@ -184,50 +184,50 @@ toIntNat n = toIntNat' n 0 where
 (-) m n {smaller} = minus m n
 
 --------------------------------------------------------------------------------
--- Type class instances
+-- Type class implementations
 --------------------------------------------------------------------------------
 
-instance Eq Nat where
+Eq Nat where
   Z == Z         = True
   (S l) == (S r) = l == r
   _ == _         = False
 
-instance Cast Nat Integer where
+Cast Nat Integer where
   cast = toIntegerNat
 
-instance Ord Nat where
+Ord Nat where
   compare Z Z         = EQ
   compare Z (S k)     = LT
   compare (S k) Z     = GT
   compare (S x) (S y) = compare x y
 
-instance Num Nat where
+Num Nat where
   (+) = plus
   (*) = mult
 
   fromInteger = fromIntegerNat
 
-instance MinBound Nat where
+MinBound Nat where
   minBound = Z
 
 ||| Casts negative `Integers` to 0.
-instance Cast Integer Nat where
+Cast Integer Nat where
   cast = fromInteger
 
-instance Cast String Nat where
+Cast String Nat where
     cast str = cast (the Integer (cast str))
 
-||| A wrapper for Nat that specifies the semigroup and monad instances that use (*)
+||| A wrapper for Nat that specifies the semigroup and monad implementations that use (*)
 record Multiplicative where
   constructor GetMultiplicative
   _ : Nat
 
-||| A wrapper for Nat that specifies the semigroup and monad instances that use (+)
+||| A wrapper for Nat that specifies the semigroup and monad implementations that use (+)
 record Additive where
-  constructor GetAdditive  
+  constructor GetAdditive
   _ : Nat
-  
-instance Semigroup Multiplicative where
+
+Semigroup Multiplicative where
   (<+>) left right = GetMultiplicative $ left' * right'
     where
       left'  : Nat
@@ -240,7 +240,7 @@ instance Semigroup Multiplicative where
         case right of
           GetMultiplicative m => m
 
-instance Semigroup Additive where
+Semigroup Additive where
   left <+> right = GetAdditive $ left' + right'
     where
       left'  : Nat
@@ -253,20 +253,20 @@ instance Semigroup Additive where
         case right of
           GetAdditive m => m
 
-instance Monoid Multiplicative where
+Monoid Multiplicative where
   neutral = GetMultiplicative $ S Z
 
-instance Monoid Additive where
+Monoid Additive where
   neutral = GetAdditive Z
 
 ||| Casts negative `Ints` to 0.
-instance Cast Int Nat where
+Cast Int Nat where
   cast i = fromInteger (cast i)
 
-instance Cast Nat Int where
+Cast Nat Int where
   cast = toIntNat
 
-instance Cast Nat Double where
+Cast Nat Double where
   cast = cast . toIntegerNat
 
 --------------------------------------------------------------------------------
@@ -341,7 +341,8 @@ partial
 divCeil : Nat -> Nat -> Nat
 divCeil x (S y) = divCeilNZ x (S y) SIsNotZ
 
-instance Integral Nat where
+partial
+Integral Nat where
   div = divNat
   mod = modNat
 
@@ -424,7 +425,7 @@ total plusCommutative : (left : Nat) -> (right : Nat) ->
 plusCommutative Z        right = rewrite plusZeroRightNeutral right in Refl
 plusCommutative (S left) right =
   let inductiveHypothesis = plusCommutative left right in
-    rewrite inductiveHypothesis in 
+    rewrite inductiveHypothesis in
       rewrite plusSuccRightSucc right left in Refl
 
 total plusAssociative : (left : Nat) -> (centre : Nat) -> (right : Nat) ->
@@ -450,21 +451,21 @@ total plusLeftCancel : (left : Nat) -> (right : Nat) -> (right' : Nat) ->
 plusLeftCancel Z        right right' p = p
 plusLeftCancel (S left) right right' p =
   let inductiveHypothesis = plusLeftCancel left right right' in
-    inductiveHypothesis (succInjective _ _ p) 
+    inductiveHypothesis (succInjective _ _ p)
 
 total plusRightCancel : (left : Nat) -> (left' : Nat) -> (right : Nat) ->
   (p : left + right = left' + right) -> left = left'
 plusRightCancel left left' Z         p = rewrite sym (plusZeroRightNeutral left) in
                                          rewrite sym (plusZeroRightNeutral left') in
-                                                 p 
+                                                 p
 plusRightCancel left left' (S right) p =
-  plusRightCancel left left' right 
-    (succInjective _ _ (rewrite plusSuccRightSucc left right in 
+  plusRightCancel left left' right
+    (succInjective _ _ (rewrite plusSuccRightSucc left right in
                         rewrite plusSuccRightSucc left' right in p))
 
 total plusLeftLeftRightZero : (left : Nat) -> (right : Nat) ->
   (p : left + right = left) -> right = Z
-plusLeftLeftRightZero Z        right p = p 
+plusLeftLeftRightZero Z        right p = p
 plusLeftLeftRightZero (S left) right p =
   plusLeftLeftRightZero left right (succInjective _ _ p)
 
@@ -481,7 +482,7 @@ total multRightSuccPlus : (left : Nat) -> (right : Nat) ->
 multRightSuccPlus Z        right = Refl
 multRightSuccPlus (S left) right =
   let inductiveHypothesis = multRightSuccPlus left right in
-    rewrite inductiveHypothesis in 
+    rewrite inductiveHypothesis in
     rewrite plusAssociative left right (mult left right) in
     rewrite plusAssociative right left (mult left right) in
     rewrite plusCommutative right left in
@@ -493,11 +494,11 @@ multLeftSuccPlus left right = Refl
 
 total multCommutative : (left : Nat) -> (right : Nat) ->
   left * right = right * left
-multCommutative Z right        = rewrite multZeroRightZero right in Refl 
+multCommutative Z right        = rewrite multZeroRightZero right in Refl
 multCommutative (S left) right =
   let inductiveHypothesis = multCommutative left right in
       rewrite inductiveHypothesis in
-      rewrite multRightSuccPlus right left in 
+      rewrite multRightSuccPlus right left in
               Refl
 
 total multDistributesOverPlusRight : (left : Nat) -> (centre : Nat) -> (right : Nat) ->
@@ -505,7 +506,7 @@ total multDistributesOverPlusRight : (left : Nat) -> (centre : Nat) -> (right : 
 multDistributesOverPlusRight Z        centre right = Refl
 multDistributesOverPlusRight (S left) centre right =
   let inductiveHypothesis = multDistributesOverPlusRight left centre right in
-    rewrite inductiveHypothesis in 
+    rewrite inductiveHypothesis in
     rewrite plusAssociative (plus centre (mult left centre)) right (mult left right) in
     rewrite sym (plusAssociative centre (mult left centre) right) in
     rewrite plusCommutative (mult left centre) right in
@@ -527,7 +528,7 @@ total multAssociative : (left : Nat) -> (centre : Nat) -> (right : Nat) ->
 multAssociative Z        centre right = Refl
 multAssociative (S left) centre right =
   let inductiveHypothesis = multAssociative left centre right in
-    rewrite inductiveHypothesis in 
+    rewrite inductiveHypothesis in
     rewrite multDistributesOverPlusLeft centre (mult left centre) right in
             Refl
 
@@ -619,7 +620,7 @@ powerSuccPowerLeft base exp = Refl
 
 total multPowerPowerPlus : (base : Nat) -> (exp : Nat) -> (exp' : Nat) ->
   (power base exp) * (power base exp') = power base (exp + exp')
-multPowerPowerPlus base Z       exp' = 
+multPowerPowerPlus base Z       exp' =
     rewrite sym (plusZeroRightNeutral (power base exp')) in Refl
 multPowerPowerPlus base (S exp) exp' =
   let inductiveHypothesis = multPowerPowerPlus base exp exp' in
@@ -651,7 +652,7 @@ total powerPowerMultPower : (base : Nat) -> (exp : Nat) -> (exp' : Nat) ->
 powerPowerMultPower base exp Z        = rewrite multZeroRightZero exp in Refl
 powerPowerMultPower base exp (S exp') =
   let inductiveHypothesis = powerPowerMultPower base exp exp' in
-    rewrite inductiveHypothesis in 
+    rewrite inductiveHypothesis in
     rewrite multRightSuccPlus exp exp' in
     rewrite sym (multPowerPowerPlus base exp (mult exp exp')) in
             Refl
@@ -664,7 +665,7 @@ total minusSuccPred : (left : Nat) -> (right : Nat) ->
   minus left (S right) = pred (minus left right)
 minusSuccPred Z        right = Refl
 minusSuccPred (S left) Z =
-    rewrite minusZeroRight left in Refl 
+    rewrite minusZeroRight left in Refl
 minusSuccPred (S left) (S right) =
   let inductiveHypothesis = minusSuccPred left right in
     rewrite inductiveHypothesis in Refl
@@ -782,4 +783,3 @@ sucMinL (S l) = cong (sucMinL l)
 total sucMinR : (l : Nat) -> minimum l (S l) = l
 sucMinR Z = Refl
 sucMinR (S l) = cong (sucMinR l)
-

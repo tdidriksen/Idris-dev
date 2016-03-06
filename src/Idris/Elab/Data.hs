@@ -60,7 +60,7 @@ elabData info syn doc argDocs fc opts (PLaterdecl n nfc t_in)
     = do let codata = Codata `elem` opts
          logElab 1 (show (fc, doc))
          checkUndefined fc n
-         when (implicitable n) $ warnLC fc n
+         when (implicitable (nsroot n)) $ warnLC fc n
          (cty, _, t, inacc) <- buildType info syn fc [] n t_in
 
          addIBC (IBCDef n)
@@ -71,7 +71,7 @@ elabData info syn doc argDocs fc opts (PDatadecl n nfc t_in dcons)
     = do let codata = Codata `elem` opts
          logElab 1 (show fc)
          undef <- isUndefined fc n
-         when (implicitable n) $ warnLC fc n
+         when (implicitable (nsroot n)) $ warnLC fc n
          (cty, ckind, t, inacc) <- buildType info syn fc [] n t_in
          -- if n is defined already, make sure it is just a type declaration
          -- with the same type we've just elaborated, and no constructors
@@ -231,7 +231,7 @@ elabCon :: ElabInfo -> SyntaxInfo -> Name -> Bool ->
            Idris (Name, Type)
 elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcenames)
     = do checkUndefined fc n
-         when (implicitable n) $ warnLC fc n
+         when (implicitable (nsroot n)) $ warnLC fc n
          logElab 2 $ show fc ++ ":Constructor " ++ show n ++ " : " ++ show t_in
          (cty, ckind, t, inacc) <- buildType info syn fc [Constructor] n (if codata then mkLazy t_in else t_in)
          ctxt <- getContext
@@ -244,7 +244,7 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
 
          logElab 5 $ show fc ++ ":Constructor " ++ show n ++ " elaborated : " ++ show t
          logElab 5 $ "Inaccessible args: " ++ show inacc
-         logElab 2 $ "---> " ++ show n ++ " : " ++ show cty'
+         logElab 2 $ "---> " ++ show n ++ " : " ++ show cty
 
          -- Add to the context (this is temporary, so that later constructors
          -- can be indexed by it)
@@ -259,9 +259,14 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
          addIBC (IBCDoc n)
          fputState (opt_inaccessible . ist_optimisation n) inacc
          addIBC (IBCOpt n)
-         return (n, cty')
+         return (n, cty)
   where
-    tyIs con (Bind n b sc) = tyIs con sc
+    tyIs con (Bind n b sc) = tyIs con (substV (P Bound n Erased) sc)
+    tyIs con t | (P Bound n' _, _) <- unApply t
+        = if n' /= tn then 
+               tclift $ tfail (At fc (Elaborating "constructor " con Nothing 
+                         (Msg ("Type level variable " ++ show n' ++ " is not " ++ show tn))))
+             else return ()
     tyIs con t | (P _ n' _, _) <- unApply t
         = if n' /= tn then tclift $ tfail (At fc (Elaborating "constructor " con Nothing (Msg (show n' ++ " is not " ++ show tn))))
              else return ()
@@ -350,7 +355,7 @@ elabCaseFun ind paramPos n ty cons info = do
                     (ierror . Elaborating "type declaration of " elimDeclName Nothing)
   -- Do not elaborate clauses if there aren't any
   case eliminatorClauses of
-    [] -> State.lift $ solveDeferred elimDeclName -- Remove meta-variable for type
+    [] -> State.lift $ solveDeferred emptyFC elimDeclName -- Remove meta-variable for type
     _  -> State.lift $ idrisCatch (rec_elabDecl info EAll info eliminatorDef)
                     (ierror . Elaborating "clauses of " elimDeclName Nothing)
   where elimLog :: String -> EliminatorState ()

@@ -3,11 +3,13 @@ module Decidable.Equality
 import Builtins
 import Prelude.Basics
 import Prelude.Bool
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.Either
 import Prelude.List
 import Prelude.Nat
 import Prelude.Maybe
+
+%access public export
 
 --------------------------------------------------------------------------------
 -- Utility lemmas
@@ -23,7 +25,7 @@ negEqSym p h = p (sym h)
 --------------------------------------------------------------------------------
 
 ||| Decision procedures for propositional equality
-class DecEq t where
+interface DecEq t where
   ||| Decide whether two elements of `t` are propositionally equal
   total decEq : (x1 : t) -> (x2 : t) -> Dec (x1 = x2)
 
@@ -31,7 +33,7 @@ class DecEq t where
 --- Unit
 --------------------------------------------------------------------------------
 
-instance DecEq () where
+implementation DecEq () where
   decEq () () = Yes Refl
 
 --------------------------------------------------------------------------------
@@ -40,7 +42,7 @@ instance DecEq () where
 total trueNotFalse : True = False -> Void
 trueNotFalse Refl impossible
 
-instance DecEq Bool where
+implementation DecEq Bool where
   decEq True  True  = Yes Refl
   decEq False False = Yes Refl
   decEq True  False = No trueNotFalse
@@ -53,7 +55,7 @@ instance DecEq Bool where
 total ZnotS : Z = S n -> Void
 ZnotS Refl impossible
 
-instance DecEq Nat where
+implementation DecEq Nat where
   decEq Z     Z     = Yes Refl
   decEq Z     (S _) = No ZnotS
   decEq (S _) Z     = No (negEqSym ZnotS)
@@ -68,7 +70,7 @@ instance DecEq Nat where
 total nothingNotJust : {x : t} -> (Nothing {a = t} = Just x) -> Void
 nothingNotJust Refl impossible
 
-instance (DecEq t) => DecEq (Maybe t) where
+implementation (DecEq t) => DecEq (Maybe t) where
   decEq Nothing Nothing = Yes Refl
   decEq (Just x') (Just y') with (decEq x' y')
     | Yes p = Yes $ cong p
@@ -83,7 +85,7 @@ instance (DecEq t) => DecEq (Maybe t) where
 total leftNotRight : {x : a} -> {y : b} -> Left {b = b} x = Right {a = a} y -> Void
 leftNotRight Refl impossible
 
-instance (DecEq a, DecEq b) => DecEq (Either a b) where
+implementation (DecEq a, DecEq b) => DecEq (Either a b) where
   decEq (Left x') (Left y') with (decEq x' y')
     | Yes p = Yes $ cong p
     | No p = No $ \h : Left x' = Left y' => p $ leftInjective {b = b} h
@@ -109,7 +111,7 @@ lemma_fst_neq_snd_eq : {x : a, x' : b, y : c, y' : d} ->
                        ((x, y) = (x', y) -> Void)
 lemma_fst_neq_snd_eq p_x_not_x' Refl Refl = p_x_not_x' Refl
 
-instance (DecEq a, DecEq b) => DecEq (a, b) where
+implementation (DecEq a, DecEq b) => DecEq (a, b) where
   decEq (a, b) (a', b')     with (decEq a a')
     decEq (a, b) (a, b')    | (Yes Refl) with (decEq b b')
       decEq (a, b) (a, b)   | (Yes Refl) | (Yes Refl) = Yes Refl
@@ -135,13 +137,13 @@ lemma_x_neq_xs_eq p Refl Refl = p Refl
 lemma_x_neq_xs_neq : {x : t, xs : List t, y : t, ys : List t} -> (x = y -> Void) -> (xs = ys -> Void) -> ((x :: xs) = (y :: ys) -> Void)
 lemma_x_neq_xs_neq p p' Refl = p Refl
 
-instance DecEq a => DecEq (List a) where
+implementation DecEq a => DecEq (List a) where
   decEq [] [] = Yes Refl
   decEq (x :: xs) [] = No lemma_val_not_nil
   decEq [] (x :: xs) = No (negEqSym lemma_val_not_nil)
   decEq (x :: xs) (y :: ys) with (decEq x y)
     decEq (x :: xs) (x :: ys) | Yes Refl with (decEq xs ys)
-      decEq (x :: xs) (x :: xs) | (Yes Refl) | (Yes Refl) = Yes Refl 
+      decEq (x :: xs) (x :: xs) | (Yes Refl) | (Yes Refl) = Yes Refl
       decEq (x :: xs) (x :: ys) | (Yes Refl) | (No p) = No (\eq => lemma_x_eq_xs_neq Refl p eq)
     decEq (x :: xs) (y :: ys) | No p with (decEq xs ys)
       decEq (x :: xs) (y :: xs) | (No p) | (Yes Refl) = No (\eq => lemma_x_neq_xs_eq p Refl eq)
@@ -155,7 +157,7 @@ instance DecEq a => DecEq (List a) where
 -- Int
 --------------------------------------------------------------------------------
 
-instance DecEq Int where
+implementation DecEq Int where
     decEq x y = if x == y then Yes primitiveEq else No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = believe_me (Refl {x})
@@ -165,7 +167,7 @@ instance DecEq Int where
 -- Char
 --------------------------------------------------------------------------------
 
-instance DecEq Char where
+implementation DecEq Char where
     decEq x y = if x == y then Yes primitiveEq else No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = believe_me (Refl {x})
@@ -175,7 +177,7 @@ instance DecEq Char where
 -- Integer
 --------------------------------------------------------------------------------
 
-instance DecEq Integer where
+implementation DecEq Integer where
     decEq x y = if x == y then Yes primitiveEq else No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
@@ -186,7 +188,7 @@ instance DecEq Integer where
 -- String
 --------------------------------------------------------------------------------
 
-instance DecEq String where
+implementation DecEq String where
     decEq x y = if x == y then Yes primitiveEq else No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = believe_me (Refl {x})
@@ -196,7 +198,7 @@ instance DecEq String where
 -- Ptr
 --------------------------------------------------------------------------------
 
-instance DecEq Ptr where
+implementation DecEq Ptr where
     decEq x y = if x == y then Yes primitiveEq else No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = believe_me (Refl {x})
@@ -206,11 +208,8 @@ instance DecEq Ptr where
 -- ManagedPtr
 --------------------------------------------------------------------------------
 
-instance DecEq ManagedPtr where
+implementation DecEq ManagedPtr where
     decEq x y = if x == y then Yes primitiveEq else No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = believe_me (Refl {x})
              postulate primitiveNotEq : x = y -> Void
-
-
-

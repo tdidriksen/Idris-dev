@@ -4,6 +4,7 @@ module Effect.File
 import Effects
 import Control.IOExcept
 
+%access public export
 
 ||| A Dependent type to describe File Handles. File handles are
 ||| parameterised with the current state of the file: Closed; Open for
@@ -63,7 +64,7 @@ data FileIO : Effect where
   ||| Write a string to a file.
   |||
   ||| Only file that are open for writing can be written to.
-  WriteString : String -> sig FileIO () (OpenFile Write)
+  WriteString : String -> sig FileIO () (OpenFile WriteTruncate)
 
   ||| End of file?
   |||
@@ -73,7 +74,7 @@ data FileIO : Effect where
 -- ------------------------------------------------------------ [ The Handlers ]
 
 --- An implementation of the resource access protocol for the IO Context.
-instance Handler FileIO IO where
+implementation Handler FileIO IO where
     handle () (Open fname m) k = do Right h <- openFile fname m
                                         | Left err => k False ()
                                     k True (FH h)
@@ -89,7 +90,7 @@ instance Handler FileIO IO where
     handle (FH h) EOF             k = do e <- fEOF h
                                          k e (FH h)
 
-instance Handler FileIO (IOExcept a) where
+implementation Handler FileIO (IOExcept a) where
     handle () (Open fname m) k = do Right h <- ioe_lift $ openFile fname m
                                         | Left err => k False ()
                                     k True (FH h)
@@ -137,11 +138,11 @@ readLine : Eff String [FILE_IO (OpenFile Read)]
 readLine = call $ ReadLine
 
 ||| Write a string to a file.
-writeString : String -> Eff () [FILE_IO (OpenFile Write)]
+writeString : String -> Eff () [FILE_IO (OpenFile WriteTruncate)]
 writeString str = call $ WriteString str
 
 ||| Write a line to a file.
-writeLine : String -> Eff () [FILE_IO (OpenFile Write)]
+writeLine : String -> Eff () [FILE_IO (OpenFile WriteTruncate)]
 writeLine str = call $ WriteString (str ++ "\n")
 
 ||| End of file?
@@ -175,7 +176,7 @@ writeFile : (errFunc : String -> e)
          -> (content : String)
          -> Eff (Either e ()) [FILE_IO ()]
 writeFile errFunc fname content = do
-    case !(open fname Write) of
+    case !(open fname WriteTruncate) of
       True => do
         writeString content
         close

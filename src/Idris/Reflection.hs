@@ -364,10 +364,10 @@ reifyArithTy (P _ n _)               | n == reflm "ATDouble" = return ATFloat
 reifyArithTy x = fail ("Couldn't reify reflected ArithTy: " ++ show x)
 
 reifyNativeTy :: Term -> ElabD NativeTy
-reifyNativeTy (P _ n _) | n == reflm "IT8" = return IT8
-reifyNativeTy (P _ n _) | n == reflm "IT8" = return IT8
-reifyNativeTy (P _ n _) | n == reflm "IT8" = return IT8
-reifyNativeTy (P _ n _) | n == reflm "IT8" = return IT8
+reifyNativeTy (P _ n _) | n == reflm "IT8"  = return IT8
+reifyNativeTy (P _ n _) | n == reflm "IT16" = return IT16
+reifyNativeTy (P _ n _) | n == reflm "IT32" = return IT32
+reifyNativeTy (P _ n _) | n == reflm "IT64" = return IT64
 reifyNativeTy x = fail $ "Couldn't reify reflected NativeTy " ++ show x
 
 reifyIntTy :: Term -> ElabD IntTy
@@ -896,7 +896,8 @@ reflectErr (NotInjective t1 t2 t3) =
             , reflect t2
             , reflect t3
             ]
-reflectErr (CantResolve _ t) = raw_apply (Var $ reflErrName "CantResolve") [reflect t]
+reflectErr (CantResolve _ t more) 
+   = raw_apply (Var $ reflErrName "CantResolve") [reflect t, reflectErr more]
 reflectErr (InvalidTCArg n t) = raw_apply (Var $ reflErrName "InvalidTCArg") [reflectName n, reflect t]
 reflectErr (CantResolveAlts ss) =
   raw_apply (Var $ reflErrName "CantResolveAlts")

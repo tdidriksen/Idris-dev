@@ -5,14 +5,14 @@ import Builtins
 import Prelude.Algebra
 import Prelude.Basics
 import Prelude.Bool
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.Foldable
 import Prelude.Functor
 import Prelude.Maybe
 import Prelude.Uninhabited
 import Prelude.Nat
 
-%access public
+%access public export
 %default total
 
 infix 5 \\
@@ -56,7 +56,7 @@ data NonEmpty : (xs : List a) -> Type where
     ||| The proof that a cons cell is non-empty
     IsNonEmpty : NonEmpty (x :: xs)
 
-instance Uninhabited (NonEmpty []) where
+Uninhabited (NonEmpty []) where
   uninhabited IsNonEmpty impossible
 
 ||| Decide whether a list is non-empty
@@ -74,7 +74,7 @@ data InBounds : (k : Nat) -> (xs : List a) -> Type where
     ||| Valid indices can be extended
     InLater : InBounds k xs -> InBounds (S k) (x :: xs)
 
-instance Uninhabited (InBounds k []) where
+Uninhabited (InBounds k []) where
     uninhabited InFirst impossible
 
 ||| Decide whether `k` is a valid index into `xs`
@@ -174,7 +174,7 @@ init' []      = Nothing
 init' (x::xs) =
   case xs of
     []    => Just []
-    y::ys => 
+    y::ys =>
       case init' $ y::ys of
         Nothing => Nothing
         Just j  => Just $ x :: j
@@ -252,7 +252,7 @@ replicate (S n) x = x :: replicate n x
 -- Instances
 --------------------------------------------------------------------------------
 
-instance (Eq a) => Eq (List a) where
+(Eq a) => Eq (List a) where
   (==) []      []      = True
   (==) (x::xs) (y::ys) =
     if x == y then
@@ -262,7 +262,7 @@ instance (Eq a) => Eq (List a) where
   (==) _ _ = False
 
 
-instance Ord a => Ord (List a) where
+Ord a => Ord (List a) where
   compare [] [] = EQ
   compare [] _ = LT
   compare _ [] = GT
@@ -272,13 +272,13 @@ instance Ord a => Ord (List a) where
     else
       compare xs ys
 
-instance Semigroup (List a) where
+Semigroup (List a) where
   (<+>) = (++)
 
-instance Monoid (List a) where
+Monoid (List a) where
   neutral = []
 
-instance Functor List where
+Functor List where
   map f []      = []
   map f (x::xs) = f x :: map f xs
 
@@ -305,7 +305,7 @@ zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 ||| @ z the third list
 zipWith3 : (f : a -> b -> c -> d) -> (x : List a) -> (y : List b) ->
            (z : List c) -> List d
-zipWith3 f _       []      (z::zs) = [] 
+zipWith3 f _       []      (z::zs) = []
 zipWith3 f _       (y::ys) []      = []
 zipWith3 f []      (y::ys) _       = []
 zipWith3 f (x::xs) []      _       = []
@@ -349,7 +349,7 @@ mapMaybe f (x::xs) =
 -- Folds
 --------------------------------------------------------------------------------
 
-instance Foldable List where
+Foldable List where
   foldr c n [] = n
   foldr c n (x::xs) = c x (foldr c n xs)
 
@@ -590,7 +590,7 @@ delete = deleteBy (==)
 unionBy : (a -> a -> Bool) -> List a -> List a -> List a
 unionBy eq xs ys = xs ++ foldl (flip (deleteBy eq)) (nubBy eq ys) xs
 
-||| Compute the union of two lists according to their `Eq` instance.
+||| Compute the union of two lists according to their `Eq` implementation.
 |||
 ||| ```idris example
 ||| union ['d', 'o', 'g'] ['c', 'o', 'w']
@@ -761,7 +761,7 @@ mergeBy : (a -> a -> Ordering) -> List a -> List a -> List a
 mergeBy order []      right   = right
 mergeBy order left    []      = left
 mergeBy order (x::xs) (y::ys) =
-  if order x y == LT 
+  if order x y == LT
      then x :: mergeBy order xs (y::ys)
      else y :: mergeBy order (x::xs) ys
 
@@ -888,4 +888,3 @@ foldlAsFoldr f z t = foldr (flip (.) . flip f) id t z
 foldlMatchesFoldr : (f : b -> a -> b) -> (q : b) -> (xs : List a) -> foldl f q xs = foldlAsFoldr f q xs
 foldlMatchesFoldr f q [] = Refl
 foldlMatchesFoldr f q (x :: xs) = foldlMatchesFoldr f (f q x) xs
-

@@ -61,8 +61,8 @@ answer. For example:
     True : Bool
 
 All of the usual arithmetic and comparison operators are defined for
-the primitive types. They are overloaded using type classes, as we
-will discuss in Section :ref:`sect-classes` and can be extended to
+the primitive types. They are overloaded using interfaces, as we
+will discuss in Section :ref:`sect-interfaces` and can be extended to
 work on user defined types. Boolean expressions can be tested with the
 ``if...then...else`` construct, for example:
 
@@ -137,8 +137,9 @@ Unlike Haskell, there is no restriction on whether types and function
 names must begin with a capital letter or not. Function names
 (``plus`` and ``mult`` above), data constructors (``Z``, ``S``,
 ``Nil`` and ``::``) and type constructors (``Nat`` and ``List``) are
-all part of the same namespace. We can test these functions at the
-Idris prompt:
+all part of the same namespace. By convention, however, 
+data types and constructor names typically begin with a capital letter.
+We can test these functions at the Idris prompt:
 
 ::
 
@@ -149,10 +150,12 @@ Idris prompt:
 
 .. note::
 
-    Idris automatically desugars the ``Nat`` representation into a
-    more human readable format. The result of ``plus (S (S Z)) (S (S Z))``
-    is actually ``(S (S (S (S Z))))`` which is the Integer 4. This can be
-    checked at the Idris prompt:
+   When displaying an element of ``Nat`` such as ``(S (S (S (S Z))))``,
+   Idris displays it as ``4``.
+   The result of ``plus (S (S Z)) (S (S Z))``
+   is actually ``(S (S (S (S Z))))``
+   which is the natural number ``4``.
+   This can be checked at the Idris prompt:
 
 ::
 
@@ -160,7 +163,7 @@ Idris prompt:
     4 : Nat
 
 Like arithmetic operations, integer literals are also overloaded using
-type classes, meaning that we can also test the functions as follows:
+interfaces, meaning that we can also test the functions as follows:
 
 ::
 
@@ -473,15 +476,16 @@ Sometimes it is useful to provide types of implicit arguments,
 particularly where there is a dependency ordering, or where the
 implicit arguments themselves have dependencies. For example, we may
 wish to state the types of the implicit arguments in the following
-definition, which defines a predicate on vectors:
+definition, which defines a predicate on vectors (this is also defined
+in ``Data.Vect``, under the name ``Elem``):
 
 .. code-block:: idris
 
-    data Elem : a -> Vect n a -> Type where
-       Here :  {x:a} ->   {xs:Vect n a} -> Elem x (x :: xs)
-       There : {x,y:a} -> {xs:Vect n a} -> Elem x xs -> Elem x (y :: xs)
+    data IsElem : a -> Vect n a -> Type where
+       Here :  {x:a} ->   {xs:Vect n a} -> IsElem x (x :: xs)
+       There : {x,y:a} -> {xs:Vect n a} -> IsElem x xs -> IsElem x (y :: xs)
 
-An instance of ``Elem x xs`` states that ``x`` is an element of
+An instance of ``IsElem x xs`` states that ``x`` is an element of
 ``xs``.  We can construct such a predicate if the required element is
 ``Here``, at the head of the vector, or ``There``, in the tail of the
 vector. For example:
@@ -491,7 +495,7 @@ vector. For example:
     testVec : Vect 4 Int
     testVec = 3 :: 4 :: 5 :: 6 :: Nil
 
-    inVect : Elem 5 testVec
+    inVect : IsElem 5 testVec
     inVect = There (There Here)
 
 If the same implicit arguments are being used a lot, it can make a
@@ -502,9 +506,9 @@ appear within the block:
 .. code-block:: idris
 
     using (x:a, y:a, xs:Vect n a)
-      data Elem : a -> Vect n a -> Type where
-         Here  : Elem x (x :: xs)
-         There : Elem x xs -> Elem x (y :: xs)
+      data IsElem : a -> Vect n a -> Type where
+         Here  : IsElem x (x :: xs)
+         There : IsElem x xs -> IsElem x (y :: xs)
 
 Note: Declaration Order and ``mutual`` blocks
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -577,14 +581,14 @@ example for reading and writing files, including:
     data File -- abstract
     data Mode = Read | Write | ReadWrite
 
-    openFile  : String -> Mode -> IO File
+    openFile : (f : String) -> (m : Mode) -> IO (Either FileError File)
     closeFile : File -> IO ()
+    
+    fGetLine : (h : File) -> IO (Either FileError String)
+    fPutStr : (h : File) -> (str : String) -> IO (Either FileError ())
+    fEOF : File -> IO Bool
 
-    fread  : File -> IO String
-    fwrite : File -> String -> IO ()
-    feof   : File -> IO Bool
-
-    readFile : String -> IO String
+Note that several of these return ``Either``, since they may fail.
 
 .. _sect-do:
 
@@ -722,8 +726,7 @@ the vector:
     *usefultypes> show (map double intVec)
     "[2, 4, 6, 8, 10]" : String
 
-You’ll find these examples in ``usefultypes.idr`` in the ``examples/``
-directory. For more details of the functions available on ``List`` and
+For more details of the functions available on ``List`` and
 ``Vect``, look in the library files:
 
 -  ``libs/prelude/Prelude/List.idr``
@@ -995,7 +998,7 @@ syntax:
     record { a->b->c = val } x
 
 This returns a new record, with the field accessed by the path
-``a->b->c`` set to ``x``. The syntax is first class, i.e.  ``record {
+``a->b->c`` set to ``val``. The syntax is first class, i.e.  ``record {
 a->b->c = val }`` itself has a function type. Symmetrically, the field
 can also be accessed with the following syntax:
 
@@ -1043,7 +1046,7 @@ using natural numbers, the new value can be incremented using the
 .. code-block:: idris
 
     addStudent : Person -> SizedClass n -> SizedClass (S n)
-    addStudent p c = record { students = p :: students c } c
+    addStudent p c =  SizedClassInfo (p :: students c) (className c)
 
 .. _sect-more-expr:
 

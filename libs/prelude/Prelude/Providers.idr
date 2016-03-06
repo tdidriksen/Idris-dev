@@ -1,11 +1,14 @@
 module Prelude.Providers
 
+import Prelude.Basics
 import Prelude.Functor
 import Prelude.Applicative
 import Prelude.Monad
 
+%access public export
+
 ||| Type providers must build one of these in an IO computation.
-public
+public export
 data Provider : (a : Type) -> Type where
   ||| Return a term to be spliced in
   ||| @ x the term to be spliced (i.e. the proof)
@@ -15,17 +18,16 @@ data Provider : (a : Type) -> Type where
   ||| @ msg the error message
   Error : (msg : String) -> Provider a
 
--- instances
-instance Functor Provider where
+Functor Provider where
   map f (Provide a) = Provide (f a)
   map f (Error err) = Error err
 
-instance Applicative Provider where
+Applicative Provider where
   (Provide f) <*> (Provide x) = Provide (f x)
   (Provide f) <*> (Error err) = Error err
   (Error err) <*> _           = Error err
   pure = Provide
 
-instance Monad Provider where
+Monad Provider where
   (Provide x) >>= f = f x
   (Error err) >>= _ = Error err

@@ -2,10 +2,12 @@ module Prelude.Chars
 -- Functions operating over Chars
 
 import Prelude.Bool
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.List
 import Prelude.Cast
 import Builtins
+
+%access public export
 
 ||| Convert the number to its ASCII equivalent.
 chr : Int -> Char
@@ -13,7 +15,7 @@ chr x = if (x >= 0 && x < 0x110000)
                 then assert_total (prim__intToChar x)
                 else '\0'
 
-instance Cast Int Char where
+Cast Int Char where
     cast = chr
 
 ||| Return the ASCII representation of the character.
@@ -74,5 +76,3 @@ isHexDigit x = elem (toUpper x) hexChars where
 ||| Returns true if the character is an octal digit.
 isOctDigit : Char -> Bool
 isOctDigit x = (x >= '0' && x <= '7')
-
-

@@ -2,6 +2,8 @@ module Control.Algebra.VectorSpace
 
 import Control.Algebra
 
+%access public export
+
 infixl 5 <#>
 infixr 2 <||>
 
@@ -18,13 +20,13 @@ infixr 2 <||>
 ||| + Distributivity of `<#>` and `<+>`:
 |||     forall a v w,  a <#> (v <+> w) == (a <#> v) <+> (a <#> w)
 |||     forall a b v,  (a <+> b) <#> v == (a <#> v) <+> (b <#> v)
-class (RingWithUnity a, AbelianGroup b) => Module a b where
+interface (RingWithUnity a, AbelianGroup b) => Module a b where
   (<#>) : a -> b -> b
 
 ||| A vector space is a module over a ring that is also a field
-class (Field a, Module a b) => VectorSpace a b where {}
+interface (Field a, Module a b) => VectorSpace a b where {}
 
 ||| An inner product space is a module – or vector space – over a ring, with a binary function
 ||| associating a ring value to each pair of vectors.
-class Module a b => InnerProductSpace a b where
+interface Module a b => InnerProductSpace a b where
   (<||>) : b -> b -> a

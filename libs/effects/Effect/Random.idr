@@ -3,11 +3,13 @@ module Effect.Random
 import Effects
 import Data.Vect
 
+%access public export
+
 data Random : Effect where 
      GetRandom : sig Random Integer Integer
      SetSeed   : Integer -> sig Random () Integer
 
-instance Handler Random m where
+implementation Handler Random m where
   handle seed GetRandom k
            = let seed' = assert_total ((1664525 * seed + 1013904223) `prim__sremBigInt` (pow 2 32)) in
                  k seed' seed'

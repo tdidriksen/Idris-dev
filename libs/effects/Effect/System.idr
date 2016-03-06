@@ -7,19 +7,21 @@ import Effects
 import System
 import Control.IOExcept
 
+%access public export
+
 data System : Effect where
      Args : sig System (List String)
      Time : sig System Integer
      GetEnv : String -> sig System (Maybe String)
      CSystem : String -> sig System Int
 
-instance Handler System IO where
+implementation Handler System IO where
     handle () Args k = do x <- getArgs; k x ()
     handle () Time k = do x <- time; k x ()
     handle () (GetEnv s) k = do x <- getEnv s; k x ()
     handle () (CSystem s) k = do x <- system s; k x ()
 
-instance Handler System (IOExcept a) where
+implementation Handler System (IOExcept a) where
     handle () Args k = do x <- ioe_lift getArgs; k x ()
     handle () Time k = do x <- ioe_lift time; k x ()
     handle () (GetEnv s) k = do x <- ioe_lift $ getEnv s; k x ()

@@ -10,7 +10,7 @@ import Idris.Core.TT (Name (..), sUN, SpecialName (..), OutputAnnotation (..),
 import Idris.Core.Evaluate (ctxtAlist, Def (..), lookupDefAcc,
                             Accessibility (..), isDConName, isFnName,
                             isTConName)
-import Idris.ParseHelpers (opChars)
+import Idris.Parser.Helpers (opChars)
 import Idris.AbsSyntax
 import Idris.Docs
 import Idris.Docstrings (nullDocstring)
@@ -182,7 +182,7 @@ filterName _          = False
 
 
 -- | Whether a NsItem should be included in the documentation.
---   It must not be Hidden and filterName must return True for the name.
+--   It must not be Hidden/Private and filterName must return True for the name.
 --   Also it must have Docs -- without Docs, nothing can be done.
 filterInclude :: NsItem -- ^ Accessibility to check
               -> Bool   -- ^ Predicate result
@@ -254,7 +254,7 @@ getAccess ist n =
   let res = lookupDefAcc n False (tt_ctxt ist)
   in case res of
      [(_, acc)] -> acc
-     _          -> Hidden
+     _          -> Private
 
 -- | Simple predicate for whether an NsItem has Docs
 hasDoc :: NsItem -- ^ The NsItem to test
@@ -581,7 +581,7 @@ createOtherDoc ist (FunDoc fd)                = createFunDoc ist fd
 
 createOtherDoc ist (ClassDoc n docstring fds _ _ _ _ c) = do
   H.dt ! (A.id $ toValue $ show n) $ do
-    H.span ! class_ "word" $ do "class"; nbsp
+    H.span ! class_ "word" $ do "interface"; nbsp
     H.span ! class_ "name type"
            ! title  (toValue $ show n)
            $ toHtml $ name $ nsroot n

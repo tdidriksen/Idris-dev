@@ -5,13 +5,15 @@ module Prelude.Uninhabited
 
 import Builtins
 
+%access public export
+
 ||| A canonical proof that some type is empty
-class Uninhabited t where
+interface Uninhabited t where
   ||| If I have a t, I've had a contradiction
   ||| @ t the uninhabited type
   total uninhabited : t -> Void
 
-instance Uninhabited Void where
+Uninhabited Void where
   uninhabited a = a
 
 ||| Use an absurd assumption to discharge a proof obligation

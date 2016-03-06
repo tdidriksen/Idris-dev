@@ -14,7 +14,7 @@ module Effect.Logging.Category
 import Effects
 import public Effect.Logging.Level
 
-%access public
+%access public export
 
 -- -------------------------------------------------------- [ Logging Resource ]
 
@@ -25,7 +25,7 @@ record LogRes (a : Type) where
   getLevel      : LogLevel n
   getCategories : List a
 
-instance Default (LogRes a) where
+implementation Default (LogRes a) where
   default = MkLogRes OFF Nil
 
 -- ------------------------------------------------------- [ Effect Definition ]
@@ -68,7 +68,7 @@ data Logging : Effect where
 
 -- -------------------------------------------------------------- [ IO Handler ]
 
-instance Handler Logging IO where
+implementation Handler Logging IO where
     handle st (SetLogLvl  nlvl)  k = do
         let newSt = record {getLevel = nlvl}  st
         k () newSt
@@ -147,7 +147,7 @@ logN : (Show a, Eq a) => (l : Nat)
                       -> (cs : List a)
                       -> (m : String)
                       -> Eff () [LOG a]
-logN l cs msg = call $ Log (getProof lvl) cs msg
+logN l cs msg = call $ Log (snd lvl) cs msg
   where
     lvl : (n ** LogLevel n)
     lvl = case cast {to=String} (cast {to=Int} l) of

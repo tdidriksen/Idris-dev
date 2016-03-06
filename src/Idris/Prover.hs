@@ -124,7 +124,7 @@ prove mode opt ctxt lit n ty
                                 [([], P Ref n ty, ptm')] ty
                                 ctxt
          setContext ctxt'
-         solveDeferred n
+         solveDeferred emptyFC n
          case idris_outputmode i of
            IdeMode n h ->
              runIO . hPutStrLn h $ IdeMode.convSExp "return" (IdeMode.SymbolAtom "ok", "") n
@@ -156,8 +156,8 @@ dumpState ist inElab menv ps | [] <- holes ps =
      iputGoal rendered
 dumpState ist inElab menv ps | (h : hs) <- holes ps = do
   let OK ty  = goalAtFocus ps
-  let OK env = envAtFocus ps
-  let state = prettyOtherGoals hs <> line <>
+      OK env = envAtFocus ps
+      state = prettyOtherGoals hs <> line <>
               prettyAssumptions inElab ty env <> line <>
               prettyMetaValues (reverse menv) <>
               prettyGoal (zip (assumptionNames env) (repeat False)) ty
@@ -215,21 +215,19 @@ dumpState ist inElab menv ps | (h : hs) <- holes ps = do
       bindingOf h False <+> colon <+> align (prettyG bnd ty)
 
     prettyAssumptions inElab g env =
-      if length env == 0 then
-        empty
+      if null env then empty
       else
         text "----------              Assumptions:              ----------" <>
         nest nestingSize (prettyPs inElab g [] $ reverse env)
 
     prettyOtherGoals hs =
-      if length hs == 0 then
-        empty
+      if null hs then empty
       else
         text "----------              Other goals:              ----------" <$$>
-        nest nestingSize (align . cat . punctuate (text ",") . map (flip bindingOf False) $ hs)
+        nest nestingSize (align . cat . punctuate (text ",") . map (`bindingOf` False) $ hs)
 
     freeEnvNames :: Env -> [Name]
-    freeEnvNames = foldl (++) [] . map (\(n, b) -> freeNames (Bind n b Erased))
+    freeEnvNames = concatMap (\(n, b) -> freeNames (Bind n b Erased))
 
 lifte :: ElabState EState -> ElabD a -> Idris a
 lifte st e = do (v, _) <- elabStep st e
@@ -247,7 +245,7 @@ receiveInput h e =
      (sexp, id) <- case IdeMode.parseMessage l of
                      Left err -> ierror err
                      Right (sexp, id) -> return (sexp, id)
-     putIState $ i { idris_outputmode = (IdeMode id h) }
+     putIState $ i { idris_outputmode = IdeMode id h }
      case IdeMode.sexpToCommand sexp of
        Just (IdeMode.REPLCompletions prefix) ->
          do (unused, compls) <- proverCompletion (assumptionNames e) (reverse prefix, "")
@@ -273,6 +271,21 @@ undoElab prf env st [] = ifail "Nothing to undo"
 undoElab prf env st (h:hs) = do (prf', env', st') <- undoStep prf env st h
                                 return (prf', env', st', hs)
 
+runWithInterrupt
+  :: ElabState EState
+  -> Idris a -- ^ run with SIGINT handler
+  -> Idris b -- ^ run if mTry finished
+  -> Idris b -- ^ run if mTry was interrupted
+  -> Idris b
+runWithInterrupt elabState mTry mSuccess mFailure = do
+  ist <- getIState
+  case idris_outputmode ist of
+    RawOutput _ -> do
+      success <- runInputT (proverSettings elabState) $
+                   handleInterrupt (return False) $
+                   withInterrupt (lift mTry >> return True)
+      if success then mSuccess else mFailure
+    IdeMode _ _ -> mTry >> mSuccess
 
 elabloop :: Name -> Bool -> String -> [String] -> ElabState EState -> [ElabShellHistory] -> Maybe History -> [(Name, Type, Term)] -> Idris (Term, [String])
 elabloop fn d prompt prf e prev h env
@@ -285,7 +298,7 @@ elabloop fn d prompt prf e prev h env
                do case h of
                     Just history -> putHistory history
                     Nothing -> return ()
-                  l <- getInputLine (prompt ++ "> ")
+                  l <- handleInterrupt (return $ Just "") $ withInterrupt $ getInputLine (prompt ++ "> ")
                   h' <- getHistory
                   return (l, Just h')
            IdeMode _ handle ->
@@ -309,7 +322,7 @@ elabloop fn d prompt prf e prev h env
               Success (Left cmd') ->
                 case cmd' of
                   EQED -> do hs <- lifte e get_holes
-                             when (not (null hs)) $ ifail "Incomplete proof"
+                             unless (null hs) $ ifail "Incomplete proof"
                              iputStrLn "Proof completed!"
                              return (False, prev, e, True, prf, env, Right $ iPrintResult "")
                   EUndo -> do (prf', env', st', prev') <- undoElab prf env e prev
@@ -333,8 +346,8 @@ elabloop fn d prompt prf e prev h env
                                   return (d', prev, st', done, prf', env, go)
               Success (Right cmd') ->
                 case cmd' of
-                  DoLetP _ _ _ -> ifail "Pattern-matching let not supported here"
-                  DoBindP _ _ _ _ -> ifail "Pattern-matching <- not supported here"
+                  DoLetP  {} -> ifail "Pattern-matching let not supported here"
+                  DoBindP {} -> ifail "Pattern-matching <- not supported here"
                   DoLet fc i ifc Placeholder expr ->
                     do (tm, ty) <- elabVal recinfo ERHS (inLets ist env expr)
                        ctxt <- getContext
@@ -377,10 +390,11 @@ elabloop fn d prompt prf e prev h env
          Right ok ->
            if done then do (tm, _) <- elabStep st get_term
                            return (tm, prf')
-                   else do ok
-                           elabloop fn d prompt prf' st prev' h' env'
+                   else runWithInterrupt e ok
+                           (elabloop fn d prompt prf' st prev' h' env')
+                           (elabloop fn d prompt prf e prev h' env)
 
-  where 
+  where
     -- A bit of a hack: wrap the value up in a let binding, which will
     -- normalise away. It would be better to figure out how to call
     -- the elaborator with a custom environment here to avoid the
@@ -403,7 +417,7 @@ ploop fn d prompt prf e h
                  do case h of
                       Just history -> putHistory history
                       Nothing -> return ()
-                    l <- getInputLine (prompt ++ "> ")
+                    l <- handleInterrupt (return $ Just "") $ withInterrupt $ getInputLine (prompt ++ "> ")
                     h' <- getHistory
                     return (l, Just h')
              IdeMode _ handle ->
@@ -412,7 +426,7 @@ ploop fn d prompt prf e h
                   return (i, h)
          (cmd, step) <- case x of
             Nothing -> do iPrintError ""; ifail "Abandoned"
-            Just input -> do return (parseTactic i input, input)
+            Just input -> return (parseTactic i input, input)
          case cmd of
             Success Abandon -> do iPrintError ""; ifail "Abandoned"
             _ -> return ()
@@ -426,7 +440,7 @@ ploop fn d prompt prf e h
                                       iputStrLn $ "TT: " ++ show tm ++ "\n"
                                       return (False, e, False, prf, Right $ iPrintResult "")
               Success Qed -> do hs <- lifte e get_holes
-                                when (not (null hs)) $ ifail "Incomplete proof"
+                                unless (null hs) $ ifail "Incomplete proof"
                                 iputStrLn "Proof completed!"
                                 return (False, e, True, prf, Right $ iPrintResult "")
               Success (TCheck (PRef _ _ n)) -> checkNameType e prf n
@@ -447,8 +461,9 @@ ploop fn d prompt prf e h
            Right ok ->
              if done then do (tm, _) <- elabStep st get_term
                              return (tm, prf')
-                     else do ok
-                             ploop fn d prompt prf' st h'
+                     else runWithInterrupt e ok
+                             (ploop fn d prompt prf' st h')
+                             (ploop fn d prompt prf e h')
 
 
 envCtxt env ctxt = foldl (\c (n, b) -> addTyDecl n Bound (binderTy b) c) ctxt env

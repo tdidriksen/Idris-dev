@@ -6,7 +6,7 @@
 module Control.WellFounded
 
 %default total
-
+%access public export
 
 ||| Accessibility: some element `x` is accessible if all `y` such that
 ||| `rel y x` are themselves accessible.
@@ -26,7 +26,7 @@ data Accessible : (rel : a -> a -> Type) -> (x : a) -> Type where
 ||| acessible.
 |||
 ||| @ rel the well-founded relation
-class WellFounded (rel : a -> a -> Type) where
+interface WellFounded (rel : a -> a -> Type) where
   wellFounded : (x : _) -> Accessible rel x
 
 

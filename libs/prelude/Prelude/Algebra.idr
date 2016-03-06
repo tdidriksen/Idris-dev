@@ -4,10 +4,10 @@ import Builtins
 
 infixl 6 <+>
 
-%access public
+%access public export
 
 --------------------------------------------------------------------------------
--- A modest class hierarchy
+-- A modest interface hierarchy
 --------------------------------------------------------------------------------
 
 ||| Sets equipped with a single binary operation that is associative.  Must
@@ -15,8 +15,8 @@ infixl 6 <+>
 |||
 ||| + Associativity of `<+>`:
 |||     forall a b c, a <+> (b <+> c) == (a <+> b) <+> c
-class Semigroup a where
-  (<+>) : a -> a -> a
+interface Semigroup ty where
+  (<+>) : ty -> ty -> ty
 
 
 ||| Sets equipped with a single binary operation that is associative, along with
@@ -28,6 +28,6 @@ class Semigroup a where
 ||| + Neutral for `<+>`:
 |||     forall a,     a <+> neutral   == a
 |||     forall a,     neutral <+> a   == a
-class Semigroup a => Monoid a where
-  neutral : a
+interface Semigroup ty => Monoid ty where
+  neutral : ty
 

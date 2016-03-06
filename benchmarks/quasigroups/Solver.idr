@@ -2,9 +2,11 @@ module Solver
 
 import Decidable.Equality
 import Control.Monad.State
+import Data.Vect
 import Data.Vect.Quantifiers
 
 %default total
+%access public export
 
 Cell : Nat -> Type
 Cell n = Maybe (Fin n)
@@ -31,7 +33,7 @@ unlines (l::ls) = pack (foldl addLine (unpack l) (map unpack ls))
     addLine : List Char -> List Char -> List Char
     addLine w s = w ++ ('\n' :: s)
 
-instance Show (Board n) where
+Show (Board n) where
   show (MkBoard rs) = unlines (map showRow rs)
 
 updateAt : Fin n -> Vect n a -> (a -> a) -> Vect n a
@@ -95,7 +97,7 @@ legalVal b (x, y) v =
       case colSafe b x v of
         No prf' => No (\(_, cf, _) => prf' cf)
         Yes prf' =>
-          case empty (getCell b (x, y)) of
+          case Solver.empty (getCell b (x, y)) of
             No prf'' => No (\(ef, _, _) => prf'' ef)
             Yes prf'' => Yes (prf'', prf', prf)
 
@@ -194,7 +196,7 @@ fillBoard {n=(S n)} b l with (emptyCell b)
 
     %assert_total
     recurse : Fin (S n) -> Maybe (b' : Board (S n) ** CompleteBoard b')
-    recurse start = 
+    recurse start =
       case tryAll start of
         (_, Nothing) => Nothing
         (FZ, Just (b' ** l')) => fillBoard b' l'

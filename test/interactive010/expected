@@ -1,14 +1,12 @@
 Prelude.List.(++) : List a -> List a -> List a
 Prelude.Strings.(++) : String -> String -> String
-Prelude.Classes./ : (__pi_arg : Double) →
-                    (__pi_arg1 : Double) → Double
+a is not an implicit argument of Prelude.Interfaces./
 Usage is :doc <functionname>
 Usage is :wc <functionname>
 Usage is :printdef <functionname>
-prim__divFloat
-Prelude.Classes./
+pat {ty504} : Type u. pat {__class505} : Prelude.Interfaces.Fractional {ty504}. Prelude.Interfaces./ {ty504} {__class505}
 
- : Double -> Double -> Double
+ : pty {ty504} : Type u. pty {__class505} : Prelude.Interfaces.Fractional {ty504}. {ty504} -> {ty504} -> {ty504}
 (input):1:1: error: expected: ":",
     dependent type signature,
     end of input
@@ -19,4 +17,4 @@ Prelude.Classes./
     end of input
 ++<EOF> 
 ^       
-prim__divFloat
+Can't find implementation for Fractional ty

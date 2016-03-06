@@ -2,6 +2,8 @@ module Data.Vect.Quantifiers
 
 import Data.Vect
 
+%access public export
+
 ||| A proof that some element of a vector satisfies some property
 |||
 ||| @ P the property to be satsified
@@ -16,7 +18,7 @@ anyNilAbsurd : {P : a -> Type} -> Any P Nil -> Void
 anyNilAbsurd (Here _) impossible
 anyNilAbsurd (There _) impossible
 
-instance Uninhabited (Any p Nil) where
+implementation Uninhabited (Any p Nil) where
   uninhabited = anyNilAbsurd
 
 ||| Eliminator for `Any`

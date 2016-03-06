@@ -2,13 +2,13 @@ module Effect.Trans
 
 import Effects
 
-%access public
+%access public export
 
 data Trans : (Type -> Type) -> Effect where
   Lift : m a -> sig (Trans m) a
 
 -- using (m : Type -> Type)
-instance Monad m => Handler (Trans m) m where
+implementation Monad m => Handler (Trans m) m where
      handle st (Lift op) k = do x <- op
                                 k x ()
 

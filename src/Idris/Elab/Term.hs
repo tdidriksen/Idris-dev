@@ -20,7 +20,7 @@ import Idris.Core.Typecheck (check, recheck, converts, isType)
 import Idris.Core.WHNF (whnf)
 import Idris.Coverage (buildSCG, checkDeclTotality, genClauses, recoverableCoverage, validCoverageCase)
 import Idris.ErrReverse (errReverse)
-import Idris.ElabQuasiquote (extractUnquotes)
+import Idris.Elab.Quasiquote (extractUnquotes)
 import Idris.Elab.Utils
 import Idris.Reflection
 import qualified Util.Pretty as U
@@ -236,6 +236,7 @@ elab ist info emode opts fn tm
     pattern = emode == ELHS
     intransform = emode == ETransLHS
     bindfree = emode == ETyDecl || emode == ELHS || emode == ETransLHS
+    autoimpls = opt_autoimpls (idris_options ist)
 
     get_delayed_elab est =
         let ds = delayed_elab est in
@@ -464,8 +465,8 @@ elab ist info emode opts fn tm
                                   case as'' of
                                        [x] -> elab' ina fc x
                                        _ -> do hds <- mapM showHd as''
-                                               tryAll (zip (map (elab' ina fc) as'')
-                                                           hds))
+                                               tryAll' False (zip (map (elab' ina fc) as'')
+                                                                  hds))
         where showHd (PApp _ (PRef _ _ (UN l)) [_, _, arg])
                  | l == txt "Delay" = showHd (getTm arg)
               showHd (PApp _ (PRef _ _ n) _) = return n
@@ -614,7 +615,8 @@ elab ist info emode opts fn tm
                                 [] -> False
                                 _ -> True
             bindable (NS _ _) = False
-            bindable n = implicitable n
+            bindable (MN _ _) = True
+            bindable n = implicitable n && autoimpls
     elab' ina _ f@(PInferRef fc hls n) = elab' ina (Just fc) (PApp NoFC f [])
     elab' ina fc' tm@(PRef fc hls n)
           | pattern && not reflection && not (e_qq ina) && not (e_intype ina)
@@ -1702,8 +1704,8 @@ solveAutos ist fn ambigok
 -- Return true if the given error suggests a type class failure is
 -- recoverable
 tcRecoverable :: ElabMode -> Err -> Bool
-tcRecoverable ERHS (CantResolve f g) = f
-tcRecoverable ETyDecl (CantResolve f g) = f
+tcRecoverable ERHS (CantResolve f g _) = f
+tcRecoverable ETyDecl (CantResolve f g _) = f
 tcRecoverable e (ElaboratingArg _ _ _ err) = tcRecoverable e err
 tcRecoverable e (At _ err) = tcRecoverable e err
 tcRecoverable _ _ = True
@@ -2476,8 +2478,10 @@ withErrorReflection x = idrisCatch x (\ e -> handle e >>= ierror)
                                        OK hs   -> return hs
 
                          -- Normalize error handler terms to produce the new messages
+                         -- Need to use 'normaliseAll' since we have to reduce private
+                         -- names in error handlers too
                          ctxt <- getContext
-                         let results = map (normalise ctxt []) (map fst handlers)
+                         let results = map (normaliseAll ctxt []) (map fst handlers)
                          logElab 3 $ "New error message info: " ++ concat (intersperse " and " (map show results))
 
                          -- For each handler term output, either discard it if it is Nothing or reify it the Haskell equivalent
@@ -2504,7 +2508,7 @@ processTacticDecls info steps =
          updateIState $ \i -> i { idris_implicits =
                                     addDef n impls (idris_implicits i) }
          addIBC (IBCImp n)
-         ds <- checkDef fc (\_ e -> e) [(n, (-1, Nothing, ty, []))]
+         ds <- checkDef fc (\_ e -> e) True [(n, (-1, Nothing, ty, []))]
          addIBC (IBCDef n)
          ctxt <- getContext
          case lookupDef n ctxt of
@@ -2513,7 +2517,7 @@ processTacticDecls info steps =
              -- then it must be added as a metavariable. This needs guarding
              -- to prevent overwriting case defs with a metavar, if the case
              -- defs come after the type decl in the same script!
-             let ds' = map (\(n, (i, top, t, ns)) -> (n, (i, top, t, ns, True))) ds
+             let ds' = map (\(n, (i, top, t, ns)) -> (n, (i, top, t, ns, True, True))) ds
              in addDeferred ds'
            _ -> return ()
     RAddInstance className instName ->
@@ -2524,7 +2528,7 @@ processTacticDecls info steps =
          addIBC (IBCInstance False True className instName)
     RClausesInstrs n cs ->
       do logElab 3 $ "Pattern-matching definition from tactics: " ++ show n
-         solveDeferred n
+         solveDeferred emptyFC n
          let lhss = map (\(_, lhs, _) -> lhs) cs
          let fc = fileFC "elab_reflected"
          pmissing <-
@@ -2549,13 +2553,9 @@ processTacticDecls info steps =
              -- we refer to, so that if they aren't total, the whole
              -- thing won't be.
              let (scargs, sc) = cases_compiletime cd
-                 (scargs', sc') = cases_runtime cd
-                 calls = findCalls sc' scargs
-                 used = findUsedArgs sc' scargs'
-                 cg = CGInfo scargs' calls [] used []
-             in do logElab 2 $ "Called names in reflected elab: " ++ show cg
-                   addToCG n cg
-                   addToCalledG n (nub (map fst calls))
+                 calls = map fst $ findCalls sc scargs
+             in do logElab 2 $ "Called names in reflected elab: " ++ show calls
+                   addCalls n calls
                    addIBC $ IBCCG n
            Just _ -> return () -- TODO throw internal error
            Nothing -> return ()

@@ -7,7 +7,7 @@ import Data.HVect
 import Data.Fin
 import Control.Isomorphism
 
-class Functor f => VerifiedFunctor (f : Type -> Type) where
+interface Functor f => VerifiedFunctor (f : Type -> Type) where
    identity : (fa : f a) -> map Basics.id fa = fa
 
 data Imp : Type where
@@ -37,7 +37,7 @@ filterTagP {n = S m} p (a :: as) q with (p a)
              **
              ((a ** believe_me Oh)
               ::
-              (fst (getProof (filterTagP p as (believe_me Oh)))),
+              (fst (snd (filterTagP p as (believe_me Oh)))),
               Oh
              )
             )
@@ -66,7 +66,7 @@ soTrue                  :  So b -> b = True
 soTrue {b = False} x    =  soFalseElim x
 soTrue {b = True}  x    =  Refl
 
-class Eq alpha => ReflEqEq alpha where
+interface Eq alpha => ReflEqEq alpha where
   reflexive_eqeq : (a : alpha) -> So (a == a)
 
 modifyFun : (Eq alpha) =>
@@ -95,7 +95,7 @@ mytranspose (x :: y :: xs)
 
 using (A : Type, B : A->Type, C : Type)
   foo2 : ((x:A) -> B x -> C) -> ((x:A ** B x) -> C)
-  foo2 f p = f (getWitness p) (getProof p)
+  foo2 f p = f (fst p) (snd p)
 
 
 m_add : Maybe (Either Bool Int) -> Maybe (Either Bool Int) ->
@@ -126,7 +126,7 @@ interp (TNot x) = map not (interp x)
 
 data Result str a = Success str a | Failure String
 
-instance Functor (Result str) where
+implementation Functor (Result str) where
    map f (Success s x) = Success s (f x)
    map f (Failure e  ) = Failure e
 
@@ -144,7 +144,7 @@ X : Nat -> Type
 X t = (c : Nat ** So (c < 5))
 
 column : X t -> Nat
-column = getWitness
+column = fst
 
 data Action = Left | Ahead | Right
 
@@ -154,38 +154,38 @@ admissible {t} x Left  = column {t} x <= 2
 admissible {t} x Right = column {t} x >= 2
 
 
-class Set univ where
+interface Set univ where
   member : univ -> univ -> Type
 
 isSubsetOf : Set univ => univ -> univ -> Type
 isSubsetOf {univ} a b = (c : univ) -> (member c a) -> (member c b)
 
-class Set univ => HasPower univ where
-  Powerset : (a : univ) -> 
-             Sigma univ (\Pa => (c : univ) ->
+interface Set univ => HasPower univ where
+  Powerset : (a : univ) ->
+             DPair univ (\Pa => (c : univ) ->
                                  (isSubsetOf c a) -> member c Pa)
 
 powerset : HasPower univ => univ -> univ
-powerset {univ} a = getWitness (Powerset a)
+powerset {univ} a = fst (Powerset a)
 
 mapFilter : (alpha -> beta) ->
-           (alpha -> Bool) -> 
-           Vect n alpha -> 
+           (alpha -> Bool) ->
+           Vect n alpha ->
            (n : Nat ** Vect n beta)
 mapFilter f p Nil = (_ ** Nil)
 mapFilter f p (a :: as) with (p a)
- | True  = (_  ** (f a) :: (getProof (mapFilter f p as)))
+ | True  = (_  ** (f a) :: (snd (mapFilter f p as)))
  | False = mapFilter f p as
 
 hVectEx1 : HVect [String, List Nat, Nat, (Nat, Nat)]
 hVectEx1 = ["Hello",[1,2,3],42,(0,10)]
-  
+
 vecfoo : HVect [String, List Nat, Nat, (Nat, Nat)]
 vecfoo = put (S (S Z)) hVectEx1
 
 foom : Monad m => Int -> m Int
-foom = pure 
-  
+foom = pure
+
 bar : IO ()
 bar = case foom 5 of
            Nothing => print 42
@@ -193,7 +193,7 @@ bar = case foom 5 of
 
 Max : (Nat -> Type) -> Type
 Max p = (Nat , (k : Nat) -> p k -> Nat)
-    
+
 maxEquiv : Max p -> (n1 : Nat) -> p n1 -> Nat
 maxEquiv a n1 pr1 = snd a n1 pr1
 
@@ -207,4 +207,3 @@ data Kappa : (r : Rho) -> Type where K : Kappa r
 kappa : Kappa (rho r) -> Kappa (rho r)
 kappa {r} k = k' where -- k' : Kappa (rho r)
                        k' = k
-

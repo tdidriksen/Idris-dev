@@ -5,10 +5,10 @@ import Prelude.Algebra
 import Prelude.Basics
 import Prelude.Bool
 import Prelude.Cast
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.Foldable
 
-%access public
+%access public export
 %default total
 
 ||| An optional value. This can be used to represent the possibility of
@@ -72,25 +72,25 @@ raiseToMaybe : (Monoid a, Eq a) => a -> Maybe a
 raiseToMaybe x = if x == neutral then Nothing else Just x
 
 --------------------------------------------------------------------------------
--- Class instances
+-- Interface implementations
 --------------------------------------------------------------------------------
 
 maybe_bind : Maybe a -> (a -> Maybe b) -> Maybe b
 maybe_bind Nothing  k = Nothing
 maybe_bind (Just x) k = k x
 
-instance (Eq a) => Eq (Maybe a) where
+(Eq a) => Eq (Maybe a) where
   Nothing  == Nothing  = True
   Nothing  == (Just _) = False
   (Just _) == Nothing  = False
   (Just a) == (Just b) = a == b
 
-||| Prioritised choice. Just like the `Alternative` instance, the
+||| Prioritised choice. Just like the `Alternative` implementation, the
 ||| `Semigroup` for `Maybe a` keeps the first succeeding computation.
 |||
 ||| **NB**: This is a different choice than in the Haskell libraries.
 ||| Use `collectJust` to get the Haskell behaviour.
-instance Semigroup (Maybe a) where
+Semigroup (Maybe a) where
   Nothing   <+> m = m
   (Just x)  <+> _ = Just x
 
@@ -98,20 +98,20 @@ instance Semigroup (Maybe a) where
 ||| designated neutral element and collecting the contents of the
 ||| `Just` constructors using a semigroup structure on `a`. This is
 ||| the behaviour in the Haskell libraries.
-instance [collectJust] Semigroup a => Semigroup (Maybe a) where
+[collectJust] Semigroup a => Semigroup (Maybe a) where
   Nothing   <+> m       = m
   m         <+> Nothing = m
   (Just m1) <+> (Just m2) = Just (m1 <+> m2)
 
-instance  Monoid (Maybe a) where
+ Monoid (Maybe a) where
   neutral = Nothing
 
-instance (Monoid a, Eq a) => Cast a (Maybe a) where
+(Monoid a, Eq a) => Cast a (Maybe a) where
   cast = raiseToMaybe
 
-instance (Monoid a) => Cast (Maybe a) a where
+(Monoid a) => Cast (Maybe a) a where
   cast = lowerMaybe
 
-instance Foldable Maybe where
+Foldable Maybe where
   foldr _ z Nothing  = z
   foldr f z (Just x) = f x z

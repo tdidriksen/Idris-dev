@@ -4,9 +4,11 @@ import Builtins
 
 import Prelude.Basics
 import Prelude.Bool
-import Prelude.Classes
+import Prelude.Interfaces
 import Prelude.Maybe
 import Prelude.List
+
+%access public export
 
 ||| A sum type
 %elim data Either : (a, b : Type) -> Type where
@@ -90,7 +92,7 @@ maybeToEither def Nothing  = Left  def
 -- Instances
 --------------------------------------------------------------------------------
 
-instance (Eq a, Eq b) => Eq (Either a b) where
+(Eq a, Eq b) => Eq (Either a b) where
   (==) (Left x)  (Left y)  = x == y
   (==) (Right x) (Right y) = x == y
   (==) _         _         = False
