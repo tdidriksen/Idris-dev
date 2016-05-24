@@ -1078,6 +1078,9 @@ elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(
      pTy <- projTy pn
      logLvl 0 $ "auxTy: " ++ show (auxTy pTy)
      (rec_elabDecl info) ETypes info (auxTyDecl auxn (delab i $ auxTy pTy))
+     fisk <- auxName (sUN "fisk")
+     logLvl 0 $ "fisk: " ++ show fisk
+     putIState . (\ist -> ist{ idris_postulates = S.insert fisk (idris_postulates ist) }) =<< getIState
      --put $ i { tt_ctxt = addTyDecl auxn Ref (auxTy pTy) (tt_ctxt i) }
      case lookup pn pMap of
        Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
@@ -1358,6 +1361,21 @@ elabCoClause what info auxn (PCoClause fc fname lhs_in_as rhs_in_as whereblock [
        Just term -> return term
        Nothing -> ifail $ "No type for left-hand side projection " ++ show pn
      (rec_elabDecl info) ETypes info $ auxTyDecl auxn pTy
+     fisk <- auxName (sUN "fisk")
+     logLvl 0 $ "fisk: " ++ show fisk
+     fTy <- case lookupTyExact fname (tt_ctxt i) of
+             Just ty -> return ty
+             Nothing -> ifail $ "No type for elaborated " ++ show fname
+     (rec_elabDecl info) what info $ PPostulate False emptyDocstring defaultSyntax NoFC NoFC [] fisk (delab i fTy)
+     i' <- getIState
+     pttTy <- case lookupTyExact pn (tt_ctxt i') of
+               Just ty -> return ty
+               Nothing -> ifail $ "No' type for projection " ++ show pn
+     result <- runStateT (build i' info ERHS [] )
+     checkTy <- case check (tt_ctxt i') [] (forget (mkApp (P Ref pn pttTy) [P Ref fisk fTy])) of
+                 OK (_, ty) -> return ty
+                 Error e -> ifail $ "checkTy fail: " ++ show e
+     logLvl 0 $ "checkTy: " ++ show checkTy
      --put $ i { tt_ctxt = addTyDecl auxn Ref (auxTy pTy) (tt_ctxt i) }
      case lookup pn pMap of
        Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
