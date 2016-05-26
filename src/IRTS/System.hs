@@ -29,10 +29,13 @@ getEnvFlags = maybe [] (splitOn " ") <$> lookupEnv "IDRIS_CFLAGS"
 getTargetDir :: IO String
 getTargetDir = overrideDataDirWith "TARGET"
 
-#if defined(FREEBSD) || defined(DRAGONFLY)
+#if defined(freebsd_HOST_OS) || defined(dragonfly_HOST_OS)\
+    || defined(openbsd_HOST_OS) || defined(netbsd_HOST_OS)
 extraLib = ["-L/usr/local/lib"]
+extraInclude = ["-I/usr/local/include"]
 #else
 extraLib = []
+extraInclude = []
 #endif
 
 #ifdef IDRIS_GMP
@@ -47,10 +50,5 @@ getLibFlags = do dir <- getDataDir
 
 getIdrisLibDir = addTrailingPathSeparator <$> overrideDataDirWith "IDRIS_LIBRARY_PATH"
 
-#if defined(FREEBSD) || defined(DRAGONFLY)
-extraInclude = ["-I/usr/local/include"]
-#else
-extraInclude = []
-#endif
 getIncFlags = do dir <- getDataDir
                  return $ ("-I" ++ dir </> "rts") : extraInclude

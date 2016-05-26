@@ -3,7 +3,11 @@
 ||| This is to let us implement some functions that don't have trivial
 ||| recursion patterns over datatypes, but instead are using some
 ||| other metric of size.
-module Control.WellFounded
+module Prelude.WellFounded
+
+import Prelude.Nat
+import Prelude.List
+import Prelude.Uninhabited
 
 %default total
 %access public export
@@ -18,8 +22,8 @@ data Accessible : (rel : a -> a -> Type) -> (x : a) -> Type where
   ||| Accessibility
   |||
   ||| @ x the accessible element
-  ||| @ acc' a demonstration that all smaller elements are also accessible
-  Access : (acc' : (y : a) -> rel y x -> Accessible rel y) ->
+  ||| @ rec a demonstration that all smaller elements are also accessible
+  Access : (rec : (y : a) -> rel y x -> Accessible rel y) ->
            Accessible rel x
 
 ||| A relation `rel` on `a` is well-founded if all elements of `a` are
@@ -56,8 +60,8 @@ accRec step z (Access f) =
 accInd : {rel : a -> a -> Type} -> {P : a -> Type} ->
          (step : (x : a) -> ((y : a) -> rel y x -> P y) -> P x) ->
          (z : a) -> Accessible rel z -> P z
-accInd step z (Access f) =
-  step z $ \y, lt => accInd step y (f y lt)
+accInd {P} step z (Access f) =
+  step z $ \y, lt => accInd {P} step y (f y lt)
 
 
 ||| Use well-foundedness of a relation to write terminating operations.
@@ -80,4 +84,29 @@ wfInd : WellFounded rel => {P : a -> Type} ->
         (step : (x : a) -> ((y : a) -> rel y x -> P y) -> P x) ->
         (x : a) -> P x
 wfInd {rel} step x = accInd step x (wellFounded {rel} x)
+
+-- Some basic useful relations
+
+||| LT is a well-founded relation on numbers
+ltAccessible : (n : Nat) -> Accessible LT n
+ltAccessible n = Access (\v, prf => ltAccessible' {n'=v} n prf)
+  where
+    ltAccessible' : (m : Nat) -> LT n' m -> Accessible LT n'
+    ltAccessible' Z x = absurd x 
+    ltAccessible' (S k) (LTESucc x) 
+        = Access (\val, p => ltAccessible' k (lteTransitive p x))
+
+-- First list is smaller than the second
+smaller : List a -> List a -> Type
+smaller xs ys = LT (length xs) (length ys)
+
+||| `smaller` is a well-founded relation on lists
+smallerAcc : (xs : List a) -> Accessible WellFounded.smaller xs
+smallerAcc xs = Access (\v, prf => smallerAcc' {xs'=v} xs prf)
+  where
+    smallerAcc' : (ys : List a) -> smaller xs' ys -> Accessible smaller xs'
+    smallerAcc' [] x = absurd x
+    smallerAcc' (y :: ys) (LTESucc x) 
+       = Access (\val, p => smallerAcc' ys (lteTransitive p x))
+
 

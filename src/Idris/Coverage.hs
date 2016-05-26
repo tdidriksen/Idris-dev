@@ -101,7 +101,7 @@ genClauses fc n xs given
         -- anything based on earlier values
         genPH :: IState -> Type -> [Bool]
         genPH ist (Bind n (Pi _ ty _) sc) = notConcrete ist ty : genPH ist sc
-        genPH ist ty = [] 
+        genPH ist ty = []
 
         notConcrete ist t | (P _ n _, args) <- unApply t,
                            not (isConName n (tt_ctxt ist)) = True
@@ -315,9 +315,8 @@ genAll i (addPH, args)
 upd :: t -> PArg' t -> PArg' t
 upd p' p = p { getTm = p' }
 
--- Check whether function and all descendants cover all cases (partial is
--- okay, as long as it's due to recursion)
-
+-- | Check whether function and all descendants cover all cases
+-- (partial is okay, as long as it's due to recursion)
 checkAllCovering :: FC -> [Name] -> Name -> Name -> Idris ()
 checkAllCovering fc done top n | not (n `elem` done)
    = do i <- get
@@ -334,15 +333,16 @@ checkAllCovering fc done top n | not (n `elem` done)
              x -> return () -- stop if total
 checkAllCovering _ _ _ _ = return ()
 
--- Check if, in a given group of type declarations mut_ns,
--- the constructor cn : ty is strictly positive,
--- and update the context accordingly
-
-checkPositive :: [Name] -> (Name, Type) -> Idris Totality
+-- | Check if, in a given group of type declarations mut_ns, the
+-- constructor cn : ty is strictly positive, and update the context
+-- accordingly
+checkPositive :: [Name]       -- ^ the group of type declarations
+              -> (Name, Type) -- ^ the constructor
+              -> Idris Totality
 checkPositive mut_ns (cn, ty')
     = do i <- getIState
          let ty = delazy' True (normalise (tt_ctxt i) [] ty')
-         let p = cp ty
+         let p = cp i ty
          let tot = if p then Total (args ty) else Partial NotPositive
          let ctxt' = setTotal cn tot (tt_ctxt i)
          putIState (i { tt_ctxt = ctxt' })
@@ -352,23 +352,32 @@ checkPositive mut_ns (cn, ty')
   where
     args t = [0..length (getArgTys t)-1]
 
-    cp (Bind n (Pi _ aty _) sc) = posArg aty && cp sc
-    cp t | (P _ n' _, args) <- unApply t,
-           n' `elem` mut_ns = all noRec args
-    cp _ = True
+    cp i (Bind n (Pi _ aty _) sc) 
+         = posArg i aty && cp i sc
+    cp i t | (P _ n' _ , args) <- unApply t,
+             n' `elem` mut_ns = all noRec args
+    cp i _ = True
 
-    posArg (Bind _ (Pi _ nty _) sc)
-        | (P _ n' _, args) <- unApply nty
-            = n' `notElem` mut_ns && all noRec args && posArg sc
-    posArg t | (P _ n' _, args) <- unApply t,
-               n' `elem` mut_ns = all noRec args
-    posArg _ = True
+    posArg ist (Bind _ (Pi _ nty _) sc) = noRec nty && posArg ist sc
+    posArg ist t = posParams ist t
 
     noRec arg = all (\x -> x `notElem` mut_ns) (allTTNames arg)
 
+    -- If the type appears recursively in a parameter argument, that's
+    -- fine, otherwise if it appears in an argument it's not fine.
+    posParams ist t | (P _ n _, args) <- unApply t
+       = case lookupCtxtExact n (idris_datatypes ist) of
+              Just ti -> checkParamsOK (param_pos ti) 0 args
+              Nothing -> and (map (posParams ist) args)
+    posParams ist t = noRec t
 
--- | Calculate the totality of a function from its patterns.
--- Either follow the size change graph (if inductive) or check for
+    checkParamsOK ppos i [] = True
+    checkParamsOK ppos i (p : ps)
+          | i `elem` ppos = checkParamsOK ppos (i + 1) ps
+          | otherwise = noRec p && checkParamsOK ppos (i + 1) ps
+
+-- | Calculate the totality of a function from its patterns.  Either
+-- follow the size change graph (if inductive) or check for
 -- productivity (if coinductive)
 calcTotality :: FC -> Name -> [([Name], Term, Term)] -> Idris Totality
 calcTotality fc n pats
@@ -381,8 +390,8 @@ calcTotality fc n pats
             _ -> checkSizeChange n
   where
     checkLHS i (P _ fn _)
-        = case lookupTotal fn (tt_ctxt i) of
-               [Partial _] -> return (Partial (Other [fn]))
+        = case lookupTotalExact fn (tt_ctxt i) of
+               Just (Partial _) -> return (Partial (Other [fn]))
                _ -> Nothing
     checkLHS i (App _ f a) = mplus (checkLHS i f) (checkLHS i a)
     checkLHS _ _ = Nothing
@@ -408,6 +417,7 @@ checkTotality path fc n
                             do t' <- if AssertTotal `elem` opts
                                         then return $ Total []
                                         else calcTotality fc n pats
+                               logCoverage 2 $ "Set to " ++ show t'
                                setTotality n t'
                                addIBC (IBCTotal n t')
                                return t'
@@ -457,20 +467,6 @@ checkDeclTotality (fc, n)
                               _ -> []
          when (CoveringFn `elem` opts) $ checkAllCovering fc [] n n
          t <- checkTotality [] fc n
-         let acc = case lookupDefAccExact n False (tt_ctxt i) of
-                        Just (n, a) -> a
-                        _ -> Public
-         case t of
-              -- if it's not total, it can't reduce, to keep
-              -- typechecking decidable.
-              -- So if it's currently public export, set it as
-              -- export instead.
-              p@(Partial _) -> do let newacc = max Frozen acc
-                                  setAccessibility n newacc
-                                  addIBC (IBCAccess n newacc)
-                                  logCoverage 5 $ "Set to " ++ show newacc ++ ":"
-                                               ++ show n ++ show p
-              _ -> return ()
          return t
 
 
@@ -493,7 +489,7 @@ buildSCG (_, n) = do
              let (args, sc) = cases_totcheck cd in
                do logCoverage 2 $ "Building SCG for " ++ show n ++ " from\n"
                                 ++ show pats ++ "\n" ++ show sc
-                  let newscg = buildSCG' ist (rights pats) args
+                  let newscg = buildSCG' ist n (rights pats) args
                   logCoverage 5 $ "SCG is: " ++ show newscg
                   addToCG n ( cg { scg = newscg } )
            _ -> return () -- CG comes from a type declaration only
@@ -505,55 +501,131 @@ delazy' all t@(App _ f a)
      | (P _ (UN l) _, [_, _, arg]) <- unApply t,
        l == txt "Force" = delazy' all arg
      | (P _ (UN l) _, [P _ (UN lty) _, _, arg]) <- unApply t,
-       l == txt "Delay" && (all || lty == txt "LazyEval") = delazy arg
+       l == txt "Delay" && (all || lty /= txt "Infinite") = delazy arg
      | (P _ (UN l) _, [P _ (UN lty) _, arg]) <- unApply t,
-       l == txt "Lazy'" && (all || lty == txt "LazyEval") = delazy' all arg
+       l == txt "Delayed" && (all || lty /= txt "Infinite") = delazy' all arg
 delazy' all (App s f a) = App s (delazy' all f) (delazy' all a)
 delazy' all (Bind n b sc) = Bind n (fmap (delazy' all) b) (delazy' all sc)
 delazy' all t = t
 
-data Guardedness = Toplevel | Unguarded | Guarded
+data Guardedness = Toplevel | Unguarded | Guarded | Delayed
   deriving Show
 
-buildSCG' :: IState -> [(Term, Term)] -> [Name] -> [SCGEntry]
-buildSCG' ist pats args = nub $ concatMap scgPat pats where
+buildSCG' :: IState -> Name -> [(Term, Term)] -> [Name] -> [SCGEntry]
+buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
   scgPat (lhs, rhs) = let lhs' = delazy lhs
                           rhs' = delazy rhs
                           (f, pargs) = unApply (dePat lhs') in
-                            findCalls Toplevel (dePat rhs') (patvars lhs') pargs
+                            findCalls [] Toplevel (dePat rhs') (patvars lhs')
+                                      (zip pargs [0..])
 
-  findCalls guarded ap@(App _ f a) pvs pargs
+  findCalls cases Delayed ap@(P _ n _) pvs args
+     | n == topfn = []
+  findCalls cases guarded ap@(App _ f a) pvs pargs
      -- under a call to "assert_total", don't do any checking, just believe
      -- that it is total.
      | (P _ (UN at) _, [_, _]) <- unApply ap,
        at == txt "assert_total" = []
-     -- under a call to "Delay LazyCodata", don't do any checking of the
-     -- immediate call, as long as the call is guarded.
-     -- Then check its arguments
+     -- don't go under calls to functions which are asserted total
+     | (P _ n _, _) <- unApply ap,
+       Just opts <- lookupCtxtExact n (idris_flags ist),
+       AssertTotal `elem` opts = []
+     -- under a guarded call to "Delay LazyCodata", we are 'Delayed', so don't
+     -- check under guarded constructors.
      | (P _ (UN del) _, [_,_,arg]) <- unApply ap,
        Guarded <- guarded,
        del == txt "Delay"
-           = let (capp, args) = unApply arg in
-                 concatMap (\x -> findCalls guarded x pvs pargs) args
+           = findCalls cases Delayed arg pvs pargs
+     | (P _ n _, args) <- unApply ap,
+       Delayed <- guarded,
+       n == topfn -- Under a delayed recursive call to the top level function,
+                  -- just check the arguments
+           = concatMap (\x -> findCalls cases Unguarded x pvs pargs) args
+     | (P _ n _, args) <- unApply ap,
+       Delayed <- guarded,
+       isConName n (tt_ctxt ist)
+           = -- Still under a 'Delay' and constructor guarded, so check
+             -- just the arguments to the constructor, remaining Delayed
+             concatMap (\x -> findCalls cases guarded x pvs pargs) args
+     | (P _ n _, args) <- unApply ap,
+       caseName n && n /= topfn,
+       notPartial (lookupTotalExact n (tt_ctxt ist))
+       -- case block - look inside the block, as long as it was covering
+       -- (i.e. not currently set at Partial) to get a more accurate size
+       -- change result from the top level patterns (also to help pass
+       -- information through from guarded corecursion accurately)
+       = concatMap (\x -> findCalls cases Unguarded x pvs pargs) args ++
+             if n `notElem` cases
+                then findCallsCase (n : cases) guarded n args pvs pargs
+                else []
      | (P _ n _, args) <- unApply ap
+        -- Ordinary call, not under a delay.
+        -- If n is a constructor, set 'args' as Guarded
         = let nguarded = case guarded of
                               Unguarded -> Unguarded
-                              _ -> if isConName n (tt_ctxt ist)
+                              x -> if isConName n (tt_ctxt ist)
                                       then Guarded
                                       else Unguarded in
               mkChange n args pargs ++
-                 concatMap (\x -> findCalls nguarded x pvs pargs) args
-  findCalls guarded (App _ f a) pvs pargs
-        = findCalls Unguarded f pvs pargs ++ findCalls Unguarded a pvs pargs
-  findCalls guarded (Bind n (Let t v) e) pvs pargs
-        = findCalls Unguarded t pvs pargs ++
-          findCalls Unguarded v pvs pargs ++ findCalls guarded e (n : pvs) pargs
-  findCalls guarded (Bind n t e) pvs pargs
-        = findCalls Unguarded (binderTy t) pvs pargs ++
-          findCalls guarded e (n : pvs) pargs
-  findCalls guarded (P _ f _ ) pvs pargs
+                 concatMap (\x -> findCalls cases nguarded x pvs pargs) args
+    where notPartial (Just (Partial NotCovering)) = False
+          notPartial _ = True
+  findCalls cases guarded (App _ f a) pvs pargs
+        = findCalls cases Unguarded f pvs pargs ++ findCalls cases Unguarded a pvs pargs
+  findCalls cases guarded (Bind n (Let t v) e) pvs pargs
+        = findCalls cases Unguarded t pvs pargs ++
+          findCalls cases Unguarded v pvs pargs ++ findCalls cases guarded e (n : pvs) pargs
+  findCalls cases guarded (Bind n t e) pvs pargs
+        = findCalls cases Unguarded (binderTy t) pvs pargs ++
+          findCalls cases guarded e (n : pvs) pargs
+  findCalls cases guarded (P _ f _ ) pvs pargs
       | not (f `elem` pvs) = [(f, [])]
-  findCalls _ _ _ _ = []
+  findCalls _ _ _ _ _ = []
+
+  -- Assumption is that names are preserved in the case block (shadowing
+  -- dealt with by the elaborator) so we can just assume the top level names
+  -- are okay for building the size change
+  findCallsCase cases guarded n args pvs pargs
+      = case lookupDefExact n (tt_ctxt ist) of
+           Just (CaseOp _ _ _ pats _ cd) ->
+                concatMap (fccPat cases pvs pargs args guarded) (rights pats)
+           Nothing -> []
+
+  fccPat cases pvs pargs args g (lhs, rhs)
+      = let lhs' = delazy lhs
+            rhs' = delazy rhs
+            (f, pargs_case) = unApply (dePat lhs')
+            -- pargs is a pair of a term, and the argument position that
+            -- term appears in. If any of the arguments to the case block
+            -- are also on the lhs, we also want those patterns to appear
+            -- in the parg list so that we'll spot patterns which are
+            -- smaller than then
+            newpargs = newPArg args pargs
+            -- Now need to update the rhs of the case with the names in the
+            -- outer definition: In rhs', wherever we see what's in pargs_case,
+            -- replace it with the corresponding thing in pargs
+            csubs = zip pargs_case args
+            newrhs = doCaseSubs csubs (dePat rhs')
+            pargs' = pargs ++ addPArg newpargs pargs_case in
+               findCalls cases g newrhs pvs pargs'
+    where
+      doCaseSubs [] tm = tm
+      doCaseSubs ((x, x') : cs) tm
+           = doCaseSubs (subIn x x' cs) (substTerm x x' tm)
+
+      subIn x x' [] = []
+      subIn x x' ((l, r) : cs)
+          = (substTerm x x' l, substTerm x x' r) : subIn x x' cs
+
+  addPArg (Just (t, i) : ts) (t' : ts') = (t', i) : addPArg ts ts'
+  addPArg (Nothing : ts) (t' : ts') = addPArg ts ts'
+  addPArg _ _ = []
+
+  newPArg :: [Term] -> [(Term, Int)] -> [Maybe (Term, Int)]
+  newPArg (t : ts) pargs = case lookup t pargs of
+                                Just i -> Just (t, i) : newPArg ts pargs
+                                Nothing -> Nothing : newPArg ts pargs
+  newPArg [] pargs = []
 
   expandToArity n args
      = case lookupTy n (tt_ctxt ist) of
@@ -566,21 +638,21 @@ buildSCG' ist pats args = nub $ concatMap scgPat pats where
   mkChange n args pargs = [(n, expandToArity n (sizes args))]
     where
       sizes [] = []
-      sizes (a : as) = checkSize a pargs 0 : sizes as
+      sizes (a : as) = checkSize a pargs : sizes as
 
       -- find which argument in pargs <a> is smaller than, if any
-      checkSize a (p : ps) i
+      checkSize a ((p, i) : ps)
           | a == p = Just (i, Same)
           | (P _ (UN as) _, [_,_,arg,_]) <- unApply a,
             as == txt "assert_smaller" && arg == p
                   = Just (i, Smaller)
           | smaller Nothing a (p, Nothing) = Just (i, Smaller)
-          | otherwise = checkSize a ps (i + 1)
-      checkSize a [] i = Nothing
+          | otherwise = checkSize a ps
+      checkSize a [] = Nothing
 
-      -- the smaller thing we find must be the same type as <a>, and
-      -- not be coinductive - so carry the type of the constructor we've
-      -- gone under.
+      -- the smaller thing we find must be defined in the same group of mutally
+      -- defined types as <a>, and not be coinductive - so carry the type of
+      -- the constructor we've gone under.
 
       smaller (Just tyn) a (t, Just tyt)
          | a == t = isInductive (fst (unApply (getRetTy tyn)))
@@ -596,14 +668,14 @@ buildSCG' ist pats args = nub $ concatMap scgPat pats where
 
       toJust (n, t) = Just t
 
-      getType n = case lookupTy n (tt_ctxt ist) of
-                       [ty] -> delazy (normalise (tt_ctxt ist) [] ty) -- must exist
+      getType n = case lookupTyExact n (tt_ctxt ist) of
+                       Just ty -> delazy (normalise (tt_ctxt ist) [] ty) -- must exist
 
       isInductive (P _ nty _) (P _ nty' _) =
-          let co = case lookupCtxt nty (idris_datatypes ist) of
-                        [TI _ x _ _ _] -> x
-                        _ -> False in
-              nty == nty' && not co
+          let (co, muts) = case lookupCtxt nty (idris_datatypes ist) of
+                                [TI _ x _ _ muts] -> (x, muts)
+                                _ -> (False, []) in
+              (nty == nty' || any (== nty') muts) && not co
       isInductive _ _ = False
 
   dePat (Bind x (PVar ty) sc) = dePat (instantiate (P Bound x ty) sc)
@@ -626,9 +698,10 @@ checkSizeChange n = do
                   -- thread, then the function terminates
                   -- also need to checks functions called are all total
                   -- (Unchecked is okay as we'll spot problems here)
-                  let tot = map (checkMP ist (getArity ist n)) ms
+                  let tot = map (checkMP ist n (getArity ist n)) ms
                   logCoverage 4 $ "Generated " ++ show (length tot) ++ " paths"
-                  logCoverage 6 $ "Paths for " ++ show n ++ " yield " ++ (show tot)
+                  logCoverage 5 $ "Paths for " ++ show n ++ " yield " ++
+                       (showSep "\n" (map show (zip ms tot)))
                   return (noPartial tot)
        [] -> do logCoverage 5 $ "No paths for " ++ show n
                 return Unchecked
@@ -651,20 +724,13 @@ mkMultiPaths ist path cg
                     _ -> [ reverse ((nextf, args) : path) ]
            | otherwise = [ reverse ((nextf, args) : path) ]
 
---     do (nextf, args) <- cg
---          if ((nextf, args) `elem` path)
---             then return (reverse ((nextf, args) : path))
---             else case lookupCtxt nextf (idris_callgraph ist) of
---                     [ncg] -> mkMultiPaths ist ((nextf, args) : path) (scg ncg)
---                     _ -> return (reverse ((nextf, args) : path))
-
 -- If any route along the multipath leads to infinite descent, we're fine.
 -- Try a route beginning with every argument.
 --   If we reach a point we've been to before, but with a smaller value,
 --   that means there is an infinitely descending path from that argument.
 
-checkMP :: IState -> Int -> MultiPath -> Totality
-checkMP ist i mp = if i > 0
+checkMP :: IState -> Name -> Int -> MultiPath -> Totality
+checkMP ist topfn i mp = if i > 0
                      then let paths = (map (tryPath 0 [] mp) [0..i-1]) in
 --                               trace ("Paths " ++ show paths) $
                                collapse paths
@@ -674,6 +740,8 @@ checkMP ist i mp = if i > 0
            = let res = tryPath d path mp arg in
                  trace (show mp ++ "\n" ++ show arg ++ " " ++ show res) res
 
+    mkBig (e, d) = (e, 10000)
+
     tryPath :: Int -> [((SCGEntry, Int), Int)] -> MultiPath -> Int -> Totality
     tryPath desc path [] _ = Total []
 --     tryPath desc path ((UN "believe_me", _) : _) arg
@@ -681,17 +749,21 @@ checkMP ist i mp = if i > 0
     -- if we get to a constructor, it's fine as long as it's strictly positive
     tryPath desc path ((f, _) : es) arg
         | [TyDecl (DCon _ _ _) _] <- lookupDef f (tt_ctxt ist)
-            = case lookupTotal f (tt_ctxt ist) of
-                   [Total _] -> Unchecked -- okay so far
-                   [Partial _] -> Partial (Other [f])
-                   x -> error $ "CAN'T HAPPEN: " ++ show x ++ " for " ++ show f
+            = case lookupTotalExact f (tt_ctxt ist) of
+                   Just (Total _) -> Unchecked -- okay so far
+                   Just (Partial _) -> Partial (Other [f])
+                   x -> Unchecked -- An error elsewhere, set as Unchecked to make
+                                  -- some progress
         | [TyDecl (TCon _ _) _] <- lookupDef f (tt_ctxt ist)
             = Total []
     tryPath desc path (e@(f, args) : es) arg
+        | [Total a] <- lookupTotal f (tt_ctxt ist) = Total a
         | e `elem` es && allNothing args = Partial (Mutual [f])
     tryPath desc path (e@(f, nextargs) : es) arg
+        | [Total a] <- lookupTotal f (tt_ctxt ist) = Total a
+        | [Partial _] <- lookupTotal f (tt_ctxt ist) = Partial (Other [f])
         | Just d <- lookup (e, arg) path
-            = if desc > 0
+            = if desc - d > 0 -- Now lower than when we were last here
                    then -- trace ("Descent " ++ show (desc - d) ++ " "
                         --      ++ show (path, e)) $
                         Total []
@@ -700,21 +772,15 @@ checkMP ist i mp = if i > 0
            && not (f `elem` map fst es)
               = Partial (Mutual (map (fst . fst . fst) path ++ [f]))
         | [Unchecked] <- lookupTotal f (tt_ctxt ist) =
-            let argspos = case collapseNothing (zip nextargs [0..]) of
-                               [] -> [(Nothing, 0)]
-                               x -> x
---               trace (show (argspos, nextargs, path)) $
+            let argspos = zip nextargs [0..]
                 pathres =
                   do (a, pos) <- argspos
                      case a of
-                        Nothing -> -- don't know, but if the
-                                   -- rest definitely terminates without
-                                   -- any cycles with route so far,
-                                   -- then we might yet be total
-                            case collapse (map (tryPath 0 (((e, arg), 0):path) es)
-                                          [0..length nextargs - 1]) of
-                                Total _ -> return Unchecked
-                                x -> return x
+                        Nothing -> -- gone up, but if the
+                                   -- rest definitely terminates without any
+                                   -- cycles (including the path so far, which
+                                   -- we take as inaccessible) the path is fine
+                            return $ tryPath 0 (map mkBig (((e, arg), desc) : path)) es pos
                         Just (nextarg, sc) ->
                           if nextarg == arg then
                             case sc of
@@ -728,20 +794,18 @@ checkMP ist i mp = if i > 0
                                       return (Partial Itself)
                             else return Unchecked in
 --                   trace (show (desc, argspos, path, es, pathres)) $
-                   collapse' Unchecked pathres
+                   collapse pathres
 
-        | [Total a] <- lookupTotal f (tt_ctxt ist) = Total a
-        | [Partial _] <- lookupTotal f (tt_ctxt ist) = Partial (Other [f])
         | otherwise = Unchecked
 
 allNothing :: [Maybe a] -> Bool
 allNothing xs = null (collapseNothing (zip xs [0..]))
 
 collapseNothing :: [(Maybe a, b)] -> [(Maybe a, b)]
-collapseNothing ((Nothing, _) : xs)
-   = filter (\ (x, _) -> case x of
-                             Nothing -> False
-                             _ -> True) xs
+collapseNothing ((Nothing, t) : xs)
+   = (Nothing, t) : filter (\ (x, _) -> case x of
+                                             Nothing -> False
+                                             _ -> True) xs
 collapseNothing (x : xs) = x : collapseNothing xs
 collapseNothing [] = []
 
@@ -757,3 +821,16 @@ collapse' def (Unchecked : xs) = collapse' def xs
 collapse' def (d : xs)         = collapse' d xs
 -- collapse' Unchecked []         = Total []
 collapse' def []               = def
+
+totalityCheckBlock :: Idris ()
+totalityCheckBlock = do
+         ist <- getIState
+         -- Do totality checking after entire mutual block
+         mapM_ (\n -> do logElab 5 $ "Simplifying " ++ show n
+                         ctxt' <- do ctxt <- getContext
+                                     tclift $ simplifyCasedef n (getErasureInfo ist) ctxt
+                         setContext ctxt')
+                 (map snd (idris_totcheck ist))
+         mapM_ buildSCG (idris_totcheck ist)
+         mapM_ checkDeclTotality (idris_totcheck ist)
+         clear_totcheck

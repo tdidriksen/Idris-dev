@@ -137,7 +137,7 @@ Unlike Haskell, there is no restriction on whether types and function
 names must begin with a capital letter or not. Function names
 (``plus`` and ``mult`` above), data constructors (``Z``, ``S``,
 ``Nil`` and ``::``) and type constructors (``Nat`` and ``List``) are
-all part of the same namespace. By convention, however, 
+all part of the same namespace. By convention, however,
 data types and constructor names typically begin with a capital letter.
 We can test these functions at the Idris prompt:
 
@@ -469,6 +469,16 @@ It is a matter of taste whether you want to do this — sometimes it can
 help document a function by making the purpose of an argument more
 clear.
 
+Furthermore, ``{}`` can be used to pattern match on the left hand side, i.e. 
+``{var = pat}`` gets an implicit variable and attempts to pattern match on "pat";
+For example :
+
+.. code-block:: idris
+
+    isEmpty : Vect n a -> Bool
+    isEmpty {n = Z} _   = True
+    isEmpty {n = S k} _ = False
+
 “``using``” notation
 --------------------
 
@@ -495,8 +505,19 @@ vector. For example:
     testVec : Vect 4 Int
     testVec = 3 :: 4 :: 5 :: 6 :: Nil
 
-    inVect : IsElem 5 testVec
+    inVect : IsElem 5 Main.testVec
     inVect = There (There Here)
+
+
+.. important:: Implicit Arguments and Scope
+
+    Within the type signature the typechecker will treat all variables
+    that start with an lowercase letter **and** are not applied to
+    something else as an implicit variable. To get the above code
+    example to compile you will need to provide a qualified name for
+    ``testVec``. In the example above, we have assumed that the code
+    lives within the ``Main`` module.
+
 
 If the same implicit arguments are being used a lot, it can make a
 definition difficult to read. To avoid this problem, a ``using`` block
@@ -509,6 +530,8 @@ appear within the block:
       data IsElem : a -> Vect n a -> Type where
          Here  : IsElem x (x :: xs)
          There : IsElem x xs -> IsElem x (y :: xs)
+
+
 
 Note: Declaration Order and ``mutual`` blocks
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -583,7 +606,7 @@ example for reading and writing files, including:
 
     openFile : (f : String) -> (m : Mode) -> IO (Either FileError File)
     closeFile : File -> IO ()
-    
+
     fGetLine : (h : File) -> IO (Either FileError String)
     fPutStr : (h : File) -> (str : String) -> IO (Either FileError ())
     fEOF : File -> IO Bool
@@ -841,8 +864,8 @@ as “sigma types”:
 
 .. code-block:: idris
 
-    data Sigma : (a : Type) -> (P : a -> Type) -> Type where
-       MkSigma : {P : a -> Type} -> (x : a) -> P x -> Sigma a P
+    data DPair : (a : Type) -> (P : a -> Type) -> Type where
+       MkDPair : {P : a -> Type} -> (x : a) -> P x -> DPair a P
 
 Again, there is syntactic sugar for this. ``(a : A ** P)`` is the type
 of a pair of A and P, where the name ``a`` can occur inside ``P``.
@@ -859,8 +882,8 @@ equivalent.
 
 .. code-block:: idris
 
-    vec : Sigma Nat (\n => Vect n Int)
-    vec = MkSigma 2 [3, 4]
+    vec : DPair Nat (\n => Vect n Int)
+    vec = MkDPair 2 [3, 4]
 
 The type checker could of course infer the value of the first element
 from the length of the vector. We can write an underscore ``_`` in
@@ -959,6 +982,9 @@ updated):
 
 The syntax ``record { field = val, ... }`` generates a function which
 updates the given fields in a record.
+
+Each record is defined in its own namespace, which means that field names 
+can be reused in multiple records.
 
 Records, and fields within records, can have dependent types. Updates
 are allowed to change the type of a field, provided that the result is

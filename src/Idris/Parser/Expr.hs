@@ -36,11 +36,17 @@ import Debug.Trace
 
 -- | Allow implicit type declarations
 allowImp :: SyntaxInfo -> SyntaxInfo
-allowImp syn = syn { implicitAllowed = True }
+allowImp syn = syn { implicitAllowed = True,
+                     constraintAllowed = False }
 
 -- | Disallow implicit type declarations
 disallowImp :: SyntaxInfo -> SyntaxInfo
-disallowImp syn = syn { implicitAllowed = False }
+disallowImp syn = syn { implicitAllowed = False,
+                        constraintAllowed = False }
+
+-- | Allow scoped constraint arguments
+allowConstr :: SyntaxInfo -> SyntaxInfo
+allowConstr syn = syn { constraintAllowed = True }
 
 {-| Parses an expression as a whole
 @
@@ -74,7 +80,8 @@ expr = pi
 -}
 opExpr :: SyntaxInfo -> IdrisParser PTerm
 opExpr syn = do i <- get
-                buildExpressionParser (table (idris_infixes i)) (expr' syn)
+                buildExpressionParser (table (idris_infixes i)) 
+                                      (expr' syn)
 
 {- | Parses either an internally defined expression or
     a user-defined one
@@ -199,8 +206,8 @@ updateSynMatch = update
       = PIfThenElse fc (update ns c) (update ns t) (update ns f)
     update ns (PCase fc c opts)
       = PCase fc (update ns c) (map (pmap (update ns)) opts)
-    update ns (PRewrite fc eq tm mty)
-      = PRewrite fc (update ns eq) (update ns tm) (fmap (update ns) mty)
+    update ns (PRewrite fc by eq tm mty)
+      = PRewrite fc by (update ns eq) (update ns tm) (fmap (update ns) mty)
     update ns (PPair fc hls p l r) = PPair fc hls p (update ns l) (update ns r)
     update ns (PDPair fc hls p l t r)
       = PDPair fc hls p (update ns l) (update ns t) (update ns r)
@@ -326,7 +333,7 @@ CaseOption ::=
 @
 -}
 caseOption :: SyntaxInfo -> IdrisParser (PTerm, PTerm)
-caseOption syn = do lhs <- expr (syn { inPattern = True })
+caseOption syn = do lhs <- expr (disallowImp (syn { inPattern = True }))
                     r <- impossible <|> symbol "=>" *> expr syn
                     return (lhs, r)
                  <?> "case option"
@@ -398,7 +405,7 @@ simpleExpr syn =
         <|> do reserved "elim_for"; fc <- getFC; t <- fst <$> fnName; return (PRef fc [] (SN $ ElimN t))
         <|> proofExpr syn
         <|> tacticsExpr syn
-        <|> try (do reserved "Type"; symbol "*"; return $ PUniverse AllTypes)
+        <|> try (do reserved "Type*"; return $ PUniverse AllTypes)
         <|> do reserved "AnyType"; return $ PUniverse AllTypes
         <|> PType <$> reservedFC "Type"
         <|> do reserved "UniqueType"; return $ PUniverse UniqueType
@@ -431,7 +438,7 @@ simpleExpr syn =
         <|> do lchar '_'; return Placeholder
         <?> "expression"
 
-{- |Parses an expression in braces
+{- |Parses an expression in parentheses
 @
 Bracketed ::= '(' Bracketed'
 @
@@ -439,17 +446,17 @@ Bracketed ::= '(' Bracketed'
 bracketed :: SyntaxInfo -> IdrisParser PTerm
 bracketed syn = do (FC fn (sl, sc) _) <- getFC
                    lchar '(' <?> "parenthesized expression"
-                   bracketed' (FC fn (sl, sc) (sl, sc+1)) syn
+                   bracketed' (FC fn (sl, sc) (sl, sc+1)) (syn { withAppAllowed = True })
+
 {- |Parses the rest of an expression in braces
 @
 Bracketed' ::=
   ')'
   | Expr ')'
   | ExprList ')'
-  | Expr '**' Expr ')'
+  | DependentPair ')'
   | Operator Expr ')'
   | Expr Operator ')'
-  | Name ':' Expr '**' Expr ')'
   ;
 @
 -}
@@ -458,14 +465,7 @@ bracketed' open syn =
             do (FC f start (l, c)) <- getFC
                lchar ')'
                return $ PTrue (spanFC open (FC f start (l, c+1))) TypeOrTerm
-        <|> try (do (ln, lnfc) <- name
-                    colonFC <- lcharFC ':'
-                    lty <- expr syn
-                    starsFC <- reservedOpFC "**"
-                    fc <- getFC
-                    r <- expr syn
-                    close <- lcharFC ')'
-                    return (PDPair fc [open, colonFC, starsFC, close] TypeOrTerm (PRef lnfc [] ln) lty r))
+        <|> try (dependentPair TypeOrTerm [] open syn)
         <|> try (do fc <- getFC; o <- operator; e <- expr syn; lchar ')'
                     -- No prefix operators! (bit of a hack here...)
                     if (o == "-" || o == "!")
@@ -483,23 +483,62 @@ bracketed' open syn =
                          Just o -> return $ PLam fc0 (sMN 1000 "ARG") NoFC Placeholder
                              (PApp fc0 (PRef fc0 [] (sUN o)) [pexp l,
                                                               pexp (PRef fc0 [] (sMN 1000 "ARG"))]))
-        <|> do l <- expr syn
-               bracketedExpr syn open l
+        <|> do l <- expr (allowConstr syn)
+               bracketedExpr (allowConstr syn) open l
+
+
+
+{-| Parses the rest of a dependent pair after '(' or '(Expr **' -}
+dependentPair :: PunInfo -> [(PTerm, Maybe (FC, PTerm), FC)] -> FC -> SyntaxInfo -> IdrisParser PTerm
+dependentPair pun prev openFC syn =
+  if prev == [] then
+      nametypePart <|> namePart
+  else
+    case pun of
+      IsType -> nametypePart <|> namePart <|> exprPart True
+      IsTerm -> exprPart False
+      TypeOrTerm -> nametypePart <|> namePart <|> exprPart False
+  where nametypePart = do
+          (ln, lnfc, colonFC) <- try $ do
+            (ln, lnfc) <- name
+            colonFC <- lcharFC ':'
+            return (ln, lnfc, colonFC)
+          lty <- expr' syn
+          starsFC <- reservedOpFC "**"
+          dependentPair IsType ((PRef lnfc [] ln, Just (colonFC, lty), starsFC):prev) openFC syn
+        namePart = try $ do
+          (ln, lnfc) <- name
+          starsFC <- reservedOpFC "**"
+          dependentPair pun ((PRef lnfc [] ln, Nothing, starsFC):prev) openFC syn
+        exprPart isEnd = do
+          e <- expr syn
+          sepFCE <-
+            let stars = (Left <$> reservedOpFC "**")
+                ending = (Right <$> lcharFC ')')
+            in if isEnd then ending else stars <|> ending
+          case sepFCE of
+            Left starsFC -> dependentPair IsTerm ((e, Nothing, starsFC):prev) openFC syn
+            Right closeFC ->
+              return (mkPDPairs pun openFC closeFC (reverse prev) e)
+        mkPDPairs pun openFC closeFC ((e, cfclty, starsFC):bnds) r =
+              (PDPair openFC ([openFC] ++ maybe [] ((: []) . fst) cfclty ++ [starsFC, closeFC] ++ (=<<) (\(_,cfclty,sfc) -> maybe [] ((: []) . fst) cfclty ++ [sfc]) bnds)
+                               pun e (maybe Placeholder snd cfclty) (mergePDPairs pun starsFC bnds r))
+        mergePDPairs pun starsFC' [] r = r
+        mergePDPairs pun starsFC' ((e, cfclty, starsFC):bnds) r =
+           PDPair starsFC' [] pun e (maybe Placeholder snd cfclty) (mergePDPairs pun starsFC bnds r)
 
 -- | Parse the contents of parentheses, after an expression has been parsed.
 bracketedExpr :: SyntaxInfo -> FC -> PTerm -> IdrisParser PTerm
 bracketedExpr syn openParenFC e =
              do lchar ')'; return e
-        <|>  do exprs <- many (do comma <- lcharFC ','
+        <|>  do exprs <- some (do comma <- lcharFC ','
                                   r <- expr syn
                                   return (r, comma))
                 closeParenFC <- lcharFC ')'
                 let hilite = [openParenFC, closeParenFC] ++ map snd exprs
                 return $ PPair openParenFC hilite TypeOrTerm e (mergePairs exprs)
         <|>  do starsFC <- reservedOpFC "**"
-                r <- expr syn
-                closeParenFC <- lcharFC ')'
-                return (PDPair starsFC [openParenFC, starsFC, closeParenFC] TypeOrTerm e Placeholder r)
+                dependentPair IsTerm [(e, Nothing, starsFC)] openParenFC syn
         <?> "end of bracketed expression"
   where mergePairs :: [(PTerm, FC)] -> PTerm
         mergePairs [(t, fc)]    = t
@@ -540,7 +579,7 @@ modifyConst syn fc x = x
 @
 -}
 alt :: SyntaxInfo -> IdrisParser PTerm
-alt syn = do symbol "(|"; alts <- sepBy1 (expr' syn) (lchar ','); symbol "|)"
+alt syn = do symbol "(|"; alts <- sepBy1 (expr' (syn { withAppAllowed = False })) (lchar ','); symbol "|)"
              return (PAlternative [] FirstSuccess alts)
 
 {- | Parses a possibly hidden simple expression
@@ -636,9 +675,12 @@ app syn = do f <- simpleExpr syn
              fc <- getFC
              i <- get
              args <- many (do notEndApp; arg syn)
+             wargs <- if withAppAllowed syn && not (inPattern syn)
+                         then many (do notEndApp; reservedOp "|"; expr' syn)
+                         else return []
              case args of
                [] -> return f
-               _  -> return (flattenFromInt fc f args))
+               _  -> return (withApp fc (flattenFromInt fc f args) wargs))
        <?> "function application"
    where
     -- bit of a hack to deal with the situation where we're applying a
@@ -649,6 +691,9 @@ app syn = do f <- simpleExpr syn
       | Just i <- getFromInt alts
            = PApp fc (PRef fc [] (sUN "fromInteger")) (i : args)
     flattenFromInt fc f args = PApp fc f args
+
+    withApp fc tm [] = tm
+    withApp fc tm (a : as) = withApp fc (PWithApp fc tm a) as
 
     getFromInt ((PApp _ (PRef _ _ n) [a]) : _) | n == sUN "fromInteger" = Just a
     getFromInt (_ : xs) = getFromInt xs
@@ -852,7 +897,7 @@ TypeExpr ::= ConstraintList? Expr;
  -}
 typeExpr :: SyntaxInfo -> IdrisParser PTerm
 typeExpr syn = do cs <- if implicitAllowed syn then constraintList syn else return []
-                  sc <- expr syn
+                  sc <- expr (allowConstr syn)
                   return (bindList (PPi constraint) cs sc)
                <?> "type signature"
 
@@ -877,13 +922,13 @@ LambdaTail ::=
 -}
 lambda :: SyntaxInfo -> IdrisParser PTerm
 lambda syn = do lchar '\\' <?> "lambda expression"
-                ((do xt <- try $ tyOptDeclList syn
+                ((do xt <- try $ tyOptDeclList (disallowImp syn)
                      fc <- getFC
                      sc <- lambdaTail
                      return (bindList (PLam fc) xt sc))
                  <|>
                  (do ps <- sepBy (do fc <- getFC
-                                     e <- simpleExpr (syn { inPattern = True })
+                                     e <- simpleExpr (disallowImp (syn { inPattern = True }))
                                      return (fc, e))
                                  (lchar ',')
                      sc <- lambdaTail
@@ -910,12 +955,13 @@ rewriteTerm syn = do kw <- reservedFC "rewrite"
                      fc <- getFC
                      prf <- expr syn
                      giving <- optional (do symbol "==>"; expr' syn)
+                     using <- optional (do reserved "using" 
+                                           (n, _) <- name 
+                                           return n)
                      kw' <- reservedFC "in";  sc <- expr syn
                      highlightP kw AnnKeyword
                      highlightP kw' AnnKeyword
-                     return (PRewrite fc
-                             (PApp fc (PRef fc [] (sUN "sym")) [pexp prf]) sc
-                               giving)
+                     return (PRewrite fc using prf sc giving)
                   <?> "term rewrite expression"
 
 {- |Parses a let binding
@@ -946,10 +992,12 @@ let_binding syn = do fc <- getFC;
                      pat <- expr' (syn { inPattern = True })
                      ty <- option Placeholder (do lchar ':'; expr' syn)
                      lchar '='
-                     v <- expr syn
+                     v <- expr (syn { withAppAllowed = isVar pat })
                      ts <- option [] (do lchar '|'
                                          sepBy1 (do_alt syn) (lchar '|'))
                      return (fc,pat,ty,v,ts)
+   where isVar (PRef _ _ _) = True
+         isVar _ = False
 
 {- | Parses a conditional expression
 @
@@ -1013,7 +1061,7 @@ bindsymbol opts st syn
 explicitPi opts st syn
    = do xt <- try (lchar '(' *> typeDeclList syn <* lchar ')')
         binder <- bindsymbol opts st syn
-        sc <- expr syn
+        sc <- expr (allowConstr syn)
         return (bindList (PPi binder) xt sc)
 
 autoImplicit opts st syn
@@ -1022,7 +1070,7 @@ autoImplicit opts st syn
         xt <- typeDeclList syn
         lchar '}'
         symbol "->"
-        sc <- expr syn
+        sc <- expr (allowConstr syn)
         highlightP kw AnnKeyword
         return (bindList (PPi
           (TacImp [] Dynamic (PTactics [ProofSearch True True 100 Nothing [] []]))) xt sc)
@@ -1036,7 +1084,7 @@ defaultImplicit opts st syn = do
    xt <- typeDeclList syn
    lchar '}'
    symbol "->"
-   sc <- expr syn
+   sc <- expr (allowConstr syn)
    highlightP kw AnnKeyword
    return (bindList (PPi (TacImp [] Dynamic script)) xt sc)
 
@@ -1047,12 +1095,20 @@ normalImplicit opts st syn = do
    sc <- expr syn
    let (im,cl)
           = if implicitAllowed syn
-               then (Imp opts st False (Just (Impl False True)),
+               then (Imp opts st False (Just (Impl False True)) True,
                       constraint)
-               else (Imp opts st False (Just (Impl False False)),
-                     Imp opts st False (Just (Impl True False)))
+               else (Imp opts st False (Just (Impl False False)) True,
+                     Imp opts st False (Just (Impl True False)) True)
    return (bindList (PPi im) xt
            (bindList (PPi cl) cs sc))
+
+constraintPi opts st syn =
+   do cs <- constraintList1 syn
+      sc <- expr syn
+      if implicitAllowed syn
+         then return (bindList (PPi constraint) cs sc)
+         else return (bindList (PPi (Imp opts st False (Just (Impl True False)) True))
+                               cs sc)
 
 implicitPi opts st syn =
       autoImplicit opts st syn
@@ -1072,7 +1128,10 @@ pi syn =
         st   <- static
         explicitPi opts st syn
          <|> try (do lchar '{'; implicitPi opts st syn)
-            <|> unboundPi opts st syn
+         <|> if constraintAllowed syn 
+                then try (constraintPi opts st syn)
+                         <|> unboundPi opts st syn
+                else unboundPi opts st syn
   <?> "dependent type signature"
 
 {- | Parses Possible Options for Pi Expressions
@@ -1110,9 +1169,9 @@ constraintList1 syn = try (do lchar '('
                               return [(defname, NoFC, t)])
                   <?> "type constraint list"
   where nexpr = try (do (n, fc) <- name; lchar ':'
-                        e <- expr syn
+                        e <- expr (disallowImp syn)
                         return (n, fc, e))
-                <|> do e <- expr syn
+                <|> do e <- expr (disallowImp syn)
                        return (defname, NoFC, e)
         defname = sMN 0 "constraint"
 
@@ -1195,7 +1254,7 @@ listExpr syn = do (FC f (l, c) _) <- getFC
                   (try . token $ do (char ']' <?> "end of list expression")
                                     (FC _ _ (l', c')) <- getFC
                                     return (mkNil (FC f (l, c) (l', c'))))
-                   <|> (do x <- expr syn <?> "expression"
+                   <|> (do x <- expr (syn { withAppAllowed = False }) <?> "expression"
                            (do try (lchar '|') <?> "list comprehension"
                                qs <- sepBy1 (do_ syn) (lchar ',')
                                lchar ']'
@@ -1274,18 +1333,18 @@ do_ syn
    <|> try (do (i, ifc) <- name
                symbol "<-"
                fc <- getFC
-               e <- expr syn;
+               e <- expr (syn { withAppAllowed = False });
                option (DoBind fc i ifc e)
                       (do lchar '|'
-                          ts <- sepBy1 (do_alt syn) (lchar '|')
+                          ts <- sepBy1 (do_alt (syn { withAppAllowed = False })) (lchar '|')
                           return (DoBindP fc (PRef ifc [ifc] i) e ts)))
    <|> try (do i <- expr' syn
                symbol "<-"
                fc <- getFC
-               e <- expr syn;
+               e <- expr (syn { withAppAllowed = False });
                option (DoBindP fc i e [])
                       (do lchar '|'
-                          ts <- sepBy1 (do_alt syn) (lchar '|')
+                          ts <- sepBy1 (do_alt (syn { withAppAllowed = False })) (lchar '|')
                           return (DoBindP fc i e ts)))
    <|> do e <- expr syn
           fc <- getFC
@@ -1307,7 +1366,7 @@ idiom :: SyntaxInfo -> IdrisParser PTerm
 idiom syn
     = do symbol "[|"
          fc <- getFC
-         e <- expr syn
+         e <- expr (syn { withAppAllowed = False })
          symbol "|]"
          return (PIdiom fc e)
       <?> "expression in idiom brackets"

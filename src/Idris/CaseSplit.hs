@@ -12,6 +12,7 @@ import Idris.AbsSyntaxTree (Idris, IState, PTerm)
 import Idris.ElabDecls
 import Idris.Delaborate
 import Idris.Parser
+import Idris.Parser.Helpers
 import Idris.Error
 import Idris.Output
 
@@ -49,11 +50,11 @@ Always take the "more specific" argument when there is a discrepancy, i.e.
 names over '_', patterns over names, etc.
 -}
 
--- Given a variable to split, and a term application, return a list of
--- variable updates, paired with a flag to say whether the given update
--- typechecks (False = impossible)
--- if the flag is 'False' the splits should be output with the 'impossible'
--- flag, otherwise they should be output as normal
+-- | Given a variable to split, and a term application, return a list
+-- of variable updates, paired with a flag to say whether the given
+-- update typechecks (False = impossible) if the flag is 'False' the
+-- splits should be output with the 'impossible' flag, otherwise they
+-- should be output as normal
 split :: Name -> PTerm -> Idris (Bool, [[(Name, PTerm)]])
 split n t'
    = do ist <- getIState
@@ -157,13 +158,25 @@ mergeAllPats ist cv t (p : ps)
         patvars _ = []
 
 mergePat :: IState -> PTerm -> PTerm -> Maybe Name -> State MergeState PTerm
--- If any names are unified, make sure they stay unified. Always prefer
--- user provided name (first pattern)
-mergePat ist (PPatvar fc n) new t
-  = mergePat ist (PRef fc [] n) new t
-mergePat ist old (PPatvar fc n) t
-  = mergePat ist old (PRef fc [] n) t
-mergePat ist orig@(PRef fc _ n) new@(PRef _ _ n') t
+mergePat ist orig new t =
+    do -- collect user names for name map, by matching user pattern against
+       -- the generated pattern
+       case matchClause ist orig new of
+            Left _ -> return ()
+            Right ns -> mapM_ addNameMap ns
+       mergePat' ist orig new t
+  where
+    addNameMap (n, PRef fc _ n') = do ms <- get
+                                      put (ms { namemap = ((n', n) : namemap ms) })
+    addNameMap _ = return ()
+
+-- | If any names are unified, make sure they stay unified. Always
+-- prefer user provided name (first pattern)
+mergePat' ist (PPatvar fc n) new t
+  = mergePat' ist (PRef fc [] n) new t
+mergePat' ist old (PPatvar fc n) t
+  = mergePat' ist old (PRef fc [] n) t
+mergePat' ist orig@(PRef fc _ n) new@(PRef _ _ n') t
   | isDConName n' (tt_ctxt ist) = do addUpdate n new
                                      return new
   | otherwise
@@ -173,20 +186,20 @@ mergePat ist orig@(PRef fc _ n) new@(PRef _ _ n') t
                            return (PRef fc [] x)
               Nothing -> do put (ms { namemap = ((n', n) : namemap ms) })
                             return (PRef fc [] n)
-mergePat ist (PApp _ _ args) (PApp fc f args') t
+mergePat' ist (PApp _ _ args) (PApp fc f args') t
       = do newArgs <- zipWithM mergeArg args (zip args' (argTys ist f))
            return (PApp fc f newArgs)
    where mergeArg x (y, t)
-              = do tm' <- mergePat ist (getTm x) (getTm y) t
+              = do tm' <- mergePat' ist (getTm x) (getTm y) t
                    case x of
                         (PImp _ _ _ _ _) ->
                              return (y { machine_inf = machine_inf x,
                                          getTm = tm' })
                         _ -> return (y { getTm = tm' })
-mergePat ist (PRef fc _ n) tm ty = do tm <- tidy ist tm ty
-                                      addUpdate n tm
-                                      return tm
-mergePat ist x y t = return y
+mergePat' ist (PRef fc _ n) tm ty = do tm <- tidy ist tm ty
+                                       addUpdate n tm
+                                       return tm
+mergePat' ist x y t = return y
 
 mergeUserImpl :: PTerm -> PTerm -> PTerm
 mergeUserImpl x y = x
@@ -227,7 +240,7 @@ elabNewPat t = idrisCatch (do (tm, ty) <- elabVal recinfo ELHS t
                               i <- getIState
                               return (True, delab i tm))
                           (\e -> do i <- getIState
-                                    logElab 5 $ "Not a valid split:\n" ++ showTmImpls t ++ "\n" 
+                                    logElab 5 $ "Not a valid split:\n" ++ showTmImpls t ++ "\n"
                                                      ++ pshow i e
                                     return (False, t))
 
@@ -272,10 +285,12 @@ splitOnLine l n fn = do
 
 replaceSplits :: String -> [[(Name, PTerm)]] -> Bool -> Idris [String]
 replaceSplits l ups impossible
-    = updateRHSs 1 (map (rep (expandBraces l)) ups)
+    = do ist <- getIState
+         updateRHSs 1 (map (rep ist (expandBraces l)) ups)
   where
-    rep str [] = str ++ "\n"
-    rep str ((n, tm) : ups) = rep (updatePat False (show n) (nshow tm) str) ups
+    rep ist str [] = str ++ "\n"
+    rep ist str ((n, tm) : ups) 
+        = rep ist (updatePat False (show n) (nshow (resugar ist tm)) str) ups
 
     updateRHSs i [] = return []
     updateRHSs i (x : xs)
@@ -337,8 +352,8 @@ replaceSplits l ups impossible
     updatePat start n tm (c:rest) = c : updatePat (not ((isAlphaNum c) || c == '_')) n tm rest
 
     addBrackets tm | ' ' `elem` tm
-                   , not (isPrefixOf "(" tm)
-                   , not (isSuffixOf ")" tm) = "(" ++ tm ++ ")"
+                   , not (isPrefixOf "(" tm && isSuffixOf ")" tm)
+                       = "(" ++ tm ++ ")"
                    | otherwise = tm
 
 
@@ -356,6 +371,20 @@ nameRoot acc nm =
              (before, ('_' : after)) -> nameRoot (acc ++ [before]) after
              _ -> showSep "_" (acc ++ [nm])
 
+-- Show a name for use in pattern definitions on the lhs
+showLHSName :: Name -> String
+showLHSName n = let fn = show n in
+                    if any (flip elem opChars) fn
+                       then "(" ++ fn ++ ")"
+                       else fn
+
+-- Show a name for the purpose of generating a metavariable name on the rhs
+showRHSName :: Name -> String
+showRHSName n = let fn = show n in
+                    if any (flip elem opChars) fn
+                       then "op"
+                       else fn
+
 getClause :: Int      -- ^ line number that the type is declared on
           -> Name     -- ^ Function name
           -> Name     -- ^ User given name
@@ -371,8 +400,8 @@ getClause l fn un fp
                                     x -> x
                       ist <- get
                       let ap = mkApp ist ty []
-                      return (show un ++ " " ++ ap ++ "= ?"
-                                      ++ show un ++ "_rhs")
+                      return (showLHSName un ++ " " ++ ap ++ "= ?"
+                                      ++ showRHSName un ++ "_rhs")
    where mkApp :: IState -> PTerm -> [Name] -> String
          mkApp i (PPi (Exp _ _ False) (MN _ _) _ ty sc) used
                = let n = getNameFrom i used ty in
@@ -398,14 +427,14 @@ getClause l fn un fp
                                                           sUN "z"]) used
 
          -- write method declarations, indent with 4 spaces
-         mkClassBodies :: IState -> [(Name, (FnOpts, PTerm))] -> String
+         mkClassBodies :: IState -> [(Name, (Bool, FnOpts, PTerm))] -> String
          mkClassBodies i ns
              = showSep "\n"
-                  (zipWith (\(n, (_, ty)) m -> "    " ++
+                  (zipWith (\(n, (_, _, ty)) m -> "    " ++
                             def (show (nsroot n)) ++ " "
                                  ++ mkApp i ty []
                                  ++ "= ?"
-                                 ++ show un ++ "_rhs_" ++ show m) ns [1..])
+                                 ++ showRHSName un ++ "_rhs_" ++ show m) ns [1..])
 
          def n@(x:xs) | not (isAlphaNum x) = "(" ++ n ++ ")"
          def n = n
@@ -419,7 +448,7 @@ getProofClause l fn fp
                        let ty = case ty_in of
                                      PTyped n t -> t
                                      x -> x
-                       return (mkApp ty ++ " = ?" ++ show fn ++ "_rhs")
+                       return (mkApp ty ++ " = ?" ++ showRHSName fn ++ "_rhs")
    where mkApp (PPi _ _ _ _ sc) = mkApp sc
          mkApp rt = "(" ++ show rt ++ ") <== " ++ show fn
 
@@ -439,7 +468,7 @@ mkWith str n = let str' = replaceRHS str "with (_)"
          newpat ('>':patstr) = '>':newpat patstr
          newpat patstr =
            "  " ++
-           replaceRHS patstr "| with_pat = ?" ++ show n ++ "_rhs"
+           replaceRHS patstr "| with_pat = ?" ++ showRHSName n ++ "_rhs"
 
 -- Replace _ with names in missing clauses
 

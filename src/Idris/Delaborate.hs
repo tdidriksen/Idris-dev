@@ -112,14 +112,14 @@ delabTy' ist imps tm fullname mvs = de [] imps tm
           = PLam un n NoFC (de env [] ty) (de ((n,n):env) [] sc)
     de env (_ : is) (Bind n (Pi (Just impl) ty _) sc)
        | toplevel_imp impl -- information in 'imps' repeated
-          = PPi (Imp [] Dynamic False (Just impl)) n NoFC (de env [] ty) (de ((n,n):env) is sc)
+          = PPi (Imp [] Dynamic False (Just impl) False) n NoFC (de env [] ty) (de ((n,n):env) is sc)
     de env is (Bind n (Pi (Just impl) ty _) sc)
        | tcinstance impl
           = PPi constraint n NoFC (de env [] ty) (de ((n,n):env) is sc)
        | otherwise
-          = PPi (Imp [] Dynamic False (Just impl)) n NoFC (de env [] ty) (de ((n,n):env) is sc)
+          = PPi (Imp [] Dynamic False (Just impl) False) n NoFC (de env [] ty) (de ((n,n):env) is sc)
     de env ((PImp { argopts = opts }):is) (Bind n (Pi _ ty _) sc)
-          = PPi (Imp opts Dynamic False Nothing) n NoFC (de env [] ty) (de ((n,n):env) is sc)
+          = PPi (Imp opts Dynamic False Nothing False) n NoFC (de env [] ty) (de ((n,n):env) is sc)
     de env (PConstraint _ _ _ _:is) (Bind n (Pi _ ty _) sc)
           = PPi constraint n NoFC (de env [] ty) (de ((n,n):env) is sc)
     de env (PTacImplicit _ _ _ tac _:is) (Bind n (Pi _ ty _) sc)
@@ -488,7 +488,7 @@ pprintErr' i (ReflectionError parts orig) =
     else empty
 pprintErr' i (ReflectionFailed msg err) =
   text "When attempting to perform error reflection, the following internal error occurred:" <>
-  indented (pprintErr' i err) <>
+  indented (pprintErr' i err) <+> text msg <+>
   text ("This is probably a bug. Please consider reporting it at " ++ bugaddr)
 pprintErr' i (ElabScriptDebug msg tm holes) =
   text "Elaboration halted." <>

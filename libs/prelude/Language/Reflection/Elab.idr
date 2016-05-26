@@ -10,6 +10,7 @@ import Prelude.Applicative
 import Prelude.Basics
 import Prelude.Bool
 import Prelude.Functor
+import Prelude.Interfaces
 import Prelude.List
 import Prelude.Maybe
 import Prelude.Monad
@@ -57,11 +58,11 @@ data TyConArg =
   ||| Indices are not uniform
   TyConIndex FunArg
 
-||| A type declaration
+||| A type declaration for a function or datatype
 record TyDecl where
   constructor Declare
 
-  ||| The name of the function being declared.
+  ||| The fully-qualified name of the function or datatype being declared.
   name : TTName
 
   ||| Each argument is in the scope of the names of previous arguments.
@@ -81,6 +82,34 @@ record FunDefn a where
   constructor DefineFun
   name : TTName
   clauses : List (FunClause a)
+
+
+||| A constructor to be associated with a new datatype.
+record ConstructorDefn where
+  constructor Constructor
+
+  ||| The name of the constructor. The name must _not_ be qualified -
+  ||| that is, it should begin with the `UN` or `MN` constructors.
+  name : TTName
+
+  ||| The constructor arguments. Idris will infer which arguments are
+  ||| datatype parameters.
+  arguments : List FunArg
+
+  ||| The specific type constructed by the constructor.
+  returnType : Raw
+
+
+||| A definition of a datatype to be added during an elaboration script.
+record DataDefn where
+  constructor DefineDatatype
+  ||| The name of the datatype being defined. It must be
+  ||| fully-qualified, and it must have been previously declared as a
+  ||| datatype.
+  name : TTName
+
+  ||| A list of constructors for the datatype.
+  constructors : List ConstructorDefn
 
 
 data CtorArg = CtorParameter FunArg | CtorField FunArg
@@ -151,6 +180,8 @@ data Elab : Type -> Type where
 
   Prim__DeclareType : TyDecl -> Elab ()
   Prim__DefineFunction : FunDefn Raw -> Elab ()
+  Prim__DeclareDatatype : TyDecl -> Elab ()
+  Prim__DefineDatatype : DataDefn -> Elab ()
   Prim__AddInstance : TTName -> TTName -> Elab ()
   Prim__IsTCName : TTName -> Elab Bool
 
@@ -335,7 +366,7 @@ namespace Tactics
 
   export
   matchApply : (op : Raw) -> (argSpec : List Bool) -> Elab (List TTName)
-  matchApply tm argSpec = map snd <$> Prim__Apply tm argSpec
+  matchApply tm argSpec = map snd <$> Prim__MatchApply tm argSpec
 
   ||| Move the focus to the specified hole. Fails if the hole does not
   ||| exist.
@@ -510,6 +541,17 @@ namespace Tactics
   defineFunction : FunDefn Raw -> Elab ()
   defineFunction defun = Prim__DefineFunction defun
 
+  ||| Declare a datatype in the global context. This step only
+  ||| establishes the type constructor; use `defineDatatype` to give
+  ||| it constructors.
+  export
+  declareDatatype : TyDecl -> Elab ()
+  declareDatatype decl = Prim__DeclareDatatype decl
+
+  export
+  defineDatatype : DataDefn -> Elab ()
+  defineDatatype defn = Prim__DefineDatatype defn
+
   ||| Register a new implementation for interface resolution.
   |||
   ||| @ ifaceName the name of the interface for which an implementation is being registered
@@ -588,4 +630,138 @@ namespace Tactics
   export
   runElab : Raw -> Elab () -> Elab (TT, TT)
   runElab goal script = Prim__RecursiveElab goal script
+
+---------------------------
+-- Quotable Implementations
+---------------------------
+
+implementation Quotable Fixity TT where
+  quotedTy = `(Fixity)
+  quote (Infixl k) = `(Infixl ~(quote k))
+  quote (Infixr k) = `(Infixr ~(quote k))
+  quote (Infix  k) = `(Infix  ~(quote k))
+  quote (Prefix k) = `(Prefix ~(quote k))
+
+implementation Quotable Fixity Raw where
+  quotedTy = `(Fixity)
+  quote (Infixl k) = `(Infixl ~(quote k))
+  quote (Infixr k) = `(Infixr ~(quote k))
+  quote (Infix  k) = `(Infix  ~(quote k))
+  quote (Prefix k) = `(Prefix ~(quote k))
+
+implementation Quotable Erasure TT where
+  quotedTy = `(Erasure)
+  quote Erased    = `(Elab.Erased)
+  quote NotErased = `(NotErased)
+
+implementation Quotable Erasure Raw where
+  quotedTy = `(Erasure)
+  quote Erased    = `(Elab.Erased)
+  quote NotErased = `(NotErased)
+
+implementation Quotable Plicity TT where
+  quotedTy = `(Plicity)
+  quote Explicit   = `(Explicit)
+  quote Implicit   = `(Implicit)
+  quote Constraint = `(Constraint)
+
+implementation Quotable Plicity Raw where
+  quotedTy = `(Plicity)
+  quote Explicit   = `(Explicit)
+  quote Implicit   = `(Implicit)
+  quote Constraint = `(Constraint)
+
+implementation Quotable FunArg TT where
+  quotedTy = `(FunArg)
+  quote (MkFunArg name type plicity erasure) =
+    `(MkFunArg ~(quote name) ~(quote type) ~(quote plicity) ~(quote erasure))
+
+implementation Quotable FunArg Raw where
+  quotedTy = `(FunArg)
+  quote (MkFunArg name type plicity erasure) =
+    `(MkFunArg ~(quote name) ~(quote type) ~(quote plicity) ~(quote erasure))
+
+implementation Quotable TyConArg TT where
+  quotedTy = `(TyConArg)
+  quote (TyConParameter arg) = `(TyConParameter ~(quote arg))
+  quote (TyConIndex     arg) = `(TyConIndex     ~(quote arg))
+
+implementation Quotable TyConArg Raw where
+  quotedTy = `(TyConArg)
+  quote (TyConParameter arg) = `(TyConParameter ~(quote arg))
+  quote (TyConIndex     arg) = `(TyConIndex     ~(quote arg))
+
+implementation Quotable TyDecl TT where
+  quotedTy = `(TyDecl)
+  quote (Declare name arguments returnType) =
+    `(Declare ~(quote name) ~(quote arguments) ~(quote returnType))
+
+implementation Quotable TyDecl Raw where
+  quotedTy = `(TyDecl)
+  quote (Declare name arguments returnType) =
+    `(Declare ~(quote name) ~(quote arguments) ~(quote returnType))
+
+implementation (Quotable a TT) => Quotable (FunClause a) TT where
+  quotedTy = `(FunClause ~(quotedTy {a}))
+  quote (MkFunClause lhs rhs) =
+    `(MkFunClause {a = ~(quotedTy {a})} ~(quote lhs) ~(quote rhs))
+  quote (MkImpossibleClause lhs) =
+    `(MkImpossibleClause {a = ~(quotedTy {a})} ~(quote lhs))
+
+implementation (Quotable a Raw) => Quotable (FunClause a) Raw where
+  quotedTy = `(FunClause ~(quotedTy {a}))
+  quote (MkFunClause lhs rhs) =
+    `(MkFunClause {a = ~(quotedTy {a})} ~(quote lhs) ~(quote rhs))
+  quote (MkImpossibleClause lhs) =
+    `(MkImpossibleClause {a = ~(quotedTy {a})} ~(quote lhs))
+
+implementation (Quotable a TT) => Quotable (FunDefn a) TT where
+  quotedTy = `(FunDefn ~(quotedTy {a}))
+  quote (DefineFun name clauses) =
+    `(DefineFun {a = ~(quotedTy {a})} ~(quote name) ~(quote clauses))
+
+implementation (Quotable a Raw) => Quotable (FunDefn a) Raw where
+  quotedTy = `(FunDefn ~(quotedTy {a}))
+  quote (DefineFun name clauses) =
+    `(DefineFun {a = ~(quotedTy {a})} ~(quote name) ~(quote clauses))
+
+implementation Quotable ConstructorDefn TT where
+  quotedTy = `(ConstructorDefn)
+  quote (Constructor name arguments returnType) =
+    `(Constructor ~(quote name) ~(quote arguments) ~(quote returnType))
+
+implementation Quotable ConstructorDefn Raw where
+  quotedTy = `(ConstructorDefn)
+  quote (Constructor name arguments returnType) =
+    `(Constructor ~(quote name) ~(quote arguments) ~(quote returnType))
+
+implementation Quotable DataDefn TT where
+  quotedTy = `(DataDefn)
+  quote (DefineDatatype name constructors) =
+    `(DefineDatatype ~(quote name) ~(quote constructors))
+
+implementation Quotable DataDefn Raw where
+  quotedTy = `(DataDefn)
+  quote (DefineDatatype name constructors) =
+    `(DefineDatatype ~(quote name) ~(quote constructors))
+
+implementation Quotable CtorArg TT where
+  quotedTy = `(CtorArg)
+  quote (CtorParameter arg) = `(CtorParameter ~(quote arg))
+  quote (CtorField     arg) = `(CtorField     ~(quote arg))
+
+implementation Quotable CtorArg Raw where
+  quotedTy = `(CtorArg)
+  quote (CtorParameter arg) = `(CtorParameter ~(quote arg))
+  quote (CtorField     arg) = `(CtorField     ~(quote arg))
+
+implementation Quotable Datatype TT where
+  quotedTy = `(Datatype)
+  quote (MkDatatype name tyConArgs tyConRes constructors) =
+    `(MkDatatype ~(quote name) ~(quote tyConArgs) ~(quote tyConRes) ~(quote constructors))
+
+implementation Quotable Datatype Raw where
+  quotedTy = `(Datatype)
+  quote (MkDatatype name tyConArgs tyConRes constructors) =
+    `(MkDatatype ~(quote name) ~(quote tyConArgs) ~(quote tyConRes) ~(quote constructors))
 

@@ -230,7 +230,7 @@ dropWhile p (x::xs) = if p x then dropWhile p xs else x::xs
 ||| @ xs the list to recurse over
 list : (nil : Lazy b) -> (cons : Lazy (a -> List a -> b)) -> (xs : List a) -> b
 list nil cons []      = nil
-list nil cons (x::xs) = (Force cons) x xs
+list nil cons (x::xs) = cons x xs
 
 --------------------------------------------------------------------------------
 -- Building (bigger) lists
@@ -536,6 +536,14 @@ filter p (x::xs) =
   else
     filter p xs
 
+||| A filtered list is no longer than its input
+filterSmaller : (xs : _) -> LTE (length (filter p xs)) (length xs)
+filterSmaller [] = LTEZero
+filterSmaller {p} (x :: xs) with (p x)
+  filterSmaller {p = p} (x :: xs) | False = lteSuccRight (filterSmaller xs)
+  filterSmaller {p = p} (x :: xs) | True = LTESucc (filterSmaller xs)
+
+
 ||| The nubBy function behaves just like nub, except it uses a user-supplied equality predicate instead of the overloaded == function.
 nubBy : (a -> a -> Bool) -> List a -> List a
 nubBy = nubBy' []
@@ -761,9 +769,9 @@ mergeBy : (a -> a -> Ordering) -> List a -> List a -> List a
 mergeBy order []      right   = right
 mergeBy order left    []      = left
 mergeBy order (x::xs) (y::ys) =
-  if order x y == LT
-     then x :: mergeBy order xs (y::ys)
-     else y :: mergeBy order (x::xs) ys
+  case order x y of
+       LT => x :: mergeBy order xs (y::ys)
+       _  => y :: mergeBy order (x::xs) ys
 
 ||| Merge two sorted lists using the default ordering for the type of their elements.
 merge : Ord a => List a -> List a -> List a

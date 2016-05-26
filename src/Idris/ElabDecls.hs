@@ -62,9 +62,9 @@ import Data.List.Split (splitOn)
 import Util.Pretty(pretty, text)
 
 
--- Top level elaborator info, supporting recursive elaboration
+-- | Top level elaborator info, supporting recursive elaboration
 recinfo :: ElabInfo
-recinfo = EInfo [] emptyContext id Nothing Nothing elabDecl'
+recinfo = EInfo [] emptyContext id Nothing Nothing id elabDecl'
 
 -- | Return the elaborated term which calls 'main'
 elabMain :: Idris Term
@@ -111,7 +111,9 @@ elabPrims = do mapM_ (elabDecl' EAll recinfo)
           elabBelieveMe
              = do let prim__believe_me = sUN "prim__believe_me"
                   updateContext (addOperator prim__believe_me believeTy 3 p_believeMe)
-                  setTotality prim__believe_me (Partial NotCovering)
+                  -- The point is that it is believed to be total, even
+                  -- though it clearly isn't :)
+                  setTotality prim__believe_me (Total [])
                   i <- getIState
                   putIState i {
                       idris_scprims = (prim__believe_me, (3, LNoOp)) : idris_scprims i
@@ -189,7 +191,7 @@ elabDecl' what info (PMutual f ps)
               _ -> do mapM_ (elabDecl ETypes info) ps
                       mapM_ (elabDecl EDefns info) ps
          -- record mutually defined data definitions
-         let datans = concatMap declared (filter isDataDecl ps)
+         let datans = concatMap declared (getDataDecls ps)
          mapM_ (setMutData datans) datans
          logElab 1 $ "Rechecking for positivity " ++ show datans
          mapM_ (\x -> do setTotality x Unchecked) datans
@@ -205,6 +207,13 @@ elabDecl' what info (PMutual f ps)
          clear_totcheck
   where isDataDecl (PData _ _ _ _ _ _) = True
         isDataDecl _ = False
+
+        getDataDecls (PNamespace _ _ ds : decls)
+           = getDataDecls ds ++ getDataDecls decls
+        getDataDecls (d : decls)
+           | isDataDecl d = d : getDataDecls decls
+           | otherwise = getDataDecls decls
+        getDataDecls [] = []
 
         setMutData ns n
            = do i <- getIState
@@ -230,6 +239,11 @@ elabDecl' what info (PParams f ns ps)
     pblock i = map (expandParamsD False i id ns
                       (concatMap tldeclared ps)) ps
 
+elabDecl' what info (POpenInterfaces f ns ds)
+    = do open <- addOpenImpl ns
+         mapM_ (elabDecl' what info) ds
+         setOpenImpl open
+
 elabDecl' what info (PNamespace n nfc ps) =
   do mapM_ (elabDecl' what ninfo) ps
      let ns = reverse (map T.pack newNS)
@@ -242,9 +256,9 @@ elabDecl' what info (PClass doc s f cs n nfc ps pdocs fds ds cn cd)
   | what /= EDefns
     = do logElab 1 $ "Elaborating class " ++ show n
          elabClass info (s { syn_params = [] }) doc f cs n nfc ps pdocs fds ds cn cd
-elabDecl' what info (PInstance doc argDocs s f cs acc fnopts n nfc ps t expn ds)
+elabDecl' what info (PInstance doc argDocs s f cs pnames acc fnopts n nfc ps pextra t expn ds)
     = do logElab 1 $ "Elaborating instance " ++ show n
-         elabInstance info s doc argDocs what f cs acc fnopts n nfc ps t expn ds
+         elabInstance info s doc argDocs what f cs pnames acc fnopts n nfc ps pextra t expn ds
 elabDecl' what info (PRecord doc rsyn fc opts name nfc ps pdocs fs cname cdoc csyn)
     = do logElab 1 $ "Elaborating record " ++ show name
          elabRecord info what doc rsyn fc opts name nfc ps pdocs fs cname cdoc csyn
@@ -276,8 +290,8 @@ elabDecl' what info (PCopatterns fc syn clauses)
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
          ds <- collectDecls Nothing [] clauses
          logLvl 0 $ "Decls: " ++ show ds
-         --elabDecls info ds
-         mapM_ (elabCoClauses what info) ds
+         elabDecls info ds
+         --mapM_ (elabCoClauses what info) ds
       where
        
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]

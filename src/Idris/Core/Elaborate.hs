@@ -123,15 +123,21 @@ errAt :: String -> Name -> Maybe Type -> Elab' aux a -> Elab' aux a
 errAt thing n ty = transformErr (Elaborating thing n ty)
 
 
+erunAux :: FC -> Elab' aux a -> Elab' aux (a, aux)
+erunAux f elab 
+    = do s <- get
+         case runStateT elab s of
+            OK (a, s')     -> do put s'
+                                 aux <- getAux
+                                 return $! (a, aux)
+            Error (ProofSearchFail (At f e))
+                           -> lift $ Error (ProofSearchFail (At f e))
+            Error (At f e) -> lift $ Error (At f e)
+            Error e        -> lift $ Error (At f e)
+
 erun :: FC -> Elab' aux a -> Elab' aux a
-erun f elab = do s <- get
-                 case runStateT elab s of
-                    OK (a, s')     -> do put s'
-                                         return $! a
-                    Error (ProofSearchFail (At f e))
-                                   -> lift $ Error (ProofSearchFail (At f e))
-                    Error (At f e) -> lift $ Error (At f e)
-                    Error e        -> lift $ Error (At f e)
+erun f e = do (x, _) <- erunAux f e
+              return x
 
 runElab :: aux -> Elab' aux a -> ProofState -> TC (a, ElabState aux)
 runElab a e ps = runStateT e (ES (ps, a) "" Nothing)
@@ -139,13 +145,19 @@ runElab a e ps = runStateT e (ES (ps, a) "" Nothing)
 execElab :: aux -> Elab' aux a -> ProofState -> TC (ElabState aux)
 execElab a e ps = execStateT e (ES (ps, a) "" Nothing)
 
-initElaborator :: Name -> Context -> Ctxt TypeInfo -> Type -> ProofState
+initElaborator :: Name -- ^ the name of what's to be elaborated
+               -> Context -- ^ the current global context
+               -> Ctxt TypeInfo -- ^ the value of the idris_datatypes field of IState
+               -> Int -- ^ the value of the idris_name field of IState
+               -> Type -- ^ the goal type
+               -> ProofState
 initElaborator = newProof
 
-elaborate :: Context -> Ctxt TypeInfo -> Name -> Type -> aux -> Elab' aux a -> TC (a, String)
-elaborate ctxt datatypes n ty d elab = do let ps = initElaborator n ctxt datatypes ty
-                                          (a, ES ps' str _) <- runElab d elab ps
-                                          return $! (a, str)
+elaborate :: Context -> Ctxt TypeInfo -> Int -> Name -> Type -> aux -> Elab' aux a -> TC (a, String)
+elaborate ctxt datatypes globalNames n ty d elab =
+  do let ps = initElaborator n ctxt datatypes globalNames ty
+     (a, ES ps' str _) <- runElab d elab ps
+     return $! (a, str)
 
 -- | Modify the auxiliary state
 updateAux :: (aux -> aux) -> Elab' aux ()
@@ -209,6 +221,14 @@ get_datatypes = do ES p _ _ <- get
 set_datatypes :: Ctxt TypeInfo -> Elab' aux ()
 set_datatypes ds = do ES (p, a) logs prev <- get
                       put (ES (p { datatypes = ds }, a) logs prev)
+
+get_global_nextname :: Elab' aux Int
+get_global_nextname = do ES (ps, _) _ _ <- get
+                         return (global_nextname ps)
+
+set_global_nextname :: Int -> Elab' aux ()
+set_global_nextname i = do ES (ps, a) logs prev <- get
+                           put $ ES (ps { global_nextname = i}, a) logs prev
 
 -- | get the proof term
 get_term :: Elab' aux Term
@@ -712,7 +732,9 @@ apply_elab n args =
 checkPiGoal :: Name -> Elab' aux ()
 checkPiGoal n
             = do g <- goal
-                 case g of
+                 ctxt <- get_context
+                 env <- get_env
+                 case (normalise ctxt env g) of
                     Bind _ (Pi _ _ _) _ -> return ()
                     _ -> do a <- getNameFrom (sMN 0 "__pargTy")
                             b <- getNameFrom (sMN 0 "__pretTy")

@@ -1,5 +1,5 @@
 Name:           idris
-Version:        0.10.2
+Version:        0.11.2
 License:        BSD3
 License-file:   LICENSE
 Author:         Edwin Brady
@@ -75,13 +75,13 @@ Data-files:            idrisdoc/styles.css
                        rts/libtest.c
 
 Extra-doc-files:
-                       CHANGELOG
+                       CHANGELOG.md
                        CITATION.md
                        CONTRIBUTING.md
                        CONTRIBUTORS
                        README.md
+                       RELEASE-CHECKS.md
                        idris-tutorial.pdf
-                       man/idris.1
                        samples/effects/*.idr
                        samples/misc/*.idr
                        samples/misc/*.lidr
@@ -91,6 +91,7 @@ Extra-source-files:
                        Makefile
                        config.mk
                        stack.yaml
+                       man/idris.1
 
                        rts/*.c
                        rts/*.h
@@ -113,8 +114,11 @@ Extra-source-files:
                        libs/base/Control/*.idr
                        libs/base/Control/Monad/*.idr
                        libs/base/Data/*.idr
+                       libs/base/Data/Nat/*.idr
+                       libs/base/Data/Primitives/*.idr
                        libs/base/Data/List/*.idr
                        libs/base/Data/Vect/*.idr
+                       libs/base/Data/String/*.idr
                        libs/base/Debug/*.idr
                        libs/base/Language/Reflection/*.idr
                        libs/base/Makefile
@@ -124,6 +128,8 @@ Extra-source-files:
 
                        libs/contrib/contrib.ipkg
                        libs/contrib/Makefile
+                       libs/contrib/*.idr
+                       libs/contrib/CFFI/*.idr
                        libs/contrib/Classes/*.idr
                        libs/contrib/Control/*.idr
                        libs/contrib/Control/Isomorphism/*.idr
@@ -323,6 +329,13 @@ Extra-source-files:
                        test/reg070/run
                        test/reg070/*.idr
                        test/reg070/expected
+                       test/reg071/run
+                       test/reg071/*.idr
+                       test/reg071/expected
+                       test/reg072/run
+                       test/reg072/*.idr
+                       test/reg072/expected
+
 
                        test/basic001/run
                        test/basic001/*.idr
@@ -376,6 +389,9 @@ Extra-source-files:
                        test/basic017/run
                        test/basic017/*.idr
                        test/basic017/expected
+                       test/basic018/run
+                       test/basic018/*.idr
+                       test/basic018/expected
 
                        test/bignum001/run
                        test/bignum001/*.idr
@@ -384,17 +400,19 @@ Extra-source-files:
                        test/bignum002/*.idr
                        test/bignum002/expected
 
-                       test/classes001/*.idr
-                       test/classes001/run
-                       test/classes001/expected
-                       test/classes001/input
-
                        test/corecords001/*.idr
                        test/corecords001/run
                        test/corecords001/expected
                        test/corecords002/*.idr
                        test/corecords002/run
                        test/corecords002/expected
+
+                       test/directives001/*.idr
+                       test/directives001/run
+                       test/directives001/expected
+                       test/directives002/*.idr
+                       test/directives002/run
+                       test/directives002/expected
 
                        test/delab001/*.idr
                        test/delab001/run
@@ -454,6 +472,15 @@ Extra-source-files:
                        test/error005/run
                        test/error005/*.idr
                        test/error005/expected
+                       test/error006/run
+                       test/error006/*.idr
+                       test/error006/expected
+                       test/error007/run
+                       test/error007/*.idr
+                       test/error007/expected
+                       test/error008/run
+                       test/error008/*.idr
+                       test/error008/expected
 
                        test/ffi001/run
                        test/ffi001/*.idr
@@ -482,6 +509,11 @@ Extra-source-files:
                        test/ffi007/*.h
                        test/ffi007/run
                        test/ffi007/expected
+                       test/ffi008/*.idr
+                       test/ffi008/*.c
+                       test/ffi008/*.h
+                       test/ffi008/run
+                       test/ffi008/expected
 
                        test/folding001/*.idr
                        test/folding001/run
@@ -571,6 +603,27 @@ Extra-source-files:
                        test/interactive012/input
                        test/interactive012/run
                        test/interactive012/*.idr
+                       test/interactive013/expected
+                       test/interactive013/input
+                       test/interactive013/run
+                       test/interactive013/*.idr
+
+                       test/interfaces001/*.idr
+                       test/interfaces001/run
+                       test/interfaces001/expected
+                       test/interfaces001/input
+                       test/interfaces002/*.idr
+                       test/interfaces002/run
+                       test/interfaces002/expected
+                       test/interfaces003/*.idr
+                       test/interfaces003/run
+                       test/interfaces003/expected
+                       test/interfaces004/*.idr
+                       test/interfaces004/run
+                       test/interfaces004/expected
+                       test/interfaces005/*.idr
+                       test/interfaces005/run
+                       test/interfaces005/expected
 
                        test/io001/run
                        test/io001/*.idr
@@ -618,7 +671,7 @@ Extra-source-files:
                        test/primitives006/expected
 
                        test/pkg001/run
-                       test/pkg001/test.ipkg
+                       test/pkg001/test-pkg.ipkg
                        test/pkg001/*.idr
                        test/pkg001/expected
 
@@ -653,6 +706,9 @@ Extra-source-files:
                        test/proof010/run
                        test/proof010/*.idr
                        test/proof010/expected
+                       test/proof011/run
+                       test/proof011/*.idr
+                       test/proof011/expected
 
                        test/proofsearch001/run
                        test/proofsearch001/*.idr
@@ -762,6 +818,15 @@ Extra-source-files:
                        test/totality011/run
                        test/totality011/*.lidr
                        test/totality011/expected
+                       test/totality012/run
+                       test/totality012/*.idr
+                       test/totality012/expected
+                       test/totality013/run
+                       test/totality013/*.idr
+                       test/totality013/expected
+                       test/totality014/run
+                       test/totality014/*.idr
+                       test/totality014/expected
 
                        test/tutorial001/run
                        test/tutorial001/*.idr
@@ -781,6 +846,10 @@ Extra-source-files:
                        test/tutorial006/run
                        test/tutorial006/*.idr
                        test/tutorial006/expected
+                       test/tutorial007/run
+                       test/tutorial007/*.idr
+                       test/tutorial007/*.c
+                       test/tutorial007/expected
 
                        test/unique001/run
                        test/unique001/*.idr
@@ -791,6 +860,16 @@ Extra-source-files:
                        test/unique003/run
                        test/unique003/*.idr
                        test/unique003/expected
+
+                       test/views001/run
+                       test/views001/*.idr
+                       test/views001/expected
+                       test/views002/run
+                       test/views002/*.idr
+                       test/views002/expected
+                       test/views003/run
+                       test/views003/*.idr
+                       test/views003/expected
 
                        test/docs001/run
                        test/docs001/input
@@ -892,6 +971,7 @@ Library
                 , Idris.Elab.Value
                 , Idris.Elab.Term
                 , Idris.Elab.Quasiquote
+                , Idris.Elab.Rewrite
 
                 , Idris.REPL.Browse
 
@@ -955,6 +1035,7 @@ Library
                 , IRTS.Inliner
                 , IRTS.Lang
                 , IRTS.LangOpts
+                , IRTS.Portable
                 , IRTS.Simplified
                 , IRTS.System
 
@@ -975,6 +1056,7 @@ Library
                 , Tools_idris
 
   Build-depends:  base >=4 && <5
+                , aeson >= 0.6 && < 0.12
                 , annotated-wl-pprint >= 0.7 && < 0.8
                 , ansi-terminal < 0.7
                 , ansi-wl-pprint < 0.7
@@ -990,6 +1072,7 @@ Library
                 , filepath < 1.5
                 , fingertree >= 0.1 && < 0.2
                 , haskeline >= 0.7 && < 0.8
+                , ieee754 >= 0.7 && < 0.8
                 , mtl >= 2.1 && < 2.3
                 , network < 2.7
                 , optparse-applicative >= 0.11 && < 0.13
@@ -1008,9 +1091,9 @@ Library
                 , utf8-string < 1.1
                 , vector < 0.12
                 , vector-binary-instances < 0.3
-                , zip-archive > 0.2.3.5 && < 0.2.4
+                , zip-archive > 0.2.3.5 && < 0.4
                 , safe
-                , fsnotify < 2.2
+                , fsnotify >= 0.2 && < 2.2
                 , async < 2.2
 
   -- zlib >= 0.6.1 is broken with GHC < 7.10.3
@@ -1028,19 +1111,14 @@ Library
   ghc-prof-options: -auto-all -caf-all
 
   if os(linux)
-     cpp-options:   -DLINUX
      build-depends: unix < 2.8
   if os(freebsd)
-     cpp-options:   -DFREEBSD
      build-depends: unix < 2.8
   if os(dragonfly)
-     cpp-options:   -DDRAGONFLY
      build-depends: unix < 2.8
   if os(darwin)
-     cpp-options:   -DMACOSX
      build-depends: unix < 2.8
   if os(windows)
-     cpp-options:   -DWINDOWS
      build-depends: Win32 < 2.4
   if flag(FFI)
      build-depends: libffi < 0.2

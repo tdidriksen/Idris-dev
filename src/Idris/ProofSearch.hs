@@ -113,17 +113,18 @@ cantSolveGoal = do g <- goal
                    lift $ tfail $
                       CantSolveGoal g (map (\(n,b) -> (n, binderTy b)) env)
 
-proofSearch :: Bool -> -- recursive search (False for 'refine')
-               Bool -> -- invoked from a tactic proof. If so, making
-                       -- new metavariables is meaningless, and there shoudl
-                       -- be an error reported instead.
-               Bool -> -- ambiguity ok
-               Bool -> -- defer on failure
-               Int -> -- maximum depth
-               (PTerm -> ElabD ()) -> Maybe Name -> Name ->
-               [Name] ->
-               [Name] ->
-               IState -> ElabD ()
+proofSearch :: Bool -- ^ recursive search (False for 'refine')
+            -> Bool -- ^ invoked from a tactic proof. If so, making new metavariables is meaningless, and there should be an error reported instead.
+            -> Bool -- ^ ambiguity ok
+            -> Bool -- ^ defer on failure
+            -> Int  -- ^ maximum depth
+            -> (PTerm -> ElabD ())
+            -> Maybe Name
+            -> Name
+            -> [Name]
+            -> [Name]
+            -> IState
+            -> ElabD ()
 proofSearch False fromProver ambigok deferonfail depth elab _ nroot psnames [fn] ist
        = do -- get all possible versions of the name, take the first one that
             -- works
@@ -305,7 +306,7 @@ proofSearch rec fromProver ambigok deferonfail maxDepth elab fn nroot psnames hi
         = simple_app False (tryLocalArg d locs tys n (i - 1))
                 (psRec True d locs tys) "proof search local apply"
 
-    -- Like type class resolution, but searching with constructors
+    -- Like interface resolution, but searching with constructors
     tryCon d locs tys n =
          do ty <- goal
             let imps = case lookupCtxtExact n (idris_implicits ist) of
@@ -336,28 +337,41 @@ proofSearch rec fromProver ambigok deferonfail maxDepth elab fn nroot psnames hi
          (Bind _ (Pi _ _ _) _) -> [TextPart "In particular, function types are not supported."]
          _ -> []
 
--- | Resolve type classes. This will only pick up 'normal' instances, never
--- named instances (which is enforced by 'findInstances').
-resolveTC :: Bool -- ^ using default Int
-          -> Bool -- ^ allow metavariables in the goal
-          -> Int -- ^ depth
-          -> Term -- ^ top level goal, for error messages
-          -> Name -- ^ top level function name, to prevent loops
+-- | Resolve interfaces. This will only pick up 'normal'
+-- implementations, never named implementations (which is enforced by
+-- 'findInstances').
+resolveTC :: Bool                -- ^ using default Int
+          -> Bool                -- ^ allow open implementations
+          -> Int                 -- ^ depth
+          -> Term                -- ^ top level goal, for error messages
+          -> Name                -- ^ top level function name, to prevent loops
           -> (PTerm -> ElabD ()) -- ^ top level elaborator
           -> IState -> ElabD ()
-resolveTC def mvok depth top fn elab ist
-   = do hs <- get_holes
-        resTC' [] def hs depth top fn elab ist
+resolveTC def openOK depth top fn elab ist
+  = do hs <- get_holes
+       resTC' [] def openOK hs depth top fn elab ist
 
-resTC' tcs def topholes 0 topg fn elab ist = fail $ "Can't resolve type class"
-resTC' tcs def topholes 1 topg fn elab ist = try' (trivial elab ist) (resolveTC def False 0 topg fn elab ist) True
-resTC' tcs defaultOn topholes depth topg fn elab ist
+resTC' tcs def openOK topholes 0 topg fn elab ist = fail $ "Can't resolve interface"
+resTC' tcs def openOK topholes 1 topg fn elab ist = try' (trivial elab ist) (resolveTC def False 0 topg fn elab ist) True
+resTC' tcs defaultOn openOK topholes depth topg fn elab ist
   = do compute
-       g <- goal
+       if openOK
+          then try' (resolveOpen (idris_openimpls ist))
+                    resolveNormal
+                    True
+          else resolveNormal
+
+  where
+    -- try all the Open implementations first
+    resolveOpen open = do t <- goal
+                          blunderbuss t depth [] open
+
+    resolveNormal = do
        -- Resolution can proceed only if there is something concrete in the
        -- determining argument positions. Keep track of the holes in the
        -- non-determining position, because it's okay for 'trivial' to solve
        -- those holes and no others.
+       g <- goal
        let (argsok, okholePos) = case tcArgsOK g topholes of
                                     Nothing -> (False, [])
                                     Just hs -> (True, hs)
@@ -380,9 +394,9 @@ resTC' tcs defaultOn topholes depth topg fn elab ist
             try' (trivialTCs okholes elab ist)
                 (do addDefault t tc ttypes
                     let stk = map fst (filter snd $ elab_stack ist)
-                    let insts = findInstances ist t
+                    let insts = idris_openimpls ist ++ findInstances ist t
                     blunderbuss t depth stk (stk ++ insts)) True
-  where
+
     -- returns Just hs if okay, where hs are holes which are okay in the
     -- goal, or Nothing if not okay to proceed
     tcArgsOK ty hs | (P _ nc _, as) <- unApply (getRetTy ty), nc == numclass && defaultOn
@@ -465,7 +479,7 @@ resTC' tcs defaultOn topholes depth topg fn elab ist
     solven n = replicateM_ n solve
 
     resolve n depth
-       | depth == 0 = fail $ "Can't resolve type class"
+       | depth == 0 = fail $ "Can't resolve interface"
        | otherwise
            = do lams <- introImps
                 t <- goal
@@ -483,7 +497,7 @@ resTC' tcs defaultOn topholes depth topg fn elab ist
                 solven lams -- close any implicit lambdas we introduced
                 ps' <- get_probs
                 when (length ps < length ps' || unrecoverable ps') $
-                     fail "Can't apply type class"
+                     fail "Can't apply interface"
 --                 traceWhen (all boundVar ttypes) ("Progress: " ++ show t ++ " with " ++ show n) $
                 mapM_ (\ (_,n) -> do focus n
                                      t' <- goal
@@ -491,7 +505,7 @@ resTC' tcs defaultOn topholes depth topg fn elab ist
                                      let got = fst (unApply (getRetTy t))
                                      let depth' = if tc' `elem` tcs
                                                      then depth - 1 else depth
-                                     resTC' (got : tcs) defaultOn topholes depth' topg fn elab ist)
+                                     resTC' (got : tcs) defaultOn openOK topholes depth' topg fn elab ist)
                       (filter (\ (x, y) -> not x) (zip (map fst imps) args))
                 -- if there's any arguments left, we've failed to resolve
                 hs <- get_holes
@@ -501,8 +515,8 @@ resTC' tcs defaultOn topholes depth topg fn elab ist
        where isImp (PImp p _ _ _ _) = (True, p)
              isImp arg = (False, priority arg)
 
--- | Find the names of instances that have been designeated for
--- searching (i.e. non-named instances or instances from Elab scripts)
+-- | Find the names of implementations that have been designeated for
+-- searching (i.e. non-named implementations or implementations from Elab scripts)
 findInstances :: IState -> Term -> [Name]
 findInstances ist t
     | (P _ n _, _) <- unApply (getRetTy t)

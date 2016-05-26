@@ -194,17 +194,11 @@ elabClauses info' fc opts n_in cs =
            logElab 5 $ "After data structure transformations:\n" ++ show pdef'
 
            ist <- getIState
-  --          let wf = wellFounded ist n sc
-           let tot | pcover || AssertTotal `elem` opts = Unchecked -- finish later
+           let tot | pcover = Unchecked -- finish later
+                   | AssertTotal `elem` opts = Total []
                    | PEGenerated `elem` opts = Generated
                    | otherwise = Partial NotCovering -- already know it's not total
 
-  --          case lookupCtxt (namespace info) n (idris_flags ist) of
-  --             [fs] -> if TotalFn `elem` fs
-  --                       then case tot of
-  --                               Total _ -> return ()
-  --                               t -> tclift $ tfail (At fc (Msg (show n ++ " is " ++ show t)))
-  --             _ -> return ()
            case tree of
                CaseDef _ _ [] -> return ()
                CaseDef _ _ xs -> mapM_ (\x ->
@@ -317,7 +311,9 @@ elabClauses info' fc opts n_in cs =
 
     getLHS (_, l, _) = l
 
-    simple_lhs ctxt (Right (x, y)) = Right (normalise ctxt [] x, y)
+    -- Simplify the left hand side of a definition, to remove any lets
+    -- that may have arisen during elaboration
+    simple_lhs ctxt (Right (x, y)) = Right (Idris.Core.Evaluate.simplify ctxt [] x, y)
     simple_lhs ctxt t = t
 
     simple_rt ctxt (p, x, y) = (p, x, force (uniqueBinders p
@@ -486,14 +482,15 @@ checkPossible info fc tcgen fname lhs_in
         i <- getIState
         let lhs = addImplPat i lhs_in
         -- if the LHS type checks, it is possible
-        case elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+        case elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "patLHS") infP initEState
                             (erun fc (buildTC i info ELHS [] fname
                                                 (allNamesIn lhs_in)
                                                 (infTerm lhs))) of
-            OK (ElabResult lhs' _ _ ctxt' newDecls highlights, _) ->
+            OK (ElabResult lhs' _ _ ctxt' newDecls highlights newGName, _) ->
                do setContext ctxt'
                   processTacticDecls info newDecls
                   sendHighlighting highlights
+                  updateIState $ \i -> i { idris_name = newGName }
                   let lhs_tm = orderPats (getInferTerm lhs')
                   case recheck ctxt' [] (forget lhs_tm) lhs_tm of
                        OK _ -> return True
@@ -502,29 +499,6 @@ checkPossible info fc tcgen fname lhs_in
             Error err -> if tcgen then return (recoverableCoverage ctxt err)
                                   else return (validCoverageCase ctxt err ||
                                                  recoverableCoverage ctxt err)
-
-
-propagateParams :: IState -> [Name] -> Type -> [Name] -> PTerm -> PTerm
-propagateParams i ps t bound tm@(PApp _ (PRef fc hls n) args)
-     = PApp fc (PRef fc hls n) (addP t args)
-   where addP (Bind n _ sc) (t : ts)
-              | Placeholder <- getTm t,
-                n `elem` ps,
-                not (n `elem` bound)
-                    = t { getTm = PPatvar NoFC n } : addP sc ts
-         addP (Bind n _ sc) (t : ts) = t : addP sc ts
-         addP _ ts = ts
-propagateParams i ps t bound (PApp fc ap args)
-     = PApp fc (propagateParams i ps t bound ap) args
-propagateParams i ps t bound (PRef fc hls n)
-     = case lookupCtxt n (idris_implicits i) of
-            [is] -> let ps' = filter (isImplicit is) ps in
-                        PApp fc (PRef fc hls n) (map (\x -> pimp x (PRef fc [] x) True) ps')
-            _ -> PRef fc hls n
-    where isImplicit [] n = False
-          isImplicit (PImp _ _ _ x _ : is) n | x == n = True
-          isImplicit (_ : is) n = isImplicit is n
-propagateParams i ps t bound x = x
 
 findUnique :: Context -> Env -> Term -> [Name]
 findUnique ctxt env (Bind n b sc)
@@ -538,7 +512,7 @@ findUnique ctxt env (Bind n b sc)
                  else findUnique ctxt ((n, b) : env) sc
 findUnique _ _ _ = []
 
--- Return the elaborated LHS/RHS, and the original LHS with implicits added
+-- | Return the elaborated LHS/RHS, and the original LHS with implicits added
 elabClause :: ElabInfo -> FnOpts -> (Int, PClause) ->
               Idris (Either Term (Term, Term), PTerm)
 elabClause info opts (_, PClause fc fname lhs_in [] PImpossible [])
@@ -580,6 +554,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
 
         let lhs = mkLHSapp $ stripLinear i $ stripUnmatchable i $
                     propagateParams i params norm_ty (allNamesIn lhs_in) (addImplPat i lhs_in)
+
 --         let lhs = mkLHSapp $
 --                     propagateParams i params fn_ty (addImplPat i lhs_in)
         logElab 10 (show (params, fn_ty) ++ " " ++ showTmImpls (addImplPat i lhs_in))
@@ -587,8 +562,8 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         logElab 4 ("Fixed parameters: " ++ show params ++ " from " ++ showTmImpls lhs_in ++
                   "\n" ++ show (fn_ty, fn_is))
 
-        ((ElabResult lhs' dlhs [] ctxt' newDecls highlights, probs, inj), _) <-
-           tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+        ((ElabResult lhs' dlhs [] ctxt' newDecls highlights newGName, probs, inj), _) <-
+           tclift $ elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "patLHS") infP initEState
                     (do res <- errAt "left hand side of " fname Nothing
                                  (erun fc (buildTC i info ELHS opts fname
                                           (allNamesIn lhs_in)
@@ -601,6 +576,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
+        updateIState $ \i -> i { idris_name = newGName }
 
         when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) probs)
 
@@ -620,8 +596,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
                                then recheckC_borrowing False (PEGenerated `notElem` opts)
                                                        [] fc id [] lhs_tm
                                else return (lhs_tm, lhs_ty)
-        let clhs = normalise ctxt [] clhs_c
-        logLvl 0 $ "clhs: " ++ show clhs
+        let clhs = Idris.Core.Evaluate.simplify ctxt [] clhs_c
         let borrowed = borrowedNames [] clhs
 
         -- These are the names we're not allowed to use on the RHS, because
@@ -657,6 +632,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
 
         let winfo = (pinfo info newargs defs windex) { elabFC = Just fc }
         let wb = map (mkStatic static_names) $
+                 map (expandInstanceScope ist decorate newargs defs) $
                  map (expandParamsD False ist decorate newargs defs) whereblock
 
         -- Split the where block into declarations with a type, and those
@@ -664,24 +640,25 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         -- Elaborate those with a type *before* RHS, those without *after*
         let (wbefore, wafter) = sepBlocks wb
 
-        logElab 2 $ "Where block:\n " ++ show wbefore ++ "\n" ++ show wafter
+        logElab 5 $ "Where block:\n " ++ show wbefore ++ "\n" ++ show wafter
         mapM_ (rec_elabDecl info EAll winfo) wbefore
         -- Now build the RHS, using the type of the LHS as the goal.
         i <- getIState -- new implicits from where block
         logElab 5 (showTmImpls (expandParams decorate newargs defs (defs \\ decls) rhs_in))
-        let rhs = addImplBoundInf i (map fst newargs_all) (defs \\ decls)
+        let rhs = rhs_trans info $
+                   addImplBoundInf i (map fst newargs_all) (defs \\ decls)
                                  (expandParams decorate newargs defs (defs \\ decls) rhs_in)
         logElab 2 $ "RHS: " ++ show (map fst newargs_all) ++ " " ++ showTmImpls rhs
         ctxt <- getContext -- new context with where block added
         logElab 5 "STARTING CHECK"
-        ((rhs', defer, holes, is, probs, ctxt', newDecls, highlights), _) <-
-           tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patRHS") clhsty initEState
+        ((rhs', defer, holes, is, probs, ctxt', newDecls, highlights, newGName), _) <-
+           tclift $ elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "patRHS") clhsty initEState
                     (do pbinds ist lhs_tm
                         -- proof search can use explicitly written names
                         mapM_ addPSname (allNamesIn lhs_in)
                         mapM_ setinj (nub (tcparams ++ inj))
                         setNextName
-                        (ElabResult _ _ is ctxt' newDecls highlights) <-
+                        (ElabResult _ _ is ctxt' newDecls highlights newGName) <-
                           errAt "right hand side of " fname (Just clhsty)
                                 (erun fc (build i winfo ERHS opts fname rhs))
                         errAt "right hand side of " fname (Just clhsty)
@@ -692,10 +669,11 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
                                                      (map fst $ case_decls aux) ctxt tt) []
                         probs <- get_probs
                         hs <- get_holes
-                        return (tm, ds, hs, is, probs, ctxt', newDecls, highlights))
+                        return (tm, ds, hs, is, probs, ctxt', newDecls, highlights, newGName))
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
+        updateIState $ \i -> i { idris_name = newGName }
 
         when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) probs)
 
@@ -729,7 +707,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
                        -- allow the deferred things to be definable
                        -- (this is just to allow users to inspect intermediate
                        -- things)
-             <- if (null holes || null def') && not inf 
+             <- if (null holes || null def') && not inf
                    then recheckC_borrowing True (PEGenerated `notElem` opts)
                                        borrowed fc id [] rhs'
                    else return (rhs', clhsty)
@@ -842,8 +820,8 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
                    propagateParams i params fn_ty (allNamesIn lhs_in)
                     (addImplPat i lhs_in)
         logElab 2 ("LHS: " ++ show lhs)
-        (ElabResult lhs' dlhs [] ctxt' newDecls highlights, _) <-
-            tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
+        (ElabResult lhs' dlhs [] ctxt' newDecls highlights newGName, _) <-
+            tclift $ elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "patLHS") infP initEState
               (errAt "left hand side of with in " fname Nothing
                 (erun fc (buildTC i info ELHS opts fname
                                   (allNamesIn lhs_in)
@@ -851,6 +829,7 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
+        updateIState $ \i -> i { idris_name = newGName }
 
         ctxt <- getContext
         let lhs_tm = orderPats (getInferTerm lhs')
@@ -861,25 +840,26 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
         (clhs, clhsty) <- recheckC fc id [] lhs_tm
         logElab 5 ("Checked " ++ show clhs)
         let bargs = getPBtys (explicitNames (normalise ctxt [] lhs_tm))
-        let wval = addImplBound i (map fst bargs) wval_in
+        let wval = rhs_trans info $ addImplBound i (map fst bargs) wval_in
         logElab 5 ("Checking " ++ showTmImpls wval)
         -- Elaborate wval in this context
-        ((wval', defer, is, ctxt', newDecls, highlights), _) <-
-            tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "withRHS")
+        ((wval', defer, is, ctxt', newDecls, highlights, newGName), _) <-
+            tclift $ elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "withRHS")
                         (bindTyArgs PVTy bargs infP) initEState
                         (do pbinds i lhs_tm
                             -- proof search can use explicitly written names
                             mapM_ addPSname (allNamesIn lhs_in)
                             setNextName
                             -- TODO: may want where here - see winfo abpve
-                            (ElabResult _ d is ctxt' newDecls highlights) <- errAt "with value in " fname Nothing
+                            (ElabResult _ d is ctxt' newDecls highlights newGName) <- errAt "with value in " fname Nothing
                               (erun fc (build i info ERHS opts fname (infTerm wval)))
                             erun fc $ psolve lhs_tm
                             tt <- get_term
-                            return (tt, d, is, ctxt', newDecls, highlights))
+                            return (tt, d, is, ctxt', newDecls, highlights, newGName))
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
+        updateIState $ \i -> i { idris_name = newGName }
 
         def' <- checkDef fc iderr True defer
         let def'' = map (\(n, (i, top, t, ns)) -> (n, (i, top, t, ns, False, True))) def'
@@ -957,8 +937,12 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
                        withblock
         logElab 3 ("with block " ++ show wb)
         -- propagate totality assertion to the new definitions
-        when (AssertTotal `elem` opts) $ setFlags wname [AssertTotal]
-        mapM_ (rec_elabDecl info EAll info) wb
+        setFlags wname [Inlinable]
+        when (AssertTotal `elem` opts) $ setFlags wname [Inlinable, AssertTotal]
+        i <- getIState
+        let rhstrans' = updateWithTerm i mpn wname lhs (map fst bargs_pre) (map fst (bargs_post))
+                             . rhs_trans info
+        mapM_ (rec_elabDecl info EAll (info { rhs_trans = rhstrans' })) wb
 
         -- rhs becomes: fname' ps_pre wval ps_post Refl
         let rhs = PApp fc (PRef fc [] wname)
@@ -974,18 +958,19 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
         logElab 5 ("New RHS " ++ showTmImpls rhs)
         ctxt <- getContext -- New context with block added
         i <- getIState
-        ((rhs', defer, is, ctxt', newDecls, highlights), _) <-
-           tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "wpatRHS") clhsty initEState
+        ((rhs', defer, is, ctxt', newDecls, highlights, newGName), _) <-
+           tclift $ elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "wpatRHS") clhsty initEState
                     (do pbinds i lhs_tm
                         setNextName
-                        (ElabResult _ d is ctxt' newDecls highlights) <-
+                        (ElabResult _ d is ctxt' newDecls highlights newGName) <-
                            erun fc (build i info ERHS opts fname rhs)
                         psolve lhs_tm
                         tt <- get_term
-                        return (tt, d, is, ctxt', newDecls, highlights))
+                        return (tt, d, is, ctxt', newDecls, highlights, newGName))
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
+        updateIState $ \i -> i { idris_name = newGName }
 
         def' <- checkDef fc iderr True defer
         let def'' = map (\(n, (i, top, t, ns)) -> (n, (i, top, t, ns, False, True))) def'
@@ -999,9 +984,8 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
     getImps _ = []
 
     mkAuxC pn wname lhs ns ns' (PClauses fc o n cs)
-        | True  = do cs' <- mapM (mkAux pn wname lhs ns ns') cs
+                = do cs' <- mapM (mkAux pn wname lhs ns ns') cs
                      return $ PClauses fc o wname cs'
-        | otherwise = ifail $ show fc ++ "with clause uses wrong function name " ++ show n
     mkAuxC pn wname lhs ns ns' d = return $ d
 
     mkAux pn wname toplhs ns ns' (PClause fc n tm_in (w:ws) rhs wheres)
@@ -1032,6 +1016,8 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
     addArg (PApp fc f args) w = PApp fc f (args ++ [pexp w])
     addArg (PRef fc hls f) w = PApp fc (PRef fc hls f) [pexp w]
 
+    -- ns, arguments which don't depend on the with argument
+    -- ns', arguments which do
     updateLHS n pn wname mvars ns_in ns_in' (PApp fc (PRef fc' hls' n') args) w
         = let ns = map (keepMvar (map fst mvars) fc') ns_in
               ns' = map (keepMvar (map fst mvars) fc') ns_in' in
@@ -1044,8 +1030,64 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
     updateLHS n pn wname mvars ns_in ns_in' tm w
         = updateLHS n pn wname mvars ns_in ns_in' (PApp fc tm []) w
 
+    -- Only keep a var as a pattern variable in the with block if it's
+    -- matched in the top level pattern
     keepMvar mvs fc v | v `elem` mvs = PRef fc [] v
                       | otherwise = Placeholder
+
+    updateWithTerm :: IState -> Maybe Name -> Name -> PTerm -> [Name] -> [Name] -> PTerm -> PTerm
+    updateWithTerm ist pn wname toplhs ns_in ns_in' tm
+          = mapPT updateApp tm
+       where
+         arity (PApp _ _ as) = length as
+         arity _ = 0
+
+         lhs_arity = arity toplhs
+
+         currentFn fname (PAlternative _ _ as)
+              | Just tm <- getApp as = tm
+            where getApp (tm@(PApp _ (PRef _ _ f) _) : as)
+                      | f == fname = Just tm
+                  getApp (_ : as) = getApp as
+                  getApp [] = Nothing
+         currentFn _ tm = tm
+
+         updateApp wtm@(PWithApp fcw tm_in warg) = 
+           let tm = currentFn fname tm_in in
+              case matchClause ist toplhs tm of
+                Left _ -> PElabError (Msg (show fc ++ ":with application does not match top level "))
+                Right mvars -> 
+                   let ns = map (keepMvar (map fst mvars) fcw) ns_in
+                       ns' = map (keepMvar (map fst mvars) fcw) ns_in' 
+                       wty = lookupTyExact wname (tt_ctxt ist)
+                       res = substMatches mvars $
+                          PApp fcw (PRef fcw [] wname)
+                            (map pexp ns ++ pexp warg : (map pexp ns') ++
+                                case pn of
+                                     Nothing -> []
+                                     Just pnm -> [pexp (PRef fc [] pnm)]) in
+                          case wty of
+                               Nothing -> res -- can't happen!
+                               Just ty -> addResolves ty res
+         updateApp tm = tm
+
+         addResolves ty (PApp fc f args) = PApp fc f (addResolvesArgs fc ty args)
+         addResolves ty tm = tm
+
+         -- if an argument's type is a type class, and is otherwise to
+         -- be inferred, then resolve it with instance search
+         -- This is something of a hack, because matching on the top level
+         -- application won't find this information for us
+         addResolvesArgs :: FC -> Term -> [PArg] -> [PArg]
+         addResolvesArgs fc (Bind n (Pi _ ty _) sc) (a : args)
+             | (P _ cn _, _) <- unApply ty,
+               getTm a == Placeholder
+                 = case lookupCtxtExact cn (idris_classes ist) of
+                        Just _ -> a { getTm = PResolveTC fc } : addResolvesArgs fc sc args
+                        Nothing -> a : addResolvesArgs fc sc args
+         addResolvesArgs fc (Bind n (Pi _ ty _) sc) (a : args)
+                 = a : addResolvesArgs fc sc args
+         addResolvesArgs fc _ args = args
 
     fullApp (PApp _ (PApp fc f args) xs) = fullApp (PApp fc f (args ++ xs))
     fullApp x = x
@@ -1058,366 +1100,22 @@ elabClause info opts (_, PWith fc fname lhs_in withs wval_in pn_in withblock)
 
     abstract wn wv wty (n, argty) = (n, substTerm wv (P Bound wn wty) argty)
 
-elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock []) =
-  do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
-     elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
+-- | Apply a transformation to all RHSes and nested RHSs
+mapRHS :: (PTerm -> PTerm) -> PClause -> PClause
+mapRHS f (PClause fc n lhs args rhs ws)
+    = PClause fc n lhs args (f rhs) (map (mapRHSdecl f) ws)
+mapRHS f (PWith fc n lhs args warg prf ws)
+    = PWith fc n lhs args (f warg) prf (map (mapRHSdecl f) ws)
+mapRHS f (PClauseR fc args rhs ws)
+    = PClauseR fc args (f rhs) (map (mapRHSdecl f) ws)
+mapRHS f (PWithR fc args warg prf ws)
+    = PWithR fc args (f warg) prf (map (mapRHSdecl f) ws)
 
-elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock [(pn, rn, ri)]) = -- Copatterns clauses
-  do logLvl 0 "Elaborating non-nested coclause"
-     logLvl 0 $ "fname: " ++ show fname
-     logLvl 0 $ "lhs_in_as: " ++ show lhs_in_as
-     logLvl 0 $ "rhs_in_as: " ++ show rhs_in_as
-     logLvl 0 $ "pn: " ++ show pn ++ ", rn: " ++ show rn
-     i <- getIState
-     (ri', pMap) <-
-       do d <- getDefinition fname
-          case d of
-            Just d  -> return d
-            Nothing -> mkDefinition fname ri
-     auxn <- auxName fname
-     pTy <- projTy pn
-     logLvl 0 $ "auxTy: " ++ show (auxTy pTy)
-     (rec_elabDecl info) ETypes info (auxTyDecl auxn (delab i $ auxTy pTy))
-     fisk <- auxName (sUN "fisk")
-     logLvl 0 $ "fisk: " ++ show fisk
-     putIState . (\ist -> ist{ idris_postulates = S.insert fisk (idris_postulates ist) }) =<< getIState
-     --put $ i { tt_ctxt = addTyDecl auxn Ref (auxTy pTy) (tt_ctxt i) }
-     case lookup pn pMap of
-       Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
-       Nothing -> do i <- getIState
-                     put $ i { idris_copatterns = Map.adjust (\(ri, ps) -> (ri, (pn, auxn):ps)) fname (idris_copatterns i) }
-                     let lhsSubst = substMatch fname (PRef fc [] auxn) lhs_in_as
-                     elabClause info opts (0, auxClause auxn lhsSubst rhs_in_as)
-  where
-    getDefinition :: Name -> Idris (Maybe (RecordInfo, [(Name, Name)]))
-    getDefinition fn =
-      do i <- getIState
-         let copDefs = idris_copatterns i
-         return $ Map.lookup fn copDefs
+mapRHSdecl :: (PTerm -> PTerm) -> PDecl -> PDecl
+mapRHSdecl f (PClauses fc opt n cs)
+    = PClauses fc opt n (map (mapRHS f) cs)
+mapRHSdecl f t = t
 
-    mkDefinition :: Name -> RecordInfo -> Idris (RecordInfo, [(Name, Name)])
-    mkDefinition fn ri =
-      do i <- getIState
-         let d = (ri, [])
-         put $ i { idris_copatterns = Map.insert fn d (idris_copatterns i) }
-         return d
-
-    projTy :: Name -> Idris Type
-    projTy n =
-      do ctxt <- getContext
-         case lookupTyExact n ctxt of
-           Just ty -> return ty
-           Nothing -> ifail $ "No type for left-hand side projection " ++ show n
-
-    auxTy :: Type -> Type -- Will not work with type parameters in record type
-    auxTy (Bind _ (Pi _ _ _) ty) = ty
-    auxTy t = t
-
-    auxTyDecl :: Name -> PTerm -> PDecl
-    auxTyDecl n ty = PTy emptyDocstring [] defaultSyntax NoFC [] n NoFC ty
-
-    auxClause :: Name -> PTerm -> PTerm -> PClause
-    auxClause n lhs rhs = PClause NoFC n lhs [] rhs [] -- PClause something
-
-    auxName :: Name -> Idris Name
-    auxName n = --return $ sNS (sUN "fisk") ["cop"]
-      do ctxt <- getContext
-         case lookupNames n ctxt of
-           [] -> return n
-           _  -> auxName (nextName n)
-
-elabClause info opts (cnum, PCoClause fc fname lhs_in_as rhs_in_as whereblock path) = -- Copatterns clauses
-  -- do i <- getIState
-  --    logLvl 0 $ "matchClauseTest: " ++ show (matchClause i lhs_in_as rhs_in_as)
-  --    elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
-  do let tcgen = Dictionary `elem` opts
-     push_estack fname False
-     i <- getIState
-     let ctxt = tt_ctxt i
-     let (lhs_in, rhs_in) = desugarAs lhs_in_as rhs_in_as
-
-     -- Build the LHS as an "Infer", and pull out its type and
-     -- pattern bindings
-     inf <- isTyInferred fname
-     -- get the parameters first, to pass through to any where block
-     let fn_ty = case lookupTy fname ctxt of
-                      [t] -> t
-                      _ -> error "Can't happen (elabClause function type)"
-     let fn_is = case lookupCtxt fname (idris_implicits i) of
-                      [t] -> t
-                      _ -> []
-     let norm_ty = normalise ctxt [] fn_ty
-     let params = getParamsInType i [] fn_is norm_ty
-
-     let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params norm_ty (allNamesIn lhs_in) (addImplPat i lhs_in)
-     let colhs = mkPApp lhs path
-     logLvl 0 ("LHS: " ++ show fc ++ " " ++ showTmImpls lhs)
-     logLvl 0 ("Fixed parameters: " ++ show params ++ " from " ++ show lhs_in ++ "\n" ++ show (fn_ty, fn_is))
-     logLvl 0 ("coLHS: " ++ show fc ++ " " ++ showTmImpls colhs)
-     -- ((ElabResult lhs' dlhs [] ctxt' newDecls highlights, probs, inj), _) <-
-     --    tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
-     --             (do res <- errAt "left hand side of " fname
-     --                          (erun fc (buildTC i info ELHS opts fname (infTerm lhs)))
-     --                 probs <- get_probs
-     --                 inj <- get_inj
-     --                 return (res, probs, inj))
-     
-     ((ElabResult colhs' codlhs [] coctxt' conewDecls cohighlights, coprobs, coinj), _) <-
-        tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
-                 (do res <- errAt "left hand side of " fname Nothing
-                              (erun fc (buildTC i info ELHS opts fname 
-                                       (allNamesIn lhs_in)
-                                       (infTerm colhs)))
-                     probs <- get_probs
-                     inj <- get_inj
-                     return (res, probs, inj))
-     setContext coctxt'
-     processTacticDecls info conewDecls
-     sendHighlighting cohighlights
-
-     when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) coprobs)
-
-     let lhs_tm = orderPats (getInferTerm colhs')
-     let lhs_ty = getInferType colhs'
-     let ret_ty = getRetTy (explicitNames (normalise ctxt [] lhs_ty))
-     logLvl 0 ("lhs_tm: " ++ show lhs_tm)
-     logLvl 0 ("lhs_ty: " ++ show lhs_ty)
-     logLvl 0 ("ret_ty: " ++ show ret_ty)
-     elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
-  where
-    mkPApp :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
-    mkPApp t ((pn,_,_) : path') = mkPApp (PApp fc (PRef fc [] pn) [pexp t]) path'
-    mkPApp t []                 = t
-
-    -- typeWithProjections :: Type -> Type
-    -- typeWithProjections _ = undefined
-
-
-        -- let fn_ty = case lookupTy fname (tt_ctxt i) of
-        --                  [t] -> t
-        --                  _ -> error "Can't happen (elabClause function type)"
-        -- let fn_is = case lookupCtxt fname (idris_implicits i) of
-        --                  [t] -> t
-        --                  _ -> []
-        -- let params = getParamsInType i [] fn_is (normalise ctxt [] fn_ty)
-        -- let lhs = stripLinear i $ stripUnmatchable i $ propagateParams i params fn_ty (addImplPat i lhs_in)
-        -- logLvl 2 ("LHS: " ++ show lhs)
-        -- (ElabResult lhs' dlhs [] ctxt' newDecls highlights, _) <-
-        --     tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
-        --       (errAt "left hand side of with in " fname
-        --         (erun fc (buildTC i info ELHS opts fname (infTerm lhs))) )
-        -- setContext ctxt'
-        -- processTacticDecls info newDecls
-        -- sendHighlighting highlights
-
-        -- let lhs_tm = orderPats (getInferTerm lhs')
-        -- let lhs_ty = getInferType lhs'
-        -- let ret_ty = getRetTy (explicitNames (normalise ctxt [] lhs_ty))
-        -- let static_names = getStaticNames i lhs_tm
-
-     -- let tcgen = Dictionary `elem` opts
-     -- push_estack fname False
-     -- ctxt <- getContext
-     -- let (lhs_in, rhs_in) = desugarAs lhs_in_as rhs_in_as
-
-     -- -- Build the LHS as an "Infer", and pull out its type and
-     -- -- pattern bindings
-     -- i <- getIState
-     -- inf <- isTyInferred fname
-     -- -- get the parameters first, to pass through to any where block
-     -- let fn_ty = case lookupTy fname (tt_ctxt i) of
-     --                  [t] -> t
-     --                  _ -> error "Can't happen (elabClause function type)"
-     -- let fn_is = case lookupCtxt fname (idris_implicits i) of
-     --                  [t] -> t
-     --                  _ -> []
-     -- let norm_ty = normalise ctxt [] fn_ty
-     -- let params = getParamsInType i [] fn_is norm_ty
-     -- let tcparams = getTCParamsInType i [] fn_is norm_ty
-
-     -- let lhs = mkLHSapp $ stripLinear i $ stripUnmatchable i $
-     --             propagateParams i params norm_ty (addImplPat i lhs_in)
-     -- logLvl 10 (show (params, fn_ty) ++ " " ++ showTmImpls (addImplPat i lhs_in))
-     -- logLvl 5 ("LHS: " ++ show fc ++ " " ++ showTmImpls lhs)
-     -- logLvl 4 ("Fixed parameters: " ++ show params ++ " from " ++ show lhs_in ++
-     --           "\n" ++ show (fn_ty, fn_is))
-
-     -- ((ElabResult lhs' dlhs [] ctxt' newDecls highlights, probs, inj), _) <-
-     --    tclift $ elaborate ctxt (idris_datatypes i) (sMN 0 "patLHS") infP initEState
-     --             (do res <- errAt "left hand side of " fname
-     --                          (erun fc (buildTC i info ELHS opts fname (infTerm lhs)))
-     --                 probs <- get_probs
-     --                 inj <- get_inj
-     --                 return (res, probs, inj))
-     -- setContext ctxt'
-     -- processTacticDecls info newDecls
-     -- sendHighlighting highlights
-
-     -- when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) probs)
-
-     -- let lhs_tm = orderPats (getInferTerm lhs')
-     -- let lhs_ty = getInferType lhs'
-     -- let static_names = getStaticNames i lhs_tm
-
-     -- logLvl 3 ("Elaborated: " ++ show lhs_tm)
-     -- logLvl 3 ("Elaborated type: " ++ show lhs_ty)
-     -- logLvl 5 ("Injective: " ++ show fname ++ " " ++ show inj)
-
-     -- -- If we're inferring metavariables in the type, don't recheck,
-     -- -- because we're only doing this to try to work out those metavariables
-     -- (clhs_c, clhsty) <- if not inf
-     --                        then recheckC_borrowing False (PEGenerated `notElem` opts)
-     --                                                [] fc id [] lhs_tm
-     --                        else return (lhs_tm, lhs_ty)
-     -- let clhs = normalise ctxt [] clhs_c
-     -- let borrowed = borrowedNames [] clhs
---   do logLvl 0 $ "Trying to elab PCoClause " ++ show fname
---      elabClause info opts (cnum, PClause fc fname lhs_in_as [] rhs_in_as whereblock)
-
-elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
-elabCoClauses what info (PClauses pfc opts pn cocs) =
-  do logLvl 0 $ "Elabbing clauses for name " ++ show pn
-     if hasPath $ head cocs
-       then
-       do let groupedClauses = groupBy pe cocs --groupByPath cocs []
-          consArgNames <- mapM (\clauses ->
-             do auxn <- auxName pn
-                cs <- mapM (elabCoClause what info auxn) clauses
-                (rec_elabDecl info) EAll info (PClauses pfc opts auxn cs)
-                return auxn
-           ) groupedClauses
-          let (_, _, recordInfo) = head $ (getPath $ head cocs)
-          let consName = record_constructor recordInfo
-          let consArgs = map (\argName -> pexp $ PRef pfc [] argName) consArgNames
-          let lhs = PRef pfc [] pn
-          let rhs = PApp pfc (PRef pfc [] consName) consArgs
-          let clause = PClause pfc pn lhs [] rhs []
-          (rec_elabDecl info) EAll info $ PClauses pfc [] pn [clause]
-       else
-         do cs <- mapM (elabCoClause what info pn) cocs
-            (rec_elabDecl info) EAll info (PClauses pfc opts pn cs)
-       where
-         groupByPath :: [PClause' PTerm] -> [[PClause' PTerm]] -> [[PClause' PTerm]]
-         groupByPath [] acc = acc
-         groupByPath (c@(PCoClause _ _ _ _ _ path) : clauses) acc = groupByPath clauses (insertByPath c acc)
-           where
-             insertByPath :: PClause' PTerm -> [[PClause' PTerm]] -> [[PClause' PTerm]]
-             insertByPath clause [] = [[clause]]
-             insertByPath clause (clauses : clausess)
-               | pathEquality (getPath clause) (getPath $ head clauses) = (clause : clauses) : clausess
-               | otherwise = clauses : (insertByPath clause clausess)
-         groupByPath (c : clauses) acc = groupByPath clauses ([c] : acc)
-
-         pathEquality :: [(Name, Name, RecordInfo)] -> [(Name, Name, RecordInfo)] -> Bool
-         pathEquality [] [] = True
-         pathEquality _ [] = False
-         pathEquality [] _ = False
-         pathEquality ((pn, rn, _) : path) ((pn', rn', _) : path')
-          | (pn == pn') && (rn == rn') = pathEquality path path'
-          | otherwise = False
-
-         pe :: PClause' PTerm -> PClause' PTerm -> Bool
-         pe (PCoClause _ _ _ _ _ path) (PCoClause _ _ _ _ _ path') = pathEquality path path'
-         pe _ _ = False
-
-         hasPath :: PClause' PTerm -> Bool
-         hasPath (PCoClause _ _ _ _ _ (_ : _)) = True
-         hasPath _ = False
-
-         getPath :: PClause' PTerm -> [(Name, Name, RecordInfo)]
-         getPath (PCoClause _ _ _ _ _ path) = path
-         getPath _ = []
-
-         auxName :: Name -> Idris Name
-         auxName n = --return $ sNS (sUN "fisk") ["cop"]
-           do ctxt <- getContext
-              case lookupNames n ctxt of
-                [] -> return n
-                _  -> auxName (nextName n)
-elabCoClauses what info d =
-  do logLvl 0 $ "other"
-     (rec_elabDecl info) EAll info d
-
-elabCoClause :: ElabWhat -> ElabInfo -> Name -> PClause' PTerm -> Idris (PClause' PTerm)
-elabCoClause what info auxn (PCoClause fc fname lhs_in_as rhs_in_as whereblock []) = return $ PClause fc fname lhs_in_as [] rhs_in_as whereblock
-elabCoClause what info auxn (PCoClause fc fname lhs_in_as rhs_in_as whereblock [(pn, rn, ri)]) =
-  do logLvl 0 "Elaborating non-nested coclause"
-     logLvl 0 $ "fname: " ++ show fname
-     logLvl 0 $ "lhs_in_as: " ++ show lhs_in_as
-     logLvl 0 $ "rhs_in_as: " ++ show rhs_in_as
-     logLvl 0 $ "pn: " ++ show pn ++ ", rn: " ++ show rn
-     i <- getIState
-     (ri', pMap) <-
-       do d <- getDefinition fname
-          case d of
-            Just d  -> return d
-            Nothing -> mkDefinition fname ri
-     {-
-     pTy <- projTy pn
-     logLvl 0 $ "auxTy: " ++ show (auxTy pTy)
-     (rec_elabDecl info) ETypes info (auxTyDecl auxn (delab i $ auxTy pTy))
-     -}
-     pTy <- case Map.lookup pn (idris_proj_type i) of
-       Just term -> return term
-       Nothing -> ifail $ "No type for left-hand side projection " ++ show pn
-     (rec_elabDecl info) ETypes info $ auxTyDecl auxn pTy
-     fisk <- auxName (sUN "fisk")
-     logLvl 0 $ "fisk: " ++ show fisk
-     fTy <- case lookupTyExact fname (tt_ctxt i) of
-             Just ty -> return ty
-             Nothing -> ifail $ "No type for elaborated " ++ show fname
-     (rec_elabDecl info) what info $ PPostulate False emptyDocstring defaultSyntax NoFC NoFC [] fisk (delab i fTy)
-     i' <- getIState
-     pttTy <- case lookupTyExact pn (tt_ctxt i') of
-               Just ty -> return ty
-               Nothing -> ifail $ "No' type for projection " ++ show pn
-     result <- runStateT (build i' info ERHS [] )
-     checkTy <- case check (tt_ctxt i') [] (forget (mkApp (P Ref pn pttTy) [P Ref fisk fTy])) of
-                 OK (_, ty) -> return ty
-                 Error e -> ifail $ "checkTy fail: " ++ show e
-     logLvl 0 $ "checkTy: " ++ show checkTy
-     --put $ i { tt_ctxt = addTyDecl auxn Ref (auxTy pTy) (tt_ctxt i) }
-     case lookup pn pMap of
-       Just _  -> ifail $ show fc ++ ": duplicate definition" -- error: duplicate definition of `pn fname`
-       Nothing -> do i <- getIState
-                     put $ i { idris_copatterns = Map.adjust (\(ri, ps) -> (ri, (pn, auxn):ps)) fname (idris_copatterns i) }
-                     let lhsSubst = substMatch fname (PRef fc [] auxn) lhs_in_as
-                     return $ PClause fc auxn lhsSubst [] rhs_in_as []
-  where
-    getDefinition :: Name -> Idris (Maybe (RecordInfo, [(Name, Name)]))
-    getDefinition fn =
-      do i <- getIState
-         let copDefs = idris_copatterns i
-         return $ Map.lookup fn copDefs
-
-    mkDefinition :: Name -> RecordInfo -> Idris (RecordInfo, [(Name, Name)])
-    mkDefinition fn ri =
-      do i <- getIState
-         let d = (ri, [])
-         put $ i { idris_copatterns = Map.insert fn d (idris_copatterns i) }
-         return d
-
-    projTy :: Name -> Idris Type
-    projTy n =
-      do ctxt <- getContext
-         case lookupTyExact n ctxt of
-           Just ty -> return ty
-           Nothing -> ifail $ "No type for left-hand side projection " ++ show n
-
-    auxTy :: Type -> Type -- Will not work with type parameters in record type
-    auxTy (Bind _ (Pi _ _ _) ty) = ty
-    auxTy t = t
-
-    auxTyDecl :: Name -> PTerm -> PDecl
-    auxTyDecl n ty = PTy emptyDocstring [] defaultSyntax NoFC [] n NoFC ty
-
-    auxClause :: Name -> PTerm -> PTerm -> PClause
-    auxClause n lhs rhs = PClause NoFC n lhs [] rhs [] -- PClause something
-
-    auxName :: Name -> Idris Name
-    auxName n = --return $ sNS (sUN "fisk") ["cop"]
-      do ctxt <- getContext
-         case lookupNames n ctxt of
-           [] -> return n
-           _  -> auxName (nextName n)
+-- elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
+-- elabCoClauses what info (PClauses fc opts fn [PCoClause cfc cn lhs withs rhs wheres path]) =
   

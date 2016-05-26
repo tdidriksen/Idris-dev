@@ -40,19 +40,6 @@ data Term
   | Constant Const
   | Ty
 
-unApply : Raw -> (Raw, List Raw)
-unApply tm = unApply' tm []
-  where unApply' : Raw -> List Raw -> (Raw, List Raw)
-        unApply' (RApp f x) xs = unApply' f (x::xs)
-        unApply' notApp xs = (notApp, xs)
-
-
-implementation Quotable Plicity Raw where
-  quotedTy = `(Plicity)
-  quote Explicit = `(Explicit)
-  quote Implicit = `(Implicit)
-  quote Constraint = `(Constraint)
-
 implementation (Quotable a Raw) => Quotable (Arg a) Raw where
   quotedTy = `(Arg ~(quotedTy {a=a}))
   quote (MkArg plicity argValue) =

@@ -64,7 +64,6 @@ codegenC' defs out exec incs objs libs flags exports iface dbg
          let cout = headers incs ++ debug dbg ++ h ++ wrappers ++ cc ++
                      (if (exec == Executable) then mprog else hi)
          case exec of
-           MavenProject -> putStrLn ("FAILURE: output type not supported")
            Raw -> writeSource out cout
            _ -> do
              (tmpn, tmph) <- tempfile ".c"
@@ -653,9 +652,20 @@ doOp v (LExternal pk) [_, p, o] | pk == sUN "prim__peekPtr"
     = v ++ "idris_peekPtr(vm," ++ creg p ++ "," ++ creg o ++")"
 doOp v (LExternal pk) [_, p, o, x] | pk == sUN "prim__pokePtr"
     = v ++ "idris_pokePtr(" ++ creg p ++ "," ++ creg o ++ "," ++ creg x ++ ")"
+doOp v (LExternal pk) [_, p, o, x] | pk == sUN "prim__pokeDouble"
+    = v ++ "idris_pokeDouble(" ++ creg p ++ "," ++ creg o ++ "," ++ creg x ++ ")"
+doOp v (LExternal pk) [_, p, o] | pk == sUN "prim__peekDouble"
+    = v ++ "idris_peekDouble(vm," ++ creg p ++ "," ++ creg o ++")"
+doOp v (LExternal pk) [_, p, o, x] | pk == sUN "prim__pokeSingle"
+    = v ++ "idris_pokeSingle(" ++ creg p ++ "," ++ creg o ++ "," ++ creg x ++ ")"
+doOp v (LExternal pk) [_, p, o] | pk == sUN "prim__peekSingle"
+    = v ++ "idris_peekSingle(vm," ++ creg p ++ "," ++ creg o ++")"
 doOp v (LExternal pk) [] | pk == sUN "prim__sizeofPtr"
     = v ++ "MKINT(sizeof(void*))"
-doOp v (LExternal mpt) [p] | mpt == sUN "prim__asPtr" = v ++ "MKPTR(vm, GETMPTR("++ creg p ++"))"
+doOp v (LExternal mpt) [p] | mpt == sUN "prim__asPtr"
+    = v ++ "MKPTR(vm, GETMPTR("++ creg p ++"))"
+doOp v (LExternal offs) [p, n] | offs == sUN "prim__ptrOffset"
+    = v ++ "MKPTR(vm, GETPTR(" ++ creg p ++ ") + GETINT(" ++ creg n ++ "))"
 doOp _ op args = error $ "doOp not implemented (" ++ show (op, args) ++ ")"
 
 
@@ -720,7 +730,11 @@ ctype t = error "Can't happen: Not a valid interface type " ++ show t
 carith (FCon i)
   | i == sUN "C_IntChar" = "char"
   | i == sUN "C_IntNative" = "int"
-carith t = error "Can't happen: Not an exportable arithmetic type"
+  | i == sUN "C_IntBits8" = "uint8_t"
+  | i == sUN "C_IntBits16" = "uint16_t"
+  | i == sUN "C_IntBits32" = "uint32_t"
+  | i == sUN "C_IntBits64" = "uint64_t"
+carith t = error $ "Can't happen: Not an exportable arithmetic type " ++ show t
 
 cdesc (FStr s) = s
 cdesc s = error "Can't happen: Not a valid C name"
@@ -794,19 +808,13 @@ genWrapper (desc, tag) =  ret ++ " " ++ wrapperName tag ++ "(" ++
                           (if ret /= "void" then indent 1 ++ ret ++ " ret;\n" else "") ++
                           indent 1 ++ "VM* vm = get_vm();\n" ++
                           indent 1 ++ "if (vm == NULL) {\n" ++
-                          indent 2 ++ "fprintf(stderr, \"No vm available in callback.\");\n" ++
-                          indent 2 ++ "exit(-1);\n" ++
+                          indent 2 ++ "vm = idris_vm();\n" ++
                           indent 1 ++ "}\n" ++
                           indent 1 ++ "INITFRAME;\n" ++
                           indent 1 ++ "RESERVE(" ++ show (len + 1) ++ ");\n" ++
                           indent 1 ++ "allocCon(REG1, vm, " ++ show tag ++ ",0 , 0);\n" ++
                           indent 1 ++ "TOP(0) = REG1;\n" ++
-
-                          push 1 argList ++
-                          indent 1 ++ "STOREOLD;\n" ++
-                          indent 1 ++ "BASETOP(0);\n" ++
-                          indent 1 ++ "ADDTOP(" ++ show (len + 1) ++ ");\n" ++
-                          indent 1 ++ "CALL(_idris__123_APPLY0_125_);\n" ++
+                          applyArgs argList ++
                           if ret /= "void"
                             then indent 1 ++ "ret = " ++ irts_c (toFType ft) "RVAL" ++ ";\n"
                                           ++ indent 1 ++ "return ret;\n}\n\n"
@@ -815,6 +823,19 @@ genWrapper (desc, tag) =  ret ++ " " ++ wrapperName tag ++ "(" ++
                         (ret, ft) = rty desc
                         argList = zip (args desc) [0..]
                         len = length argList
+
+                        applyArgs (x:y:xs) = push 1 [x] ++
+                                            indent 1 ++ "STOREOLD;\n" ++
+                                            indent 1 ++ "BASETOP(0);\n" ++
+                                            indent 1 ++ "ADDTOP(2);\n" ++
+                                            indent 1 ++ "CALL(_idris__123_APPLY0_125_);\n" ++
+                                            indent 1 ++ "TOP(0)=REG1;\n" ++
+                                            applyArgs (y:xs)
+                        applyArgs x = push 1 x ++
+                                      indent 1 ++ "STOREOLD;\n" ++
+                                      indent 1 ++ "BASETOP(0);\n" ++
+                                      indent 1 ++ "ADDTOP(" ++ show (length x + 1) ++ ");\n" ++
+                                      indent 1 ++ "CALL(_idris__123_APPLY0_125_);\n"
                         renderArgs [] = "void"
                         renderArgs [((s, _), n)] = s ++ " a" ++ (show n)
                         renderArgs (((s, _), n):xs) = s ++ " a" ++ (show n) ++ ", " ++

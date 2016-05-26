@@ -2,7 +2,8 @@
              PatternGuards, CPP #-}
 
 module Idris.REPL(getClient, getPkg, getPkgCheck, getPkgClean, getPkgMkDoc,
-                  getPkgREPL, getPkgTest, getPort, idris, idrisMain, loadInputs,
+                  getPkgREPL, getPkgTest, getPort, getIBCSubDir,
+                  idris, idrisMain, loadInputs,
                   opt, runClient, runMain, ver) where
 
 import Idris.AbsSyntax
@@ -902,8 +903,8 @@ process fn (NewDefn decls) = do
   fixClauses :: PDecl' t -> PDecl' t
   fixClauses (PClauses fc opts _ css@(clause:cs)) =
     PClauses fc opts (getClauseName clause) css
-  fixClauses (PInstance doc argDocs syn fc constraints acc opts cls nfc parms ty instName decls) =
-    PInstance doc argDocs syn fc constraints acc opts cls nfc parms ty instName (map fixClauses decls)
+  fixClauses (PInstance doc argDocs syn fc constraints pnames acc opts cls nfc parms pextra ty instName decls) =
+    PInstance doc argDocs syn fc constraints pnames acc opts cls nfc parms pextra ty instName (map fixClauses decls)
   fixClauses decl = decl
 
 process fn (Undefine names) = undefine names
@@ -1248,7 +1249,6 @@ process fn (Compile codegen f)
                                             [pexp $ PRef fc [] mainname])
                                return (Just m')
                        ir <- compile codegen f m
-
                        i <- getIState
                        runIO $ generate codegen (fst (head (idris_imported i))) ir
   where fc = fileFC "main"
@@ -1454,9 +1454,13 @@ showTotal t@(Partial (Mutual ns)) i
 showTotal t i = text (show t)
 
 showTotalN :: IState -> Name -> Doc OutputAnnotation
-showTotalN i n = case lookupTotal n (tt_ctxt i) of
-                        [t] -> showTotal t i
+showTotalN ist n = case lookupTotal n (tt_ctxt ist) of
+                        [t] -> showN n <> text ", which is" <+> showTotal t ist
                         _ -> empty
+    where 
+       ppo = ppOptionIst ist
+       showN n = annotate (AnnName n Nothing Nothing Nothing) . text $
+                 showName (Just ist) [] ppo False n
 
 displayHelp = let vstr = showVersion version in
               "\nIdris version " ++ vstr ++ "\n" ++
@@ -1687,7 +1691,7 @@ idrisMain opts =
                               Object else Executable
                      xs -> last xs
        let cgn = case opt getCodegen opts of
-                   [] -> Via "c"
+                   [] -> Via IBCFormat "c"
                    xs -> last xs
        let cgFlags = opt getCodegenArgs opts
 
@@ -1702,7 +1706,7 @@ idrisMain opts =
        let port = getPort opts
 
        when (DefaultTotal `elem` opts) $ do i <- getIState
-                                            putIState (i { default_total = True })
+                                            putIState (i { default_total = DefaultCheckingTotal })
        tty <- runIO $ isATTY
        setColourise $ not quiet && last (tty : opt getColour opts)
 

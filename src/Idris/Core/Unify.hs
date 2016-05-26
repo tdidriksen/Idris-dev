@@ -292,6 +292,8 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
 
     injective (P (DCon _ _ _) _ _) = True
     injective (P (TCon _ _) _ _) = True
+    injective (P Ref n _) 
+         | Just i <- lookupInjectiveExact n ctxt = i
     injective (App _ f a)        = injective f -- && injective a
     injective _                  = False
 
@@ -529,13 +531,19 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
                 (do hf <- un' env True bnames fx fy
                     let ax' = hnormalise hf ctxt env (substNames hf ax)
                     let ay' = hnormalise hf ctxt env (substNames hf ay)
-                    ha <- un' env False bnames ax' ay'
+                    -- Don't normalise if we don't have to
+                    ha <- uplus (un' env False bnames (substNames hf ax) 
+                                                      (substNames hf ay))
+                                (un' env False bnames ax' ay')
                     sc 1
                     combine env bnames hf ha)
                 (do ha <- un' env False bnames ax ay
                     let fx' = hnormalise ha ctxt env (substNames ha fx)
                     let fy' = hnormalise ha ctxt env (substNames ha fy)
-                    hf <- un' env False bnames fx' fy'
+                    -- Don't normalise if we don't have to
+                    hf <- uplus (un' env False bnames (substNames ha fx)
+                                                      (substNames ha fy))
+                                (un' env False bnames fx' fy')
                     sc 1
                     combine env bnames hf ha)
        | otherwise = unifyTmpFail appx appy
@@ -550,14 +558,6 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
             checkHeads (P (TCon _ _) x _) (P (DCon _ _ _) y _)
                 = unifyFail appx appy
             checkHeads _ _ = return []
-
-            unArgs as [] [] = return as
-            unArgs as (x : xs) (y : ys)
-                = do let x' = hnormalise as ctxt env (substNames as x)
-                     let y' = hnormalise as ctxt env (substNames as y)
-                     as' <- un' env False bnames x' y'
-                     vs <- combine env bnames as as'
-                     unArgs vs xs ys
 
             numArgs tm = let (f, args) = unApply tm in length args
 
@@ -575,7 +575,7 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
 
             rigid (P (DCon _ _ _) _ _) = True
             rigid (P (TCon _ _) _ _) = True
-            rigid t@(P Ref _ _)      = inenv t || globmetavar t
+            rigid t@(P Ref _ _)  = inenv t || globmetavar t
             rigid (Constant _)       = True
             rigid (App _ f a)        = rigid f && rigid a
             rigid t                  = not (metavar t) || globmetavar t
@@ -712,9 +712,9 @@ envPos x i ((y, _) : ys) | x == y = i
 -- Issue #1722 on the issue tracker https://github.com/idris-lang/Idris-dev/issues/1722
 --
 recoverable t@(App _ _ _) _
-    | (P _ (UN l) _, _) <- unApply t, l == txt "Lazy'" = False
+    | (P _ (UN l) _, _) <- unApply t, l == txt "Delayed" = False
 recoverable _ t@(App _ _ _)
-    | (P _ (UN l) _, _) <- unApply t, l == txt "Lazy'" = False
+    | (P _ (UN l) _, _) <- unApply t, l == txt "Delayed" = False
 recoverable (P (DCon _ _ _) x _) (P (DCon _ _ _) y _) = x == y
 recoverable (P (TCon _ _) x _) (P (TCon _ _) y _) = x == y
 recoverable (TType _) (P (DCon _ _ _) y _) = False

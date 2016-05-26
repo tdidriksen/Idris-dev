@@ -97,6 +97,7 @@ warnDisamb ist (PLet _ _ _ x t b) = warnDisamb ist x >> warnDisamb ist t >> warn
 warnDisamb ist (PTyped x t) = warnDisamb ist x >> warnDisamb ist t
 warnDisamb ist (PApp _ t args) = warnDisamb ist t >>
                                  mapM_ (warnDisamb ist . getTm) args
+warnDisamb ist (PWithApp _ t a) = warnDisamb ist t >> warnDisamb ist a
 warnDisamb ist (PAppBind _ f args) = warnDisamb ist f >>
                                      mapM_ (warnDisamb ist . getTm) args
 warnDisamb ist (PMatchApp _ _) = return ()
@@ -105,8 +106,8 @@ warnDisamb ist (PCase _ tm cases) = warnDisamb ist tm >>
 warnDisamb ist (PIfThenElse _ c t f) = mapM_ (warnDisamb ist) [c, t, f]
 warnDisamb ist (PTrue _ _) = return ()
 warnDisamb ist (PResolveTC _) = return ()
-warnDisamb ist (PRewrite _ x y z) = warnDisamb ist x >> warnDisamb ist y >>
-                                    Foldable.mapM_ (warnDisamb ist) z
+warnDisamb ist (PRewrite _ _ x y z) = warnDisamb ist x >> warnDisamb ist y >>
+                                      Foldable.mapM_ (warnDisamb ist) z
 warnDisamb ist (PPair _ _ _ x y) = warnDisamb ist x >> warnDisamb ist y
 warnDisamb ist (PDPair _ _ _ x y z) = warnDisamb ist x >> warnDisamb ist y >> warnDisamb ist z
 warnDisamb ist (PAlternative _ _ tms) = mapM_ (warnDisamb ist) tms

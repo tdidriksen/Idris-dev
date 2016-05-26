@@ -1,37 +1,20 @@
 module Main where
 
-import System.Console.Haskeline
-import System.IO
-import System.Environment
-import System.Exit
-import System.Directory
+import System.Exit ( exitSuccess )
 
-import Data.Maybe
-import Data.Version
 import Control.Monad ( when )
 
-import Idris.Core.TT
-import Idris.Core.Typecheck
-import Idris.Core.Evaluate
-import Idris.Core.Constraints
-
 import Idris.AbsSyntax
-import Idris.Parser
 import Idris.REPL
-import Idris.ElabDecls
-import Idris.Primitives
 import Idris.Imports
 import Idris.Error
 import Idris.CmdOptions
 
 import IRTS.System ( getLibFlags, getIdrisLibDir, getIncFlags )
 
-import Util.DynamicLinker
-import Util.System
+import Util.System ( setupBundledCC )
 
 import Pkg.Package
-
-import Paths_idris
 
 -- Main program reads command line options, parses the main program, and gets
 -- on with the REPL.
@@ -56,26 +39,26 @@ runIdris opts = do
                    runIO exitSuccess
     case opt getPkgCheck opts of
        [] -> return ()
-       fs -> do runIO $ mapM_ (checkPkg (WarnOnly `elem` opts) True) fs
+       fs -> do runIO $ mapM_ (checkPkg opts (WarnOnly `elem` opts) True) fs
                 runIO exitSuccess
     case opt getPkgClean opts of
        [] -> return ()
-       fs -> do runIO $ mapM_ cleanPkg fs
+       fs -> do runIO $ mapM_ (cleanPkg opts) fs
                 runIO exitSuccess
     case opt getPkgMkDoc opts of                -- IdrisDoc
        [] -> return ()
-       fs -> do runIO $ mapM_ documentPkg fs
+       fs -> do runIO $ mapM_ (documentPkg opts) fs
                 runIO exitSuccess
     case opt getPkgTest opts of
        [] -> return ()
-       fs -> do runIO $ mapM_ testPkg fs
+       fs -> do runIO $ mapM_ (testPkg opts) fs
                 runIO exitSuccess
     case opt getPkg opts of
        [] -> case opt getPkgREPL opts of
                   [] -> idrisMain opts
-                  [f] -> replPkg f
+                  [f] -> replPkg opts f
                   _ -> ifail "Too many packages"
-       fs -> runIO $ mapM_ (buildPkg (WarnOnly `elem` opts)) fs
+       fs -> runIO $ mapM_ (buildPkg opts (WarnOnly `elem` opts)) fs
 
 showver :: IO b
 showver = do putStrLn $ "Idris version " ++ ver
@@ -97,7 +80,7 @@ showIncs = do incFlags <- getIncFlags
 
 -- | List idris packages installed
 showPkgs :: IO b
-showPkgs = do mapM putStrLn =<< installedPackages
+showPkgs = do mapM_ putStrLn =<< installedPackages
               exitSuccess
 
 showLoggingCats :: IO b

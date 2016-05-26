@@ -12,12 +12,14 @@ import IRTS.DumpBC
 import IRTS.CodegenJavaScript
 import IRTS.Inliner
 import IRTS.Exports
+import IRTS.Portable
 
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
 import Idris.ASTUtils
 import Idris.Erasure
 import Idris.Error
+import Idris.Output
 
 import Debug.Trace
 
@@ -112,7 +114,9 @@ compile codegen f mtm
   where checkMVs = do i <- getIState
                       case map fst (idris_metavars i) \\ primDefs of
                             [] -> return ()
-                            ms -> ifail $ "There are undefined holes: " ++ show ms
+                            ms -> do iputStrLn $ "WARNING: There are incomplete holes:\n " ++ show ms
+                                     iputStrLn "\nEvaluation of any of these will crash at run time."
+                                     return ()
         checkTotality = do i <- getIState
                            case idris_totcheckfail i of
                              [] -> return ()
@@ -122,13 +126,21 @@ generate :: Codegen -> FilePath -> CodegenInfo -> IO ()
 generate codegen mainmod ir
   = case codegen of
        -- Built-in code generators (FIXME: lift these out!)
-       Via "c" -> codegenC ir
+       Via _ "c" -> codegenC ir
        -- Any external code generator
-       Via cg -> do let cmd = "idris-codegen-" ++ cg
-                        args = [mainmod, "-o", outputFile ir] ++ compilerFlags ir
-                    exit <- rawSystem cmd args
-                    when (exit /= ExitSuccess) $
-                       putStrLn ("FAILURE: " ++ show cmd ++ " " ++ show args)
+       Via fm cg -> do input <- case fm of
+                                    IBCFormat -> return mainmod
+                                    JSONFormat -> do
+                                        tempdir <- getTemporaryDirectory
+                                        (fn, h) <- openTempFile tempdir "idris-cg.json"
+                                        writePortable h ir
+                                        hClose h
+                                        return fn
+                       let cmd = "idris-codegen-" ++ cg
+                           args = [input, "-o", outputFile ir] ++ compilerFlags ir
+                       exit <- rawSystem cmd args
+                       when (exit /= ExitSuccess) $
+                            putStrLn ("FAILURE: " ++ show cmd ++ " " ++ show args)
        Bytecode -> dumpBC (simpleDecls ir) (outputFile ir)
 
 irMain :: TT Name -> Idris LDecl
@@ -227,6 +239,9 @@ irTerm :: Vars -> [Name] -> Term -> Idris LExp
 irTerm vs env tm@(App _ f a) = do
   ist <- getIState
   case unApply tm of
+    (P _ n _, args)
+        | n `elem` map fst (idris_metavars ist) \\ primDefs
+        -> return $ LError $ "ABORT: Attempt to evaluate hole " ++ show n
     (P _ (UN m) _, args)
         | m == txt "mkForeignPrim"
         -> doForeign vs env (reverse (drop 4 args)) -- drop implicits
@@ -239,6 +254,12 @@ irTerm vs env tm@(App _ f a) = do
     (P _ (UN r) _, [_, _, _, _, _, arg])
         | r == txt "replace"
         -> irTerm vs env arg
+
+    -- 'void' doesn't have any pattern clauses and only gets called on
+    -- erased things in higher order contexts (also a TMP HACK...)
+    (P _ (UN r) _, _)
+        | r == txt "void"
+        -> return LNothing
 
     -- Laziness, the old way
     (P _ (UN l) _, [_, arg])
@@ -337,7 +358,11 @@ irTerm vs env tm@(App _ f a) = do
         case compare (length args) arity of
 
             -- overapplied
-            GT  -> ifail ("overapplied data constructor: " ++ show tm)
+            GT  -> ifail ("overapplied data constructor: " ++ show tm ++
+                          "\nDEBUG INFO:\n" ++
+                          "Arity: " ++ show arity ++ "\n" ++
+                          "Arguments: " ++ show args ++ "\n" ++
+                          "Pruned arguments: " ++ show argsPruned)
 
             -- exactly saturated
             EQ  | isNewtype
@@ -423,7 +448,7 @@ irTerm vs env tm@(App _ f a) = do
             | otherwise = n
 
         used = maybe [] (map fst . usedpos) $ lookupCtxtExact uName (idris_callgraph ist)
-        fst4 (x,_,_,_) = x
+        fst4 (x,_,_,_,_) = x
 
 irTerm vs env (P _ n _) = return $ LV (Glob n)
 irTerm vs env (V i)

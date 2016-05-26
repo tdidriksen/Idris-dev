@@ -41,6 +41,9 @@ recheckC_borrowing uniq_check addConstrs bs fc mkerr env t
          when addConstrs $ addConstraints fc cs
          mapM_ (checkDeprecated fc) (allTTNames tm)
          mapM_ (checkDeprecated fc) (allTTNames ty)
+         mapM_ (checkFragile fc) (allTTNames tm)
+         mapM_ (checkFragile fc) (allTTNames ty)
+
          return (tm, ty)
 
 checkDeprecated :: FC -> Name -> Idris ()
@@ -52,6 +55,20 @@ checkDeprecated fc n
                                  <> case r of
                                          "" -> Util.Pretty.empty
                                          _ -> line <> text r
+
+
+checkFragile :: FC -> Name -> Idris ()
+checkFragile fc n = do
+  r <- getFragile n
+  case r of
+    Nothing -> return ()
+    Just r  -> do
+      iWarn fc $ text "Use of a fragile construct "
+                     <> annName n
+                     <> case r of
+                          "" -> Util.Pretty.empty
+                          _  -> line <> text r
+
 
 iderr :: Name -> Err -> Err
 iderr _ e = e
@@ -98,8 +115,13 @@ elabCaseBlock info opts d@(PClauses f o n ps)
              logElab 5 $ "CASE BLOCK: " ++ show (n, d)
              let opts' = nub (o ++ opts)
              -- propagate totality assertion to the new definitions
-             when (AssertTotal `elem` opts) $ setFlags n [AssertTotal]
+             let opts' = filter propagatable opts
+             setFlags n opts'
              rec_elabDecl info EAll info (PClauses f opts' n ps )
+  where
+    propagatable AssertTotal = True
+    propagatable Inlinable = True
+    propagatable _ = False
 
 -- | Check that the result of type checking matches what the programmer wrote
 -- (i.e. - if we inferred any arguments that the user provided, make sure
@@ -319,16 +341,112 @@ mkStaticTy ns t = t
 
 -- Check that a name has the minimum required accessibility
 checkVisibility :: FC -> Name -> Accessibility -> Accessibility -> Name -> Idris ()
-checkVisibility fc n minAcc acc ref 
+checkVisibility fc n minAcc acc ref
     = do nvis <- getFromHideList ref
          case nvis of
               Nothing -> return ()
-              Just acc' -> if acc' > minAcc 
-                              then tclift $ tfail (At fc 
-                                      (Msg $ show acc ++ " " ++ show n ++ 
-                                             " can't refer to " ++ 
+              Just acc' -> if acc' > minAcc
+                              then tclift $ tfail (At fc
+                                      (Msg $ show acc ++ " " ++ show n ++
+                                             " can't refer to " ++
                                              show acc' ++ " " ++ show ref))
                               else return ()
 
 
+-- | Find the type constructor arguments that are parameters, given a
+-- list of constructor types.
+--
+-- Parameters are names which are unchanged across the structure,
+-- which appear exactly once in the return type of a constructor
+-- First, find all applications of the constructor, then check over
+-- them for repeated arguments
+findParams :: Name   -- ^ the name of the family that we are finding parameters for
+           -> [Type] -- ^ the declared constructor types
+           -> [Int]
+findParams tyn ts =
+    let allapps = map getDataApp ts
+        -- do each constructor separately, then merge the results (names
+        -- may change between constructors)
+        conParams = map paramPos allapps
+    in inAll conParams
 
+  where
+    inAll :: [[Int]] -> [Int]
+    inAll [] = []
+    inAll (x : xs) = filter (\p -> all (\ps -> p `elem` ps) xs) x
+
+    paramPos [] = []
+    paramPos (args : rest)
+          = dropNothing $ keepSame (zip [0..] args) rest
+    dropNothing [] = []
+    dropNothing ((x, Nothing) : ts) = dropNothing ts
+    dropNothing ((x, _) : ts) = x : dropNothing ts
+    keepSame :: [(Int, Maybe Name)] -> [[Maybe Name]] ->
+                [(Int, Maybe Name)]
+    keepSame as [] = as
+    keepSame as (args : rest) = keepSame (update as args) rest
+      where
+        update [] _ = []
+        update _ [] = []
+        update ((n, Just x) : as) (Just x' : args)
+            | x == x' = (n, Just x) : update as args
+        update ((n, _) : as) (_ : args) = (n, Nothing) : update as args
+    getDataApp :: Type -> [[Maybe Name]]
+    getDataApp f@(App _ _ _)
+        | (P _ d _, args) <- unApply f
+               = if (d == tyn) then [mParam args args] else []
+    getDataApp (Bind n (Pi _ t _) sc)
+        = getDataApp t ++ getDataApp (instantiate (P Bound n t) sc)
+    getDataApp _ = []
+    -- keep the arguments which are single names, which don't appear
+    -- elsewhere
+    mParam args [] = []
+    mParam args (P Bound n _ : rest)
+           | count n args == 1
+              = Just n : mParam args rest
+        where count n [] = 0
+              count n (t : ts)
+                   | n `elem` freeNames t = 1 + count n ts
+                   | otherwise = count n ts
+    mParam args (_ : rest) = Nothing : mParam args rest
+
+-- | Mark a name as detaggable in the global state (should be called
+-- for type and constructor names of single-constructor datatypes)
+setDetaggable :: Name -> Idris ()
+setDetaggable n = do
+    ist <- getIState
+    let opt = idris_optimisation ist
+    case lookupCtxt n opt of
+        [oi] -> putIState ist { idris_optimisation = addDef n oi { detaggable = True } opt }
+        _    -> putIState ist { idris_optimisation = addDef n (Optimise [] True) opt }
+
+displayWarnings :: EState -> Idris ()
+displayWarnings est
+     = mapM_ displayImpWarning (implicit_warnings est)
+  where
+    displayImpWarning :: (FC, Name) -> Idris ()
+    displayImpWarning (fc, n) =
+       iputStrLn $ show fc ++ ":WARNING: " ++ show (nsroot n) ++ " is bound as an implicit\n"
+                   ++ "\tDid you mean to refer to " ++ show n ++ "?"
+
+propagateParams :: IState -> [Name] -> Type -> [Name] -> PTerm -> PTerm
+propagateParams i ps t bound tm@(PApp _ (PRef fc hls n) args)
+     = PApp fc (PRef fc hls n) (addP t args)
+   where addP (Bind n _ sc) (t : ts)
+              | Placeholder <- getTm t,
+                n `elem` ps,
+                not (n `elem` bound)
+                    = t { getTm = PPatvar NoFC n } : addP sc ts
+         addP (Bind n _ sc) (t : ts) = t : addP sc ts
+         addP _ ts = ts
+propagateParams i ps t bound (PApp fc ap args)
+     = PApp fc (propagateParams i ps t bound ap) args
+propagateParams i ps t bound (PRef fc hls n)
+     = case lookupCtxt n (idris_implicits i) of
+            [is] -> let ps' = filter (isImplicit is) ps in
+                        PApp fc (PRef fc hls n) (map (\x -> pimp x (PRef fc [] x) True) ps')
+            _ -> PRef fc hls n
+    where isImplicit [] n = False
+          isImplicit (PImp _ _ _ x _ : is) n | x == n = True
+          isImplicit (_ : is) n = isImplicit is n
+propagateParams i ps t bound x = x
