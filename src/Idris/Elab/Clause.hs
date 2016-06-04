@@ -23,6 +23,7 @@ import Idris.Elab.AsPat
 import Idris.Elab.Type
 import Idris.Elab.Transform
 import Idris.Elab.Utils
+import Idris.Elab.Value (elabVal)
 
 import Idris.Core.TT
 import Idris.Core.Elaborate hiding (Tactic(..))
@@ -1116,6 +1117,162 @@ mapRHSdecl f (PClauses fc opt n cs)
     = PClauses fc opt n (map (mapRHS f) cs)
 mapRHSdecl f t = t
 
--- elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
--- elabCoClauses what info (PClauses fc opts fn [PCoClause cfc cn lhs withs rhs wheres path]) =
-  
+
+elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [PClause] -> [PClause] -> Idris ()
+elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path):cs) acc =
+  do logLvl 0 $ "lhs: " ++ show lhs
+     let lhsSubst = substMatch fn (PRef NoFC [] pfn) lhs
+     logLvl 0 $ "lhsSubst: " ++ show lhsSubst
+     (lhsT, _) <- elabVal info ELHS lhs
+     (_, elhsTy) <- elabVal info ELHS (applyPath lhs path)
+     let lhsSubstT = subst fn (P Ref pfn elhsTy) lhsT
+     logLvl 0 $ "lhsSubstT: " ++ show lhsSubstT
+     logLvl 0 $ "elhsTy: " ++ show elhsTy
+     piElhsTy <- pVTyToPi elhsTy []
+     logLvl 0 $ "piElhsTy: " ++ show piElhsTy
+     ctxt <- getContext
+     
+     unless (isJust $ lookupTyNameExact pfn ctxt)
+      (do i <- getIState
+          let tyDecl = PTy emptyDocstring [] defaultSyntax NoFC [] pfn NoFC (delab i piElhsTy)
+          logLvl 0 $ "tyDecl: " ++ show tyDecl
+          (rec_elabDecl info) what info tyDecl)
+
+     i <- getIState
+     let clause = PClause NoFC pfn (delab i lhsSubstT) [] rhs wheres
+     logLvl 0 $ "clause: " ++ show clause
+     elabCoClauses' what info fn pfn cs ([clause] ++ acc)
+  where
+   applyPath :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
+   applyPath term [] = term
+   applyPath term ((pn, rn, ri) : path) = applyPath (PApp NoFC (PRef NoFC [] pn) [pexp term]) path
+
+   pVTyToPi :: Type -> Env -> Idris Type
+   pVTyToPi (Bind bn (PVTy pty) sc) env =
+     do ctxt <- getContext
+        ptyKind <- case check ctxt env (forgetEnv (map fst env) pty) of
+                     OK (_, pkind) -> return pkind
+                     Error err -> ifail $ show err
+        let piBinder = Pi Nothing pty ptyKind
+        sc' <- pVTyToPi sc ((bn, piBinder):env)
+        return $ Bind bn piBinder sc'
+   pVTyToPi ty _ = return ty
+elabCoClauses' what info fn pfn [] acc =
+  (rec_elabDecl info) what info $ PClauses NoFC [] pfn acc
+
+elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
+elabCoClauses what info (PClauses fc opts fn cs@(c:_)) =
+  do ctxt <- getContext
+
+     -- Build LHS
+     fTy <- case lookupTyNameExact fn ctxt of
+              Just (_, ty) -> return ty
+              Nothing -> ifail "Function has no type. :("
+     logLvl 0 $ "fTy: " ++ show fTy
+     let lhs = PApp NoFC (PRef NoFC [] fn) (pArgsFromType 0 fTy)
+     logLvl 0 $ "pArgsFromType: " ++ show (pArgsFromType 0 fTy)
+     logLvl 0 $ "lhs: " ++ show lhs
+     --(elhs, elhsty) <- elabVal info ELHS lhs
+     --logLvl 0 $ "elhs: " ++ show fTy
+
+     -- Build RHS
+     constructorName <- case coClauseConstructor c of
+                          Just n -> return n
+                          Nothing -> ifail "Coclause for a non-record type definition"
+     logLvl 0 $ "constructorName: " ++ show constructorName
+
+     let groupedClauses = groupBy (\cl -> \cl' -> eqPaths (extractPath cl) (extractPath cl')) cs
+     logLvl 0 $ "groupedClauses: " ++ show groupedClauses
+
+     auxNames <-
+       forM groupedClauses (\gcs ->
+         do auxn <- auxName fn
+            logLvl 0 $ "auxn: " ++ show auxn
+            elabCoClauses' what info fn auxn gcs []
+            return auxn
+       )
+
+     let rhs = PApp NoFC (PRef NoFC [] constructorName) (flip map auxNames (\n -> pexp $ PApp NoFC (PRef NoFC [] n) (pArgsFromType 0 fTy)))
+     let clause = PClause NoFC fn lhs [] rhs []
+     logLvl 0 $ "clause: " ++ show clause
+     rec_elabDecl info what info $ PClauses fc opts fn [clause]
+  where
+    pArgsFromType :: Int -> Type -> [PArg]
+    pArgsFromType i (Bind n (Pi _ ty kind) sc) =
+      [pexp (PRef NoFC [] (sMN i "x"))] ++ pArgsFromType (i+1) sc
+    pArgsFromType _ _ = []
+
+    coClauseConstructor :: PClause -> Maybe Name
+    coClauseConstructor (PCoClause _ _ _ _ _ ((_,_,ri):_)) = Just $ record_constructor ri
+    coClauseConstructor _ = Nothing
+
+    eqPaths :: [(Name, Name, RecordInfo)] -> [(Name, Name, RecordInfo)] -> Bool
+    eqPaths ((pn, rn, _):ps) ((pn', rn', _):ps') = pn == pn' && rn == rn' && eqPaths ps ps'
+    eqPaths [] [] = True
+    eqPaths _ _ = False
+
+    extractPath :: PClause -> [(Name, Name, RecordInfo)]
+    extractPath (PCoClause _ _ _ _ _ path) = path
+    extractPath _ = []
+
+    auxName :: Name -> Idris Name
+    auxName n =
+     do ctxt <- getContext
+        case lookupTyNameExact n ctxt of
+          Just _  -> auxName (nextName n)
+          Nothing -> return n 
+
+-- elabCoClauses what info (PClauses fc opts fn (PCoClause cfc cn lhs rhs wheres path : cs)) =
+--   do (lhsTerm', lhsTy') <- elabVal info ELHS lhs
+--      logLvl 0 $ "lhsTerm': " ++ show lhsTerm'
+--      logLvl 0 $ "lhsTy': " ++ show lhsTy'
+--      (lhsTerm, lhsTy) <- elabVal info ELHS (applyPath lhs path)
+--      logLvl 0 $ "lhsTerm: " ++ show lhsTerm
+--      logLvl 0 $ "lhsTy: " ++ show lhsTy
+--      auxn <- auxName fn
+--      logLvl 0 $ "auxName: " ++ show auxn
+--      piLhsTy <- pVTyToPi lhsTy []
+--      ctxt <- getContext
+--      piLhsTyChkd <- case check ctxt [] (forget piLhsTy) of
+--                       OK (tm, _) -> return tm
+--                       Error err  -> ifail $ show err 
+--      logLvl 0 $ "piTy: " ++ show piLhsTyChkd
+--      i <- getIState
+--      let auxTy = auxTyDecl auxn (delab i piLhsTyChkd)
+--      logLvl 0 $ "auxTyDecl: " ++ show auxTy
+--      (rec_elabDecl info) what info auxTy
+--      -- Build PTy
+--      -- Build PClauses
+--      -- -- For args, make function PVar -> Pi
+--      -- Elaborate
+--      -- Register as part of definition
+--      elabCoClauses what info (PClauses fc opts fn cs)
+--  where
+--    applyPath :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
+--    applyPath term [] = term
+--    applyPath term ((pn, rn, ri) : path) = applyPath (PApp NoFC (PRef NoFC [] pn) [pexp term]) path
+
+--    auxTyDecl :: Name -> PTerm -> PDecl
+--    auxTyDecl n ty = PTy emptyDocstring [] defaultSyntax NoFC [] n NoFC ty
+
+--    pVTyToPi :: Type -> Env -> Idris Type
+--    pVTyToPi (Bind bn (PVTy pty) sc) env =
+--      do ctxt <- getContext
+--         ptyKind <- case check ctxt env (forgetEnv (map fst env) pty) of
+--                      OK (_, pkind) -> return pkind
+--                      Error err -> ifail $ show err
+--         let piBinder = Pi Nothing pty ptyKind
+--         sc' <- pVTyToPi sc ((bn, piBinder):env)
+--         return $ Bind bn piBinder sc'
+--    pVTyToPi ty _ = return ty
+
+--    auxName :: Name -> Idris Name
+--    auxName n =
+--      do ctxt <- getContext
+--         case lookupTyNameExact n ctxt of
+--           Just _  -> auxName (nextName n)
+--           Nothing -> return n
+   
+     
+elabCoClauses what info (PClauses fc opts fn []) =
+  return ()

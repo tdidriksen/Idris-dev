@@ -283,17 +283,21 @@ elabDecl' what info (PTransform fc safety old new)
 elabDecl' what info (PRunElabDecl fc script ns)
     = do elabRunElab info fc script ns
          return ()
-elabDecl' what info (PCopatterns fc syn clauses) 
+elabDecl' what info (PCopatterns fc syn clauses)
     = do -- Partition clauses into copattern clauses and regular pattern clauses
          -- Elaborate regular pattern clauses as expected
          -- Collect coclauses 
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
          ds <- collectDecls Nothing [] clauses
          logLvl 0 $ "Decls: " ++ show ds
-         elabDecls info ds
-         --mapM_ (elabCoClauses what info) ds
+         let (tydecls, cs) =
+               partition (\d -> case d of
+                           PTy _ _ _ _ _ _ _ _ -> True
+                           _ -> False) ds
+         mapM_ (elabDecl ETypes info) tydecls
+         mapM_ (elabCoClauses what info) cs
       where
-       
+        
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]
        collectDecls targetName cs ((PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)) : ds) =
          do logLvl 0 $ "Encountered CoClause: " ++ show n
