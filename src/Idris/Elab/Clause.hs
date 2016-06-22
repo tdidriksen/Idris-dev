@@ -1123,10 +1123,7 @@ elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path):cs) acc =
   do logLvl 0 $ "lhs: " ++ show lhs
      let lhsSubst = substMatch fn (PRef NoFC [] pfn) lhs
      logLvl 0 $ "lhsSubst: " ++ show lhsSubst
-     (lhsT, _) <- elabVal info ELHS lhs
-     (_, elhsTy) <- elabVal info ELHS (applyPath lhs path)
-     let lhsSubstT = subst fn (P Ref pfn elhsTy) lhsT
-     logLvl 0 $ "lhsSubstT: " ++ show lhsSubstT
+     (_, elhsTy) <- elabVal info ELHS (applyPath (generalizePatVars lhs) path)
      logLvl 0 $ "elhsTy: " ++ show elhsTy
      piElhsTy <- pVTyToPi elhsTy []
      logLvl 0 $ "piElhsTy: " ++ show piElhsTy
@@ -1139,8 +1136,8 @@ elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path):cs) acc =
           (rec_elabDecl info) what info tyDecl)
 
      i <- getIState
-     let clause = PClause NoFC pfn (delab i lhsSubstT) [] rhs wheres
-     logLvl 0 $ "clause: " ++ show clause
+     let clause = PClause NoFC pfn lhsSubst [] rhs wheres
+     logLvl 0 $ "clause': " ++ show clause
      elabCoClauses' what info fn pfn cs ([clause] ++ acc)
   where
    applyPath :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
@@ -1157,8 +1154,14 @@ elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path):cs) acc =
         sc' <- pVTyToPi sc ((bn, piBinder):env)
         return $ Bind bn piBinder sc'
    pVTyToPi ty _ = return ty
+
+   generalizePatVars :: PTerm -> PTerm
+   generalizePatVars (PApp fc f args) = PApp fc f args'
+     where args' = map (\(arg,i) -> pexp (PRef NoFC [] (sMN i "hufl"))) (zip args [0..])
 elabCoClauses' what info fn pfn [] acc =
-  (rec_elabDecl info) what info $ PClauses NoFC [] pfn acc
+  do let cs = PClauses NoFC [] pfn acc
+     logLvl 0 $ "clauses': " ++ show cs
+     (rec_elabDecl info) what info cs
 
 elabCoClauses :: ElabWhat -> ElabInfo -> PDecl -> Idris ()
 elabCoClauses what info (PClauses fc opts fn cs@(c:_)) =
@@ -1222,6 +1225,7 @@ elabCoClauses what info (PClauses fc opts fn cs@(c:_)) =
           Just _  -> auxName (nextName n)
           Nothing -> return n 
 
+-- Initial experiment with elabVal
 -- elabCoClauses what info (PClauses fc opts fn (PCoClause cfc cn lhs rhs wheres path : cs)) =
 --   do (lhsTerm', lhsTy') <- elabVal info ELHS lhs
 --      logLvl 0 $ "lhsTerm': " ++ show lhsTerm'
