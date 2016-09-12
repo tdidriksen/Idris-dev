@@ -1,38 +1,48 @@
-module Idris.ASTUtils(Field(), cg_usedpos, ctxt_lookup, fgetState, fmodifyState,
-                      fputState, idris_fixities, ist_callgraph, ist_optimisation,
-                      known_classes, known_terms, opt_detaggable, opt_inaccessible,
-                      opts_idrisCmdline, repl_definitions) where
+{-|
+Module      : Idris.ASTUtils
+Description : This implements just a few basic lens-like concepts to ease state updates. Similar to fclabels in approach, just without the extra dependency.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
 
--- This implements just a few basic lens-like concepts to ease state updates.
--- Similar to fclabels in approach, just without the extra dependency.
---
--- We don't include an explicit export list
--- because everything here is meant to be exported.
---
--- Short synopsis:
--- ---------------
---
--- f :: Idris ()
--- f = do
---      -- these two steps:
---      detaggable <- fgetState (opt_detaggable . ist_optimisation typeName)
---      fputState (opt_detaggable . ist_optimisation typeName) (not detaggable)
---
---      -- are equivalent to:
---      fmodifyState (opt_detaggable . ist_optimisation typeName) not
---
---      -- of course, the long accessor can be put in a variable;
---      -- everything is first-class
---      let detag n = opt_detaggable . ist_optimisation n
---      fputState (detag n1) True
---      fputState (detag n2) False
---
---      -- Note that all these operations handle missing items consistently
---      -- and transparently, as prescribed by the default values included
---      -- in the definitions of the ist_* functions.
---      --
---      -- Especially, it's no longer necessary to have initial values of
---      -- data structures copied (possibly inconsistently) all over the compiler.
+This implements just a few basic lens-like concepts to ease state updates.
+Similar to fclabels in approach, just without the extra dependency.
+
+We don't include an explicit export list
+because everything here is meant to be exported.
+
+Short synopsis:
+---------------
+@
+f :: Idris ()
+f = do
+     -- these two steps:
+     detaggable <- fgetState (opt_detaggable . ist_optimisation typeName)
+     fputState (opt_detaggable . ist_optimisation typeName) (not detaggable)
+
+     -- are equivalent to:
+     fmodifyState (opt_detaggable . ist_optimisation typeName) not
+
+     -- of course, the long accessor can be put in a variable;
+     -- everything is first-class
+     let detag n = opt_detaggable . ist_optimisation n
+     fputState (detag n1) True
+     fputState (detag n2) False
+
+     -- Note that all these operations handle missing items consistently
+     -- and transparently, as prescribed by the default values included
+     -- in the definitions of the ist_* functions.
+     --
+     -- Especially, it's no longer necessary to have initial values of
+     -- data structures copied (possibly inconsistently) all over the compiler.
+@
+-}
+module Idris.ASTUtils(
+    Field(), cg_usedpos, ctxt_lookup, fgetState, fmodifyState
+  , fputState, idris_fixities, ist_callgraph, ist_optimisation
+  , known_interfaces, known_terms, opt_detaggable, opt_inaccessible
+  , opts_idrisCmdline, repl_definitions
+  ) where
 
 import Control.Category
 import Control.Applicative
@@ -138,8 +148,8 @@ known_terms :: Field IState (Ctxt (Def, Injectivity, Accessibility, Totality, Me
 known_terms = Field (definitions . tt_ctxt)
                     (\v state -> state {tt_ctxt = (tt_ctxt state) {definitions = v}})
 
-known_classes :: Field IState (Ctxt ClassInfo)
-known_classes = Field idris_classes (\v state -> state {idris_classes = idris_classes state})
+known_interfaces :: Field IState (Ctxt InterfaceInfo)
+known_interfaces = Field idris_interfaces (\v state -> state {idris_interfaces = idris_interfaces state})
 
 
 -- | Names defined at the repl

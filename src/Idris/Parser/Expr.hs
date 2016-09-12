@@ -1,4 +1,12 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds, PatternGuards, TupleSections #-}
+{-|
+Module      : Idris.Parser.Expr
+Description : Parse Expressions.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds #-}
+{-# LANGUAGE PatternGuards, TupleSections                #-}
 module Idris.Parser.Expr where
 
 import Prelude hiding (pi)
@@ -80,7 +88,7 @@ expr = pi
 -}
 opExpr :: SyntaxInfo -> IdrisParser PTerm
 opExpr syn = do i <- get
-                buildExpressionParser (table (idris_infixes i)) 
+                buildExpressionParser (table (idris_infixes i))
                                       (expr' syn)
 
 {- | Parses either an internally defined expression or
@@ -377,7 +385,7 @@ tacticsExpr syn = do kw <- reservedFC "tactics"
 SimpleExpr ::=
     {- External (User-defined) Simple Expression -}
   | '?' Name
-  | % 'instance'
+  | % 'implementation'
   | 'Refl' ('{' Expr '}')?
   | ProofExpr
   | TacticsExpr
@@ -401,15 +409,18 @@ simpleExpr syn =
             try (simpleExternalExpr syn)
         <|> do (x, FC f (l, c) end) <- try (lchar '?' *> name)
                return (PMetavar (FC f (l, c-1) end) x)
-        <|> do lchar '%'; fc <- getFC; reserved "instance"; return (PResolveTC fc)
+        <|> do lchar '%'; fc <- getFC; reserved "implementation"; return (PResolveTC fc)
+        <|> do lchar '%'; fc <- getFC; reserved "instance"
+               parserWarning fc Nothing $ Msg "The use of %instance is deprecated, use %implementation instead."
+               return (PResolveTC fc)
         <|> do reserved "elim_for"; fc <- getFC; t <- fst <$> fnName; return (PRef fc [] (SN $ ElimN t))
         <|> proofExpr syn
         <|> tacticsExpr syn
-        <|> try (do reserved "Type*"; return $ PUniverse AllTypes)
-        <|> do reserved "AnyType"; return $ PUniverse AllTypes
+        <|> try (do fc <- reservedFC "Type*"; return $ PUniverse fc AllTypes)
+        <|> do fc <- reservedFC "AnyType"; return $ PUniverse fc AllTypes
         <|> PType <$> reservedFC "Type"
-        <|> do reserved "UniqueType"; return $ PUniverse UniqueType
-        <|> do reserved "NullType"; return $ PUniverse NullType
+        <|> do fc <- reservedFC "UniqueType"; return $ PUniverse fc UniqueType
+        <|> do fc <- reservedFC "NullType"; return $ PUniverse fc NullType
         <|> do (c, cfc) <- constant
                fc <- getFC
                return (modifyConst syn fc (PConstant cfc c))
@@ -491,7 +502,7 @@ bracketed' open syn =
 {-| Parses the rest of a dependent pair after '(' or '(Expr **' -}
 dependentPair :: PunInfo -> [(PTerm, Maybe (FC, PTerm), FC)] -> FC -> SyntaxInfo -> IdrisParser PTerm
 dependentPair pun prev openFC syn =
-  if prev == [] then
+  if null prev then
       nametypePart <|> namePart
   else
     case pun of
@@ -732,7 +743,7 @@ implicitArg syn = do lchar '{'
                      return (pimp n v True)
                   <?> "implicit function argument"
 
-{-| Parses a constraint argument (for selecting a named type class instance)
+{-| Parses a constraint argument (for selecting a named interface implementation)
 
 >    ConstraintArg ::=
 >      '@{' Expr '}'
@@ -821,6 +832,9 @@ FieldType ::=
   ;
 @
 -}
+
+data SetOrUpdate = FieldSet PTerm | FieldUpdate PTerm
+
 recordType :: SyntaxInfo -> IdrisParser PTerm
 recordType syn =
       do kw <- reservedFC "record"
@@ -828,7 +842,7 @@ recordType syn =
          fgs <- fieldGetOrSet
          lchar '}'
          fc <- getFC
-         rec <- optional (simpleExpr syn)
+         rec <- optional (do notEndApp; simpleExpr syn)
          highlightP kw AnnKeyword
          case fgs of
               Left fields ->
@@ -846,28 +860,34 @@ recordType syn =
                    Just v -> return (getAll fc (reverse fields) v)
 
        <?> "record setting expression"
-   where fieldSet :: IdrisParser ([Name], PTerm)
+   where fieldSet :: IdrisParser ([Name], SetOrUpdate)
          fieldSet = do ns <- fieldGet
-                       lchar '='
-                       e <- expr syn
-                       return (ns, e)
+                       (do lchar '='
+                           e <- expr syn
+                           return (ns, FieldSet e))
+                         <|> do symbol "$="
+                                e <- expr syn
+                                return (ns, FieldUpdate e)
                     <?> "field setter"
 
          fieldGet :: IdrisParser [Name]
          fieldGet = sepBy1 (fst <$> fnName) (symbol "->")
 
-         fieldGetOrSet :: IdrisParser (Either [([Name], PTerm)] [Name])
+         fieldGetOrSet :: IdrisParser (Either [([Name], SetOrUpdate)] [Name])
          fieldGetOrSet = try (do fs <- sepBy1 fieldSet (lchar ',')
                                  return (Left fs))
                      <|> do f <- fieldGet
                             return (Right f)
 
-         applyAll :: FC -> [([Name], PTerm)] -> PTerm -> PTerm
+         applyAll :: FC -> [([Name], SetOrUpdate)] -> PTerm -> PTerm
          applyAll fc [] x = x
          applyAll fc ((ns, e) : es) x
             = applyAll fc es (doUpdate fc ns e x)
 
-         doUpdate fc [n] e get
+         doUpdate fc ns (FieldUpdate e) get
+              = let get' = getAll fc (reverse ns) get in
+                    doUpdate fc ns (FieldSet (PApp fc e [pexp get'])) get
+         doUpdate fc [n] (FieldSet e) get
               = PApp fc (PRef fc [] (mkType n)) [pexp e, pexp get]
          doUpdate fc (n : ns) e get
               = PApp fc (PRef fc [] (mkType n))
@@ -955,8 +975,8 @@ rewriteTerm syn = do kw <- reservedFC "rewrite"
                      fc <- getFC
                      prf <- expr syn
                      giving <- optional (do symbol "==>"; expr' syn)
-                     using <- optional (do reserved "using" 
-                                           (n, _) <- name 
+                     using <- optional (do reserved "using"
+                                           (n, _) <- name
                                            return n)
                      kw' <- reservedFC "in";  sc <- expr syn
                      highlightP kw AnnKeyword
@@ -1095,10 +1115,10 @@ normalImplicit opts st syn = do
    sc <- expr syn
    let (im,cl)
           = if implicitAllowed syn
-               then (Imp opts st False (Just (Impl False True)) True,
+               then (Imp opts st False (Just (Impl False True False)) True,
                       constraint)
-               else (Imp opts st False (Just (Impl False False)) True,
-                     Imp opts st False (Just (Impl True False)) True)
+               else (Imp opts st False (Just (Impl False False False)) True,
+                     Imp opts st False (Just (Impl True False False)) True)
    return (bindList (PPi im) xt
            (bindList (PPi cl) cs sc))
 
@@ -1107,7 +1127,7 @@ constraintPi opts st syn =
       sc <- expr syn
       if implicitAllowed syn
          then return (bindList (PPi constraint) cs sc)
-         else return (bindList (PPi (Imp opts st False (Just (Impl True False)) True))
+         else return (bindList (PPi (Imp opts st False (Just (Impl True False False)) True))
                                cs sc)
 
 implicitPi opts st syn =
@@ -1122,15 +1142,26 @@ unboundPi opts st syn = do
            return (PPi binder (sUN "__pi_arg") NoFC x sc))
               <|> return x
 
+-- This is used when we need to disambiguate from a constraint list
+unboundPiNoConstraint opts st syn = do
+       x <- opExpr syn
+       (do binder <- bindsymbol opts st syn
+           sc <- expr syn
+           notFollowedBy $ reservedOp "=>"
+           return (PPi binder (sUN "__pi_arg") NoFC x sc))
+              <|> do notFollowedBy $ reservedOp "=>"
+                     return x
+
+
 pi :: SyntaxInfo -> IdrisParser PTerm
 pi syn =
      do opts <- piOpts syn
         st   <- static
         explicitPi opts st syn
          <|> try (do lchar '{'; implicitPi opts st syn)
-         <|> if constraintAllowed syn 
-                then try (constraintPi opts st syn)
-                         <|> unboundPi opts st syn
+         <|> if constraintAllowed syn
+                then try (unboundPiNoConstraint opts st syn)
+                         <|> constraintPi opts st syn
                 else unboundPi opts st syn
   <?> "dependent type signature"
 
@@ -1259,7 +1290,7 @@ listExpr syn = do (FC f (l, c) _) <- getFC
                                qs <- sepBy1 (do_ syn) (lchar ',')
                                lchar ']'
                                return (PDoBlock (map addGuard qs ++
-                                          [DoExp fc (PApp fc (PRef fc [] (sUN "return"))
+                                          [DoExp fc (PApp fc (PRef fc [] (sUN "pure"))
                                                        [pexp x])]))) <|>
                             (do xs <- many (do (FC fn (sl, sc) _) <- getFC
                                                lchar ',' <?> "list element"
@@ -1439,7 +1470,7 @@ verbatimStringLiteral = token $ do (FC f start _) <- getFC
 
 @
 Static ::=
-  '[' static ']'
+  '%static'
 ;
 @
 -}
@@ -1554,7 +1585,7 @@ tactics =
   , (["search"], Nothing, const $
       do depth <- option 10 $ fst <$> natural
          return (ProofSearch True True (fromInteger depth) Nothing [] []))
-  , noArgs ["instance"] TCInstance
+  , noArgs ["implementation"] TCImplementation
   , noArgs ["solve"] Solve
   , noArgs ["attack"] Attack
   , noArgs ["state", ":state"] ProofState

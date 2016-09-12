@@ -248,15 +248,15 @@ data Message : (Type -> Type) -> List (ReqHandle, Type) -> Type where
 readMsg : IO (Maybe (Ptr, Message iface hs))
 readMsg {iface} {hs} = 
    do if !checkMsgs
-      then do msg <- getMsgWithSender {a = Message iface hs}
-              pure (Just msg)
+      then do (p, _, msg) <- getMsgWithSender {a = Message iface hs}
+              pure (Just (p, msg))
       else pure Nothing
 
 readMsgTimeout : Int -> IO (Maybe (Ptr, Message iface hs))
 readMsgTimeout {iface} {hs} i = 
    do if !(checkMsgsTimeout i)
-      then do msg <- getMsgWithSender {a = Message iface hs}
-              pure (Just msg)
+      then do (pid, _, msg) <- getMsgWithSender {a = Message iface hs}
+              pure (Just (pid, msg))
       else pure Nothing
 
 data RespEnv : List (ReqHandle, Type) -> Type where
@@ -347,7 +347,7 @@ removeConn cl acc (x :: xs) = removeConn cl (x :: acc) xs
 getRequest :  EvalState iface hs -> Maybe (Ptr, (ty ** (Nat, iface ty)), EvalState iface hs)
 getRequest (MkEvalState queue reply clients nh) 
      = do (pid, req, queue') <- removeReq [] queue
-          return (pid, req, MkEvalState queue' reply clients nh)
+          pure (pid, req, MkEvalState queue' reply clients nh)
 
 countClients : EvalState iface hs -> (Nat, EvalState iface hs)
 countClients (MkEvalState queue reply clients nh) 
@@ -378,12 +378,13 @@ eval st (Fork proc) k
              k (MkPID ptr) st 
 
 eval st (Work proc cont) k 
-        = do ptr <- fork (eval (MkEvalState [] [] 0 0) (proc (MkPID prim__vm))
+        = do me <- getMyVM
+             ptr <- fork (eval (MkEvalState [] [] 0 0) (proc (MkPID me))
                                (\_, _ => pure ()))
              eval (record { clients = clients st + 1 } st) cont k
 
 eval {hs} (MkEvalState q reqs c nh) (Request (MkPID pid) x) k
-     = do sendToThread pid (MsgQuery {hs} (RequestMsg nh x))
+     = do sendToThread pid 0 (MsgQuery {hs} (RequestMsg nh x))
           k (MkReqH nh) (MkEvalState q (Nothing :: reqs) c (S nh))
 
 eval {p} st (GetReply {pending} h) k 
@@ -407,7 +408,7 @@ eval {iface} {hs} st (TimeoutRespond timeout def f) k
                        (\ r, st''' => 
                             case r of
                                (resp, val) => do
-                                  sendToThread pid (MsgReply {iface} {hs} (ReplyMsg rq resp))
+                                  sendToThread pid 0 (MsgReply {iface} {hs} (ReplyMsg rq resp))
                                   k val st''')
 
 eval {iface} {hs} st (Respond f) k 
@@ -416,19 +417,20 @@ eval {iface} {hs} st (Respond f) k
                 Nothing => eval {iface} st' (Respond f) k
                 Just (pid, (_ ** (rq, req)), st'') => do
                      eval st'' (f req) (\ (resp, val), st''' => do
-                       sendToThread pid (MsgReply {iface} {hs} (ReplyMsg rq resp))
+                       sendToThread pid 0 (MsgReply {iface} {hs} (ReplyMsg rq resp))
                        k val st''')
 
 eval {hs} st (Connect {serveri} (MkPID pid)) k 
-     = if pid == prim__vm then k False st else do
-          v <- sendToThread pid (MsgQuery {iface=serveri} {hs}
-                                          ConnectMsg)
-          -- TODO: Wait for ACK
-          k (v == 1) st
+     = do me <- getMyVM
+          if pid == me then k False st else do
+            v <- sendToThread pid 0 (MsgQuery {iface=serveri} {hs}
+                                              ConnectMsg)
+            -- TODO: Wait for ACK
+            k (v == 1) st
 
 eval {hs} st (Disconnect {serveri} (MkPID pid)) k 
-     = do v <- sendToThread pid (MsgQuery {iface=serveri} {hs} 
-                                          CloseMsg)
+     = do v <- sendToThread pid 0 (MsgQuery {iface=serveri} {hs} 
+                                            CloseMsg)
           k () st
 
 eval st CountClients k 
@@ -440,4 +442,3 @@ eval st (Loop x) k = eval st x k
 
 run : Program a iface -> IO a
 run p = eval (MkEvalState [] [] 0 0) p (\res, t => pure res)
-

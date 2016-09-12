@@ -1,3 +1,10 @@
+{-|
+Module      : Idris.Elab.Data
+Description : Code to elaborate data structures.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards #-}
 module Idris.Elab.Data(elabData) where
 
@@ -89,10 +96,15 @@ elabData info syn doc argDocs fc opts (PDatadecl n nfc t_in dcons)
                         rt -> tclift $ tfail (At fc (Elaborating "type constructor " n Nothing (Msg "Not a valid type constructor")))
          cons <- mapM (elabCon cnameinfo syn n codata (getRetTy cty) ckind) dcons
          ttag <- getName
-         i <- getIState
          let as = map (const (Left (Msg ""))) (getArgTys cty)
-         let params = findParams n (map snd cons)
+
+         ctxt <- getContext
+         let params = findParams n (normalise ctxt [] cty) (map snd cons)
+
          logElab 2 $ "Parameters : " ++ show params
+         addParamConstraints fc params cty cons
+
+         i <- getIState
          -- TI contains information about mutually declared types - this will
          -- be updated when the mutual block is complete
          putIState (i { idris_datatypes =
@@ -136,7 +148,6 @@ elabData info syn doc argDocs fc opts (PDatadecl n nfc t_in dcons)
                  (nfc, AnnName n Nothing Nothing Nothing))
                dcons
   where
-
         checkDefinedAs fc n t i
             = let defined = tclift $ tfail (At fc (AlreadyDefined n))
                   ctxt = tt_ctxt i in
@@ -179,7 +190,6 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
          ctxt <- getContext
          let cty' = normalise ctxt [] cty
          checkUniqueKind ckind expkind
-         addDataConstraint ckind dkind
 
          -- Check that the constructor type is, in fact, a part of the family being defined
          tyIs n cty'
@@ -206,7 +216,7 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
     tyIs con (Bind n b sc) = tyIs con (substV (P Bound n Erased) sc)
     tyIs con t | (P Bound n' _, _) <- unApply t
         = if n' /= tn then
-               tclift $ tfail (At fc (Elaborating "constructor " con Nothing 
+               tclift $ tfail (At fc (Elaborating "constructor " con Nothing
                          (Msg ("Type level variable " ++ show n' ++ " is not " ++ show tn))))
              else return ()
     tyIs con t | (P _ n' _, _) <- unApply t
@@ -249,12 +259,39 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
         = tclift $ tfail (At fc (UniqueKindError AllTypes n))
     checkUniqueKind _ _ = return ()
 
-    -- Constructor's kind must be <= expected kind
-    addDataConstraint (TType con) (TType exp)
-       = do ctxt <- getContext
-            let v = next_tvar ctxt
-            addConstraints fc (v, [ULT con exp])
-    addDataConstraint _ _ = return ()
+addParamConstraints :: FC -> [Int] -> Type -> [(Name, Type)] -> Idris ()
+addParamConstraints fc ps cty cons
+   = case getRetTy cty of
+          TType cvar -> mapM_ (addConConstraint ps cvar)
+                              (map getParamNames cons)
+          _ -> return ()
+  where
+    getParamNames (n, ty) = (ty, getPs ty)
+
+    getPs (Bind n (Pi _ _ _) sc)
+       = getPs (substV (P Ref n Erased) sc)
+    getPs t | (f, args) <- unApply t
+       = paramArgs 0 args
+
+    paramArgs i (P _ n _ : args) | i `elem` ps = n : paramArgs (i + 1) args
+    paramArgs i (_ : args) = paramArgs (i + 1) args
+    paramArgs i [] = []
+
+    addConConstraint ps cvar (ty, pnames) = constraintTy ty
+      where
+        constraintTy (Bind n (Pi _ ty _) sc)
+           = case getRetTy ty of
+                  TType avar -> do tit <- typeInType
+                                   when (not tit) $ do
+                                       ctxt <- getContext
+                                       let tv = next_tvar ctxt
+                                       let con = if n `elem` pnames
+                                                    then ULE avar cvar
+                                                    else ULT avar cvar
+                                       addConstraints fc (tv, [con])
+                                       addIBC (IBCConstraint fc con) 
+                  _ -> return ()
+        constraintTy t = return ()
 
 type EliminatorState = StateT (Map.Map String Int) Idris
 
@@ -268,7 +305,7 @@ elabCaseFun :: Bool -> [Int] -> Name -> PTerm ->
                   [(Docstring (Either Err PTerm), [(Name, Docstring (Either Err PTerm))], Name, FC, PTerm, FC, [Name])] ->
                   ElabInfo -> EliminatorState ()
 elabCaseFun ind paramPos n ty cons info = do
-  elimLog $ "Elaborating case function"
+  elimLog "Elaborating case function"
   put (Map.fromList $ zip (concatMap (\(_, p, _, _, ty, _, _) -> (map show $ boundNamesIn ty) ++ map (show . fst) p) cons ++ (map show $ boundNamesIn ty)) (repeat 0))
   let (cnstrs, _) = splitPi ty
   let (splittedTy@(pms, idxs)) = splitPms cnstrs
@@ -284,30 +321,30 @@ elabCaseFun ind paramPos n ty cons info = do
   let motiveConstr = [(motiveName, expl, motive)]
   let scrutinee = (scrutineeName, expl, applyCons n (interlievePos paramPos generalParams scrutineeIdxs 0))
   let eliminatorTy = piConstr (generalParams ++ motiveConstr ++ consTerms ++ scrutineeIdxs ++ [scrutinee]) (applyMotive (map (\(n,_,_) -> PRef elimFC [] n) scrutineeIdxs) (PRef elimFC [] scrutineeName))
-  let eliminatorTyDecl = PTy (fmap (const (Left $ Msg "")) . parseDocstring . T.pack $ show n) [] defaultSyntax elimFC [TotalFn] elimDeclName NoFC eliminatorTy
+  let eliminatorTyDecl = PTy (fmap (const (Left $ Msg "")) . parseDocstring . T.pack $ show n) [] defaultSyntax elimFC [TotalFn] elimDeclName elimFC eliminatorTy
   let clauseConsElimArgs = map getPiName consTerms
   let clauseGeneralArgs' = map getPiName generalParams ++ [motiveName] ++ clauseConsElimArgs
   let clauseGeneralArgs  = map (\arg -> pexp (PRef elimFC [] arg)) clauseGeneralArgs'
   let elimSig = "-- case function signature: " ++ showTmImpls eliminatorTy
   elimLog elimSig
   eliminatorClauses <- mapM (\(cns, cnsElim) -> generateEliminatorClauses cns cnsElim clauseGeneralArgs generalParams) (zip cons clauseConsElimArgs)
-  let eliminatorDef = PClauses emptyFC [TotalFn] elimDeclName eliminatorClauses
+  let eliminatorDef = PClauses elimFC [TotalFn] elimDeclName eliminatorClauses
   elimLog $ "-- case function definition: " ++ (show . showDeclImp verbosePPOption) eliminatorDef
   State.lift $ idrisCatch (rec_elabDecl info EAll info eliminatorTyDecl)
                     (ierror . Elaborating "type declaration of " elimDeclName Nothing)
   -- Do not elaborate clauses if there aren't any
   case eliminatorClauses of
-    [] -> State.lift $ solveDeferred emptyFC elimDeclName -- Remove meta-variable for type
+    [] -> State.lift $ solveDeferred elimFC elimDeclName -- Remove meta-variable for type
     _  -> State.lift $ idrisCatch (rec_elabDecl info EAll info eliminatorDef)
                     (ierror . Elaborating "clauses of " elimDeclName Nothing)
   where elimLog :: String -> EliminatorState ()
         elimLog s = State.lift (logElab 2 s)
 
         elimFC :: FC
-        elimFC = fileFC "(casefun)"
+        elimFC = fileFC $ "(casefun " ++ show n ++ ")"
 
         elimDeclName :: Name
-        elimDeclName = if ind then SN . ElimN $ n else SN . CaseN (FC' emptyFC) $ n
+        elimDeclName = if ind then SN . ElimN $ n else SN . CaseN (FC' elimFC) $ n
 
         applyNS :: Name -> [String] -> Name
         applyNS n []  = n
@@ -381,7 +418,7 @@ elabCaseFun ind paramPos n ty cons info = do
 
         piConstr :: [(Name, Plicity, PTerm)] -> PTerm -> PTerm
         piConstr [] ty = ty
-        piConstr ((n, pl, tyb):tyr) ty = PPi pl n NoFC tyb (piConstr tyr ty)
+        piConstr ((n, pl, tyb):tyr) ty = PPi pl n elimFC tyb (piConstr tyr ty)
 
         interlievePos :: [Int] -> [a] -> [a] -> Int -> [a]
         interlievePos idxs []     l2     i = l2

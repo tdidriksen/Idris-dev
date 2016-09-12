@@ -1,11 +1,18 @@
+{-|
+Module      : Idris.Interactive
+Description : Bits and pieces for editing source files interactively, called from the REPL
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+
 {-# LANGUAGE PatternGuards #-}
 
-module Idris.Interactive(caseSplitAt, addClauseFrom, addProofClauseFrom,
-                         addMissing, makeWith, makeCase, doProofSearch,
-                         makeLemma) where
-
-{- Bits and pieces for editing source files interactively, called from
-   the REPL -}
+module Idris.Interactive(
+    caseSplitAt, addClauseFrom, addProofClauseFrom
+  , addMissing, makeWith, makeCase, doProofSearch
+  , makeLemma
+  ) where
 
 import Idris.Core.TT
 import Idris.Core.Evaluate
@@ -13,6 +20,7 @@ import Idris.CaseSplit
 import Idris.AbsSyntax
 import Idris.ElabDecls
 import Idris.Error
+import Idris.ErrReverse
 import Idris.Delaborate
 import Idris.Output
 import Idris.IdeMode hiding (IdeModeCommand(..))
@@ -73,7 +81,7 @@ addClauseFrom fn updatefile l n = do
           else iPrintResult cl
   where
     getIndent i n [] = 0
-    getIndent i n xs | take 9 xs == "instance " = i
+    getIndent i n xs | take 9 xs == "implementation " = i
     getIndent i n xs | take (length n) xs == n = i
     getIndent i n (x : xs) = getIndent (i + 1) n xs
 
@@ -239,8 +247,8 @@ doProofSearch fn updatefile rec l n hints (Just depth)
                                   (ProofSearch rec False depth t psnames hints)]
          let def = PClause fc mn (PRef fc [] mn) [] (body top) []
          newmv_pre <- idrisCatch
-             (do elabDecl' EAll recinfo (PClauses fc [] mn [def])
-                 (tm, ty) <- elabVal recinfo ERHS (PRef fc [] mn)
+             (do elabDecl' EAll (recinfo (fileFC "proofsearch")) (PClauses fc [] mn [def])
+                 (tm, ty) <- elabVal (recinfo (fileFC "proofsearch")) ERHS (PRef fc [] mn)
                  ctxt <- getContext
                  i <- getIState
                  return . flip displayS "" . renderPretty 1.0 80 $
@@ -326,11 +334,14 @@ makeLemma fn updatefile l n
         let isProv = checkProv tyline (show n)
 
         ctxt <- getContext
-        (fname, mty) <- case lookupTyName n ctxt of
-                          [t] -> return t
-                          [] -> ierror (NoSuchVariable n)
-                          ns -> ierror (CantResolveAlts (map fst ns))
+        (fname, mty_full) <- case lookupTyName n ctxt of
+                                  [t] -> return t
+                                  [] -> ierror (NoSuchVariable n)
+                                  ns -> ierror (CantResolveAlts (map fst ns))
+
         i <- getIState
+        let mty = errReverse i mty_full
+
         margs <- case lookup fname (idris_metavars i) of
                       Just (_, arity, _, _, _) -> return arity
                       _ -> return (-1)
@@ -338,10 +349,10 @@ makeLemma fn updatefile l n
         if (not isProv) then do
             let skip = guessImps i (tt_ctxt i) mty
             let impty = stripMNBind skip margs (delab i mty)
-            let classes = guessClasses i (tt_ctxt i) [] (allNamesIn impty) mty
+            let interfaces = guessInterfaces i (tt_ctxt i) [] (allNamesIn impty) mty
 
             let lem = show n ++ " : " ++
-                            constraints i classes mty ++
+                            constraints i interfaces mty ++
                             showTmOpts (defaultPPOption { ppopt_pinames = True })
                                        impty
             let lem_app = guessBrackets False tyline (show n) (show n ++ appArgs skip margs mty)
@@ -369,7 +380,7 @@ makeLemma fn updatefile l n
                   runIO $ writeSource fb (addProv before tyline lem_app later)
                   runIO $ copyFile fb fn
                else case idris_outputmode i of
-                      RawOutput _  -> iPrintResult $ lem_app
+                      RawOutput _  -> iPrintResult lem_app
                       IdeMode n h ->
                         let good = SexpList [SymbolAtom "ok",
                                              SexpList [SymbolAtom "provisional-definition-lemma",
@@ -415,7 +426,7 @@ makeLemma fn updatefile l n
         -- Guess which binders should be implicits in the generated lemma.
         -- Make them implicit if they appear guarded by a top level constructor,
         -- or at the top level themselves.
-        -- Also, make type class instances implicit
+        -- Also, make interface implementations implicit
         guessImps :: IState -> Context -> Term -> [Name]
         -- machine names aren't lifted
         guessImps ist ctxt (Bind n@(MN _ _) (Pi _ ty _) sc)
@@ -423,7 +434,7 @@ makeLemma fn updatefile l n
         guessImps ist ctxt (Bind n (Pi _ ty _) sc)
            | guarded ctxt n (substV (P Bound n Erased) sc)
                 = n : guessImps ist ctxt sc
-           | isClass ist ty
+           | isInterface ist ty
                 = n : guessImps ist ctxt sc
            | paramty ty = n : guessImps ist ctxt sc
            | ignoreName n = n : guessImps ist ctxt sc
@@ -439,13 +450,13 @@ makeLemma fn updatefile l n
                             "_aX" -> True
                             _ -> False
 
-        guessClasses :: IState -> Context -> [Name] -> [Name] -> Term -> [Name]
-        guessClasses ist ctxt binders usednames (Bind n (Pi _ ty _) sc)
-           | isParamClass ist ty && any (\x -> elem x usednames)
-                                        (paramNames binders ty)
-                = n : guessClasses ist ctxt (n : binders) usednames sc
-           | otherwise = guessClasses ist ctxt (n : binders) usednames sc
-        guessClasses ist ctxt _ _ _ = []
+        guessInterfaces :: IState -> Context -> [Name] -> [Name] -> Term -> [Name]
+        guessInterfaces ist ctxt binders usednames (Bind n (Pi _ ty _) sc)
+           | isParamInterface ist ty && any (\x -> elem x usednames)
+                                            (paramNames binders ty)
+                = n : guessInterfaces ist ctxt (n : binders) usednames sc
+           | otherwise = guessInterfaces ist ctxt (n : binders) usednames sc
+        guessInterfaces ist ctxt _ _ _ = []
 
         paramNames bs ty | (P _ _ _, args) <- unApply ty
              = vnames args
@@ -453,16 +464,16 @@ makeLemma fn updatefile l n
                 vnames (V i : xs) | i < length bs = bs !! i : vnames xs
                 vnames (_ : xs) = vnames xs
 
-        isClass ist t
+        isInterface ist t
            | (P _ n _, args) <- unApply t
-                = case lookupCtxtExact n (idris_classes ist) of
+                = case lookupCtxtExact n (idris_interfaces ist) of
                        Just _ -> True
                        _ -> False
            | otherwise = False
 
-        isParamClass ist t
+        isParamInterface ist t
            | (P _ n _, args) <- unApply t
-                = case lookupCtxtExact n (idris_classes ist) of
+                = case lookupCtxtExact n (idris_interfaces ist) of
                        Just _ -> any isV args
                        _ -> False
            | otherwise = False
@@ -484,7 +495,7 @@ makeLemma fn updatefile l n
         addLem before tyline lem lem_app later
             = let (bef_end, blankline : bef_start)
                        = case span (not . blank) (reverse before) of
-                              (bef, []) -> (bef, "" : [])
+                              (bef, []) -> (bef, [""])
                               x -> x
                   mvline = updateMeta tyline (show n) lem_app in
                 unlines $ reverse bef_start ++
@@ -494,7 +505,7 @@ makeLemma fn updatefile l n
         addProv before tyline lem_app later
             = let (later_bef, blankline : later_end)
                       = case span (not . blank) later of
-                             (bef, []) -> (bef, "" : [])
+                             (bef, []) -> (bef, [""])
                              x -> x in
                   unlines $ before ++ tyline :
                             (later_bef ++ [blankline, lem_app, blankline] ++

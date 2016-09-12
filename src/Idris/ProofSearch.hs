@@ -1,6 +1,19 @@
+{-|
+Module      : Idris.ProofSearch
+Description : Searches current context for proofs'
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+
 {-# LANGUAGE PatternGuards #-}
 
-module Idris.ProofSearch(trivial, trivialHoles, proofSearch, resolveTC) where
+module Idris.ProofSearch(
+    trivial
+  , trivialHoles
+  , proofSearch
+  , resolveTC
+  ) where
 
 import Idris.Core.Elaborate hiding (Tactic(..))
 import Idris.Core.TT
@@ -88,7 +101,7 @@ trivialTCs ok elab ist
 
         tcArg env ty
            | (P _ n _, args) <- unApply (getRetTy (normalise (tt_ctxt ist) env ty))
-                 = case lookupCtxtExact n (idris_classes ist) of
+                 = case lookupCtxtExact n (idris_interfaces ist) of
                         Just _ -> True
                         _ -> False
            | otherwise = False
@@ -339,7 +352,7 @@ proofSearch rec fromProver ambigok deferonfail maxDepth elab fn nroot psnames hi
 
 -- | Resolve interfaces. This will only pick up 'normal'
 -- implementations, never named implementations (which is enforced by
--- 'findInstances').
+-- 'findImplementations').
 resolveTC :: Bool                -- ^ using default Int
           -> Bool                -- ^ allow open implementations
           -> Int                 -- ^ depth
@@ -351,7 +364,7 @@ resolveTC def openOK depth top fn elab ist
   = do hs <- get_holes
        resTC' [] def openOK hs depth top fn elab ist
 
-resTC' tcs def openOK topholes 0 topg fn elab ist = fail $ "Can't resolve interface"
+resTC' tcs def openOK topholes 0 topg fn elab ist = fail "Can't resolve interface"
 resTC' tcs def openOK topholes 1 topg fn elab ist = try' (trivial elab ist) (resolveTC def False 0 topg fn elab ist) True
 resTC' tcs defaultOn openOK topholes depth topg fn elab ist
   = do compute
@@ -390,22 +403,22 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
                               P _ n _ -> zip (repeat n) okholePos
                               _ -> []
 
-           traceWhen ulog ("Resolving class " ++ show g ++ "\nin" ++ show env ++ "\n" ++ show okholes) $
+           traceWhen ulog ("Resolving interface " ++ show g ++ "\nin" ++ show env ++ "\n" ++ show okholes) $
             try' (trivialTCs okholes elab ist)
                 (do addDefault t tc ttypes
                     let stk = map fst (filter snd $ elab_stack ist)
-                    let insts = idris_openimpls ist ++ findInstances ist t
-                    blunderbuss t depth stk (stk ++ insts)) True
+                    let impls = idris_openimpls ist ++ findImplementations ist t
+                    blunderbuss t depth stk (stk ++ impls)) True
 
     -- returns Just hs if okay, where hs are holes which are okay in the
     -- goal, or Nothing if not okay to proceed
-    tcArgsOK ty hs | (P _ nc _, as) <- unApply (getRetTy ty), nc == numclass && defaultOn
+    tcArgsOK ty hs | (P _ nc _, as) <- unApply (getRetTy ty), nc == numinterface && defaultOn
        = Just []
     tcArgsOK ty hs -- if any determining arguments are metavariables, postpone
        = let (f, as) = unApply (getRetTy ty) in
              case f of
-                  P _ cn _ -> case lookupCtxtExact cn (idris_classes ist) of
-                                   Just ci -> tcDetArgsOK 0 (class_determiners ci) hs as
+                  P _ cn _ -> case lookupCtxtExact cn (idris_interfaces ist) of
+                                   Just ci -> tcDetArgsOK 0 (interface_determiners ci) hs as
                                    Nothing -> if any (isMeta hs) as
                                                  then Nothing
                                                  else Just []
@@ -438,17 +451,9 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
        | Constant _ <- c = not (n `elem` hs)
     notHole _ _ = True
 
-    -- HACK! Rather than giving a special name, better to have some kind
-    -- of flag in ClassInfo structure
-    chaser (UN nm)
-        | ('@':'@':_) <- str nm = True -- old way
-    chaser (SN (ParentN _ _)) = True
-    chaser (NS n _) = chaser n
-    chaser _ = False
+    numinterface = sNS (sUN "Num") ["Interfaces","Prelude"]
 
-    numclass = sNS (sUN "Num") ["Interfaces","Prelude"]
-
-    addDefault t num@(P _ nc _) [P Bound a _] | nc == numclass && defaultOn
+    addDefault t num@(P _ nc _) [P Bound a _] | nc == numinterface && defaultOn
         = do focus a
              fill (RConstant (AType (ATInt ITBig))) -- default Integer
              solve
@@ -479,12 +484,12 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
     solven n = replicateM_ n solve
 
     resolve n depth
-       | depth == 0 = fail $ "Can't resolve interface"
+       | depth == 0 = fail "Can't resolve interface"
        | otherwise
            = do lams <- introImps
                 t <- goal
                 let (tc, ttypes) = trace (show t) $ unApply (getRetTy t)
---                 if (all boundVar ttypes) then resolveTC (depth - 1) fn insts ist
+--                 if (all boundVar ttypes) then resolveTC (depth - 1) fn impls ist
 --                   else do
                    -- if there's a hole in the goal, don't even try
                 let imps = case lookupCtxtName n (idris_implicits ist) of
@@ -517,10 +522,10 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
 
 -- | Find the names of implementations that have been designeated for
 -- searching (i.e. non-named implementations or implementations from Elab scripts)
-findInstances :: IState -> Term -> [Name]
-findInstances ist t
+findImplementations :: IState -> Term -> [Name]
+findImplementations ist t
     | (P _ n _, _) <- unApply (getRetTy t)
-        = case lookupCtxt n (idris_classes ist) of
+        = case lookupCtxt n (idris_interfaces ist) of
             [CI _ _ _ _ _ ins _] ->
               [n | (n, True) <- ins, accessible n]
             _ -> []

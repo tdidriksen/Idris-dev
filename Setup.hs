@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+
 import Control.Monad
 import Data.IORef
 import Control.Exception (SomeException, catch)
@@ -80,19 +81,17 @@ isFreestanding flags =
     Just True -> True
     Just False -> False
     Nothing -> False
+
 -- -----------------------------------------------------------------------------
 -- Clean
 
-idrisClean _ flags _ _ = do
-      cleanStdLib
+idrisClean _ flags _ _ = cleanStdLib
    where
       verbosity = S.fromFlag $ S.cleanVerbosity flags
 
-      cleanStdLib = do
-         makeClean "libs"
+      cleanStdLib = makeClean "libs"
 
       makeClean dir = make verbosity [ "-C", dir, "clean", "IDRIS=idris" ]
-
 
 -- -----------------------------------------------------------------------------
 -- Configure
@@ -108,7 +107,7 @@ generateVersionModule verbosity dir release = do
     hash <- gitHash
     let versionModulePath = dir </> "Version_idris" Px.<.> "hs"
     putStrLn $ "Generating " ++ versionModulePath ++
-             if release then " for release" else (" for prerelease " ++ hash)
+             if release then " for release" else " for prerelease " ++ hash
     createDirectoryIfMissingVerbose verbosity True dir
     rewriteFile versionModulePath (versionModuleContents hash)
 
@@ -120,7 +119,7 @@ generateVersionModule verbosity dir release = do
 
 -- Generate a module that contains the lib path for a freestanding Idris
 generateTargetModule verbosity dir targetDir = do
-    absPath <- return $ isAbsolute targetDir
+    let absPath = isAbsolute targetDir
     let targetModulePath = dir </> "Target_idris" Px.<.> "hs"
     putStrLn $ "Generating " ++ targetModulePath
     createDirectoryIfMissingVerbose verbosity True dir
@@ -155,15 +154,15 @@ generateToolchainModule verbosity srcDir toolDir = do
 idrisConfigure _ flags _ local = do
     configureRTS
     generateVersionModule verbosity (autogenModulesDir local) (isRelease (configFlags local))
-    if (isFreestanding $ configFlags local)
-        then (do
+    if isFreestanding $ configFlags local
+        then do
                 toolDir <- lookupEnv "IDRIS_TOOLCHAIN_DIR"
                 generateToolchainModule verbosity (autogenModulesDir local) toolDir
                 targetDir <- lookupEnv "IDRIS_LIB_DIR"
                 case targetDir of
                      Just d -> generateTargetModule verbosity (autogenModulesDir local) d
                      Nothing -> error $ "Trying to build freestanding without a target directory."
-                                  ++ " Set it by defining IDRIS_LIB_DIR.")
+                                  ++ " Set it by defining IDRIS_LIB_DIR."
         else
                 generateToolchainModule verbosity (autogenModulesDir local) Nothing
     where
@@ -179,10 +178,21 @@ idrisConfigure _ flags _ local = do
 idrisPreSDist args flags = do
   let dir = S.fromFlag (S.sDistDirectory flags)
   let verb = S.fromFlag (S.sDistVerbosity flags)
-  generateVersionModule verb ("src") True
+  generateVersionModule verb "src" True
   generateTargetModule verb "src" "./libs"
   generateToolchainModule verb "src" Nothing
   preSDist simpleUserHooks args flags
+
+idrisSDist sdist pkgDesc bi hooks flags = do
+  pkgDesc' <- addGitFiles pkgDesc
+  sdist pkgDesc' bi hooks flags
+    where
+      addGitFiles :: PackageDescription -> IO PackageDescription
+      addGitFiles pkgDesc = do
+        files <- gitFiles
+        return $ pkgDesc { extraSrcFiles = extraSrcFiles pkgDesc ++ files}
+      gitFiles :: IO [FilePath]
+      gitFiles = liftM lines (readProcess "git" ["ls-files"] "")
 
 idrisPostSDist args flags desc lbi = do
   Control.Exception.catch (do let file = "src" </> "Version_idris" Px.<.> "hs"
@@ -203,13 +213,11 @@ getVersion args flags = do
       let buildinfo = (emptyBuildInfo { cppOptions = ["-DVERSION="++hash] }) :: BuildInfo
       return (Just buildinfo, [])
 
-
-
 idrisPreBuild args flags = do
 #ifdef mingw32_HOST_OS
         createDirectoryIfMissingVerbose verbosity True dir
-        windres verbosity ["icons/idris_icon.rc","-o", dir++"idris_icon.o"]
-        return (Nothing, [("idris", emptyBuildInfo { ldOptions = [dir ++ "idris_icon.o"] })])
+        windres verbosity ["icons/idris_icon.rc","-o", dir++"/idris_icon.o"]
+        return (Nothing, [("idris", emptyBuildInfo { ldOptions = [dir ++ "/idris_icon.o"] })])
      where
         verbosity = S.fromFlag $ S.buildVerbosity flags
         dir = S.fromFlagOrDefault "dist" $ S.buildDistPref flags
@@ -235,8 +243,6 @@ idrisBuild _ flags _ local = unless (execOnly (configFlags local)) $ do
       gmpflag False = []
       gmpflag True = ["GMP=-DIDRIS_GMP"]
 
-
-
 -- -----------------------------------------------------------------------------
 -- Copy/Install
 
@@ -248,8 +254,9 @@ idrisInstall verbosity copy pkg local = unless (execOnly (configFlags local)) $ 
       target = datadir $ L.absoluteInstallDirs pkg local copy
 
       installStdLib = do
-            putStrLn $ "Installing libraries in " ++ target
-            makeInstall "libs" target
+        let target' = target </> "libs"
+        putStrLn $ "Installing libraries in " ++ target'
+        makeInstall "libs" target'
 
       installRTS = do
          let target' = target </> "rts"
@@ -257,13 +264,37 @@ idrisInstall verbosity copy pkg local = unless (execOnly (configFlags local)) $ 
          makeInstall "rts" target'
 
       installManPage = do
-         let mandest = (mandir $ L.absoluteInstallDirs pkg local copy) ++ "/man1"
+         let mandest = mandir (L.absoluteInstallDirs pkg local copy) ++ "/man1"
          notice verbosity $ unwords ["Copying man page to", mandest]
          installOrdinaryFiles verbosity mandest [("man", "idris.1")]
 
 
       makeInstall src target =
          make verbosity [ "-C", src, "install" , "TARGET=" ++ target, "IDRIS=" ++ idrisCmd local]
+
+-- -----------------------------------------------------------------------------
+-- Test
+
+-- FIXME: We use the __GLASGOW_HASKELL__ macro because MIN_VERSION_cabal seems
+-- to be broken !
+
+-- There are two "dataDir" in cabal, and they don't relate to each other.
+-- When fetching modules, idris uses the second path (in the pkg record),
+-- which by default is the root folder of the project.
+-- We want it to be the install directory where we put the idris libraries.
+fixPkg pkg target = pkg { dataDir = target }
+
+-- The "Args" argument of the testHooks has been added in cabal 1.22.0,
+-- and should therefore be ignored for prior versions.
+#if __GLASGOW_HASKELL__ < 710
+originalTestHook _ = testHook simpleUserHooks
+#else
+originalTestHook = testHook simpleUserHooks
+#endif
+
+idrisTestHook args pkg local hooks flags = do
+  let target = datadir $ L.absoluteInstallDirs pkg local NoCopyDest
+  originalTestHook args (fixPkg pkg target) local hooks flags
 
 -- -----------------------------------------------------------------------------
 -- Main
@@ -281,6 +312,12 @@ main = defaultMainWithHooks $ simpleUserHooks
    , postInst = \_ flags pkg local ->
                   idrisInstall (S.fromFlag $ S.installVerbosity flags)
                                NoCopyDest pkg local
-   , preSDist = idrisPreSDist --do { putStrLn (show args) ; putStrLn (show flags) ; return emptyHookedBuildInfo }
+   , preSDist = idrisPreSDist
+   , sDistHook = idrisSDist (sDistHook simpleUserHooks)
    , postSDist = idrisPostSDist
+#if __GLASGOW_HASKELL__ < 710
+   , testHook = idrisTestHook ()
+#else
+   , testHook = idrisTestHook
+#endif
    }

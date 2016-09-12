@@ -1,8 +1,17 @@
+{-|
+Module      : Idris.PartialEval
+Description : Implementation of a partial evaluator.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards #-}
 
-module Idris.PartialEval(partial_eval, getSpecApps, specType,
-                         mkPE_TyDecl, mkPE_TermDecl, PEArgType(..),
-                         pe_app, pe_def, pe_clauses, pe_simple) where
+module Idris.PartialEval(
+    partial_eval, getSpecApps, specType
+  , mkPE_TyDecl, mkPE_TermDecl, PEArgType(..)
+  , pe_app, pe_def, pe_clauses, pe_simple
+  ) where
 
 import Idris.AbsSyntax
 import Idris.Delaborate
@@ -132,8 +141,8 @@ mkPE_TyDecl ist args ty = mkty args ty
     mkty ((ExplicitD, v) : xs) (Bind n (Pi _ t k) sc)
        = PPi expl n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
     mkty ((ImplicitD, v) : xs) (Bind n (Pi _ t k) sc)
-         | concreteClass ist t = mkty xs sc
-         | classConstraint ist t
+         | concreteInterface ist t = mkty xs sc
+         | interfaceConstraint ist t
              = PPi constraint n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
          | otherwise = PPi impl n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
 
@@ -151,19 +160,19 @@ mkPE_TyDecl ist args ty = mkty args ty
     gen (App s f a) = App s <$> gen f <*> gen a
     gen tm = return tm
 
--- | Checks if a given argument is a type class constraint argument
-classConstraint :: Idris.AbsSyntax.IState -> TT Name -> Bool
-classConstraint ist v
-    | (P _ c _, args) <- unApply v = case lookupCtxt c (idris_classes ist) of
+-- | Checks if a given argument is an interface constraint argument
+interfaceConstraint :: Idris.AbsSyntax.IState -> TT Name -> Bool
+interfaceConstraint ist v
+    | (P _ c _, args) <- unApply v = case lookupCtxt c (idris_interfaces ist) of
                                           [_] -> True
                                           _ -> False
     | otherwise = False
 
--- | Checks if the given arguments of a type class constraint are all either constants
+-- | Checks if the given arguments of an interface constraint are all either constants
 -- or references (i.e. that it doesn't contain any complex terms).
-concreteClass :: IState -> TT Name -> Bool
-concreteClass ist v
-    | not (classConstraint ist v) = False
+concreteInterface :: IState -> TT Name -> Bool
+concreteInterface ist v
+    | not (interfaceConstraint ist v) = False
     | (P _ c _, args) <- unApply v = all concrete args
     | otherwise = False
   where concrete (Constant _) = True

@@ -1,3 +1,59 @@
+# New in 0.13:
+
+## Language updates
+
+* `record` syntax now allows updating fields, including nested fields,
+  by applying a function using the `$=` operator.  For example:
+
+  ```
+  record Score where
+         constructor MkScore
+         correct : Nat
+         attempted : Nat
+
+  record GameState where
+         constructor MkGameState
+         score : Score
+         difficulty : Nat
+
+  correct : GameState -> GameState
+  correct st = record { score->correct $= (+1),
+                        score->attempted $= (+1) } st
+  ```
+
+## Library updates
+
+* The File Effect has been updated to take into account changes in
+  `Prelude.File` and to provide a 'better' API.
+* `natEnumFromThen` and `natEnumFromTo` have been updated to correctly calculate reverse ranges. Range syntax `[a,b..c]` now can be used again to generate reverse ranges.
+* `divBN` and `modBN` now can only be used for unsigned numbers.
+* `return`, which has been an alias for `pure` for many releases, is now deprecated.
+* Replace instance with implementation:
+  + `InstanceN` is deprecated, use `ImplementationN` instead.
+  + `InstanceCtorN` is deprecated, use `ImplementationCtorN` instead.
+  + `addInstance` is deprecated, use `addImplementation` instead.
+  + `%instance` keyword is deprecated, use `%implementation` instead.
+
+* Idris packages are now installed within a sub-directory `libs` of Idris' data directory, before they were installed in the directory's root.
+
+## Tool updates
+
+* Idris' documentation system now displays the documentation for auto
+  implicits in the output of `:doc`. This is tested for in `docs005`.
+
+* New command line flag `--info` that displays information about the installation.
+
+* New command line flag `--sourcepath <dir>` that allows adding directories to the source search path.
+## Miscellaneous updates
+
+* The test suite now uses [tasty-golden](https://hackage.haskell.org/package/tasty-golden). New tests must be registered in `test/TestData.hs`, as explained in the relevant `README.md`.
+* Added OSX and Windows continous integration with Travis and Appveyor.
+
+## UI Changes
+
+* The :e command can now handle an $EDITOR with arguments in it, like "emacs -nw" 
+
+
 # New in 0.12:
 
 ## Language updates
@@ -73,6 +129,14 @@
   them as mutually defined functions with their top level function, meaning
   that it can spot more total functions.
 
+* The totality checker now looks under `if...then...else` blocks when checking
+  for productivity.
+
+* The `%assert_total` directive is now deprecated. Instead, you can
+  use one of the functions `assert_total`, `assert_smaller` or
+  `assert_unreachable` to describe more precisely where a totality assertion
+  is needed.
+
 ## Library updates
 
 * `Control.WellFounded` module removed, and added to the Prelude as
@@ -80,6 +144,24 @@
 * Added `Data.List.Views` with views on `List` and their covering functions.
 * Added `Data.Nat.Views` with views on `Nat` and their covering functions.
 * Added `Data.Primitives.Views` with views on various primitive types and their covering functions.
+* Added `System.Concurrency.Sessions` for simple management of conversations
+  between processes
+
+## iPKG Updates
+
+* Taking cues from cabal, the `iPKG` format has been extended to
+  include more package metadata information.  The following fields
+  have been added:
+
+  + `brief`: Brief description of the package.
+  + `version`: Version string to associate with the package.
+  + `readme`: Location of the README file.
+  + `license`: Description of the licensing information.
+  + `author`: Author information.
+  + `maintainer`: Maintainer information.
+  + `homepage`: Website associated with the package.
+  + `sourcepage`: Location of the DVCS where the source can be found.
+
 
 ## Miscellaneous updates
 

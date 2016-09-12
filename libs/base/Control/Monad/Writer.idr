@@ -7,7 +7,7 @@ import Control.Monad.Trans
 %access public export
 
 ||| A monad representing a computation that produces a stream of output
-interface (Monoid w, Monad m) => MonadWriter w (m : Type -> Type) where
+interface (Monoid w, Monad m) => MonadWriter w (m : Type -> Type) | m where
     ||| tell w produces the output w
     tell   : w -> m ()
     ||| Execute an action and add it's output to the value of the computation
@@ -36,30 +36,30 @@ implementation (Monoid w, Monad m) => Monad (WriterT w m) where
     (WR m) >>= k = WR $ do (a, w) <- m
                            let WR ka = k a
                            (b, w') <- ka
-                           return (b, w <+> w')
+                           pure (b, w <+> w')
 
 implementation (Monoid w, Monad m) => MonadWriter w (WriterT w m) where
-    tell w        = WR $ return ((), w)
+    tell w        = WR $ pure ((), w)
     listen (WR m) = WR $ do (a, w) <- m
-                            return ((a, w), w)
+                            pure ((a, w), w)
     pass (WR m)   = WR $ do ((a, f), w) <- m
-                            return (a, f w)
+                            pure (a, f w)
 
 implementation Monoid w => MonadTrans (WriterT w) where
     lift x = WR $ do r <- x
-                     return (r, neutral)
+                     pure (r, neutral)
 
 ||| Run an action in the Writer monad and transform the written output
 listens : MonadWriter w m => (w -> b) -> m a -> m (a, b)
 listens {m} f act = listens' f (listen act) where
   listens' : (w -> b) -> m (a, w) -> m (a, b)
   listens' f' ma = do (a, w) <- ma
-                      return (a, f' w)
+                      pure (a, f' w)
 
 ||| Run an action, apply a function to it's output, and return it's value
 censor : MonadWriter w m => (w -> w) -> m a -> m a
 censor f m = pass $ do a <- m
-                       return (a, f)
+                       pure (a, f)
 
 ||| The Writer monad itself. See the MonadWriter interface
 Writer : Type -> Type -> Type

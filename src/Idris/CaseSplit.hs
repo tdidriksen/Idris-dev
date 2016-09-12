@@ -1,11 +1,31 @@
+{-|
+Module      : Idris.CaseSplit
+Description : Module to provide case split functionality.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+
+Given a pattern clause and a variable 'n', elaborate the clause and find the
+type of 'n'.
+
+Make new pattern clauses by replacing 'n' with all the possibly constructors
+applied to '_', and replacing all other variables with '_' in order to
+resolve other dependencies.
+
+Finally, merge the generated patterns with the original, by matching.
+Always take the "more specific" argument when there is a discrepancy, i.e.
+names over '_', patterns over names, etc.
+
+-}
 {-# LANGUAGE PatternGuards #-}
 
-module Idris.CaseSplit(splitOnLine, replaceSplits,
-                       getClause, getProofClause,
-                       mkWith,
-                       nameMissing,
-                       getUniq, nameRoot) where
--- splitting a variable in a pattern clause
+module Idris.CaseSplit(
+    splitOnLine, replaceSplits
+  , getClause, getProofClause
+  , mkWith
+  , nameMissing
+  , getUniq, nameRoot
+  ) where
 
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree (Idris, IState, PTerm)
@@ -36,20 +56,6 @@ import Text.Trifecta.Delta
 
 import Debug.Trace
 
-{-
-
-Given a pattern clause and a variable 'n', elaborate the clause and find the
-type of 'n'.
-
-Make new pattern clauses by replacing 'n' with all the possibly constructors
-applied to '_', and replacing all other variables with '_' in order to
-resolve other dependencies.
-
-Finally, merge the generated patterns with the original, by matching.
-Always take the "more specific" argument when there is a discrepancy, i.e.
-names over '_', patterns over names, etc.
--}
-
 -- | Given a variable to split, and a term application, return a list
 -- of variable updates, paired with a flag to say whether the given
 -- update typechecks (False = impossible) if the flag is 'False' the
@@ -62,14 +68,14 @@ split n t'
         mapM_ (\n -> setAccessibility n Public) (allNamesIn t')
         -- ETyDecl rather then ELHS because there'll be explicit type
         -- matching
-        (tm, ty, pats) <- elabValBind recinfo ETyDecl True (addImplPat ist t')
+        (tm, ty, pats) <- elabValBind (recinfo (fileFC "casesplit")) ETyDecl True (addImplPat ist t')
         -- ASSUMPTION: tm is in normal form after elabValBind, so we don't
         -- need to do anything special to find out what family each argument
         -- is in
         logElab 4 ("Elaborated:\n" ++ show tm ++ " : " ++ show ty ++ "\n" ++ show pats)
 --         iputStrLn (show (delab ist tm) ++ " : " ++ show (delab ist ty))
 --         iputStrLn (show pats)
-        let t = mergeUserImpl (addImplPat ist t') (delab ist tm)
+        let t = mergeUserImpl (addImplPat ist t') (delabDirect ist tm)
         let ctxt = tt_ctxt ist
         case lookup n pats of
              Nothing -> ifail $ show n ++ " is not a pattern variable"
@@ -207,10 +213,13 @@ mergeUserImpl x y = x
 argTys :: IState -> PTerm -> [Maybe Name]
 argTys ist (PRef fc hls n)
     = case lookupTy n (tt_ctxt ist) of
-           [ty] -> map (tyName . snd) (getArgTys ty) ++ repeat Nothing
+           [ty] -> let ty' = normalise (tt_ctxt ist) [] ty in
+                       map (tyName . snd) (getArgTys ty') ++ repeat Nothing
            _ -> repeat Nothing
   where tyName (Bind _ (Pi _ _ _) _) = Just (sUN "->")
-        tyName t | (P _ n _, _) <- unApply t = Just n
+        tyName t | (P _ d _, [_, ty]) <- unApply t,
+                   d == sUN "Delayed" = tyName ty
+                 | (P _ n _, _) <- unApply t = Just n
                  | otherwise = Nothing
 argTys _ _ = repeat Nothing
 
@@ -236,9 +245,9 @@ tidy ist tm ty = return tm
 --         tidyVar t = t
 
 elabNewPat :: PTerm -> Idris (Bool, PTerm)
-elabNewPat t = idrisCatch (do (tm, ty) <- elabVal recinfo ELHS t
+elabNewPat t = idrisCatch (do (tm, ty) <- elabVal (recinfo (fileFC "casesplit")) ELHS t
                               i <- getIState
-                              return (True, delab i tm))
+                              return (True, delabDirect i tm))
                           (\e -> do i <- getIState
                                     logElab 5 $ "Not a valid split:\n" ++ showTmImpls t ++ "\n"
                                                      ++ pshow i e
@@ -289,7 +298,7 @@ replaceSplits l ups impossible
          updateRHSs 1 (map (rep ist (expandBraces l)) ups)
   where
     rep ist str [] = str ++ "\n"
-    rep ist str ((n, tm) : ups) 
+    rep ist str ((n, tm) : ups)
         = rep ist (updatePat False (show n) (nshow (resugar ist tm)) str) ups
 
     updateRHSs i [] = return []
@@ -392,8 +401,8 @@ getClause :: Int      -- ^ line number that the type is declared on
           -> Idris String
 getClause l fn un fp
     = do i <- getIState
-         case lookupCtxt un (idris_classes i) of
-              [c] -> return (mkClassBodies i (class_methods c))
+         case lookupCtxt un (idris_interfaces i) of
+              [c] -> return (mkInterfaceBodies i (interface_methods c))
               _ -> do ty_in <- getInternalApp fp l
                       let ty = case ty_in of
                                     PTyped n t -> t
@@ -427,8 +436,8 @@ getClause l fn un fp
                                                           sUN "z"]) used
 
          -- write method declarations, indent with 4 spaces
-         mkClassBodies :: IState -> [(Name, (Bool, FnOpts, PTerm))] -> String
-         mkClassBodies i ns
+         mkInterfaceBodies :: IState -> [(Name, (Bool, FnOpts, PTerm))] -> String
+         mkInterfaceBodies i ns
              = showSep "\n"
                   (zipWith (\(n, (_, _, ty)) m -> "    " ++
                             def (show (nsroot n)) ++ " "

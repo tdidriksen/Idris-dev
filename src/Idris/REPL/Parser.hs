@@ -1,5 +1,15 @@
-
-module Idris.REPL.Parser (parseCmd, help, allHelp, setOptions) where
+{-|
+Module      : Idris.REPL.Parser
+Description : Parser for the REPL commands.
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+module Idris.REPL.Parser (
+    parseCmd
+  , help
+  , allHelp
+  , setOptions
+  ) where
 
 import System.FilePath ((</>))
 import System.Console.ANSI (Color(..))
@@ -9,6 +19,8 @@ import Idris.AbsSyntax
 import Idris.Core.TT
 import Idris.Help
 import qualified Idris.Parser as P
+
+import Idris.REPL.Commands
 
 import Control.Applicative
 import Control.Monad.State.Strict
@@ -509,7 +521,7 @@ packageBasedCmd valParser cmd name =
 
 cmd_search :: String -> P.IdrisParser (Either String Command)
 cmd_search = packageBasedCmd
-  (P.typeExpr (defaultSyntax { implicitAllowed = True })) Search
+  (P.fullExpr (defaultSyntax { implicitAllowed = True })) Search
 
 cmd_proofsearch :: String -> P.IdrisParser (Either String Command)
 cmd_proofsearch name = do

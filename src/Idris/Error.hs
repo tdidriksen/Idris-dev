@@ -1,3 +1,10 @@
+{-|
+Module      : Idris.Error
+Description : Utilities to deal with error reporting.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 
@@ -21,6 +28,7 @@ import System.IO.Error(isUserError, ioeGetErrorString)
 import Data.Char
 import Data.List (intercalate, isPrefixOf)
 import qualified Data.Text as T
+import qualified Data.Set as S
 import Data.Typeable
 import qualified Data.Traversable as Traversable
 import qualified Data.Foldable as Foldable
@@ -29,7 +37,7 @@ iucheck :: Idris ()
 iucheck = do tit <- typeInType
              ist <- getIState
              let cs = idris_constraints ist
-             logLvl 7 $ "ALL CONSTRAINTS: " ++ show cs
+             logLvl 7 $ "ALL CONSTRAINTS: " ++ show (length (S.toList cs))
              when (not tit) $
                    (tclift $ ucheck (idris_constraints ist)) `idrisCatch`
                               (\e -> do let fc = getErrSpan e
@@ -113,7 +121,7 @@ warnDisamb ist (PDPair _ _ _ x y z) = warnDisamb ist x >> warnDisamb ist y >> wa
 warnDisamb ist (PAlternative _ _ tms) = mapM_ (warnDisamb ist) tms
 warnDisamb ist (PHidden tm) = warnDisamb ist tm
 warnDisamb ist (PType _) = return ()
-warnDisamb ist (PUniverse _) = return ()
+warnDisamb ist (PUniverse _ _) = return ()
 warnDisamb ist (PGoal _ x _ y) = warnDisamb ist x >> warnDisamb ist y
 warnDisamb ist (PConstant _ _) = return ()
 warnDisamb ist Placeholder = return ()
@@ -125,7 +133,6 @@ warnDisamb ist (PDoBlock steps) = mapM_ wStep steps
         wStep (DoLet _ _ _ x y) = warnDisamb ist x >> warnDisamb ist y
         wStep (DoLetP _ x y) = warnDisamb ist x >> warnDisamb ist y
 warnDisamb ist (PIdiom _ x) = warnDisamb ist x
-warnDisamb ist (PReturn _) = return ()
 warnDisamb ist (PMetavar _ _) = return ()
 warnDisamb ist (PProof tacs) = mapM_ (Foldable.mapM_ (warnDisamb ist)) tacs
 warnDisamb ist (PTactics tacs) = mapM_ (Foldable.mapM_ (warnDisamb ist)) tacs
@@ -138,7 +145,7 @@ warnDisamb ist (PDisamb ds tm) = warnDisamb ist tm >>
           when (not (any (isIn d . fst) (ctxtAlist (tt_ctxt ist)))) $
             ierror . Msg $
               "Nothing found in namespace \"" ++
-              intercalate "." (map T.unpack d) ++
+              intercalate "." (map T.unpack . reverse $ d) ++
               "\"."
         isIn d (NS _ ns) = isPrefixOf d ns
         isIn d _ = False

@@ -1,8 +1,13 @@
+{-|
+Module      : Idris.IdrisDoc
+Description : Generation of HTML documentation for Idris code
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
-
--- | Generation of HTML documentation for Idris code
 module Idris.IdrisDoc (generateDocs) where
 
 import Idris.Core.TT (Name (..), sUN, SpecialName (..), OutputAnnotation (..),
@@ -160,7 +165,7 @@ fetchInfo ist nss =
     filterContents p (NsInfo md ns) = NsInfo md (filter p ns)
     updateContents f x = x { nsContents = f (nsContents x) }
 
--- | Removes loose class methods and data constructors,
+-- | Removes loose interface methods and data constructors,
 --   leaving them documented only under their parent.
 removeOrphans :: [NsItem] -- ^ List to remove orphans from
               -> [NsItem] -- ^ Orphan-free list
@@ -168,14 +173,13 @@ removeOrphans list =
   let children = S.fromList $ concatMap (names . (\(_, d, _) -> d)) list
   in  filter ((flip S.notMember children) . (\(n, _, _) -> n)) list
 
-  where names (Just (DataDoc _ fds))              = map (\(FD n _ _ _ _) -> n) fds
-        names (Just (ClassDoc _ _ fds _ _ _ _ c)) = map (\(FD n _ _ _ _) -> n) fds ++ map (\(FD n _ _ _ _) -> n) (maybeToList c)
-        names _                                   = []
+  where names (Just (DataDoc _ fds))                  = map (\(FD n _ _ _ _) -> n) fds
+        names (Just (InterfaceDoc _ _ fds _ _ _ _ c)) = map (\(FD n _ _ _ _) -> n) fds ++ map (\(FD n _ _ _ _) -> n) (maybeToList c)
+        names _                                       = []
 
 -- | Whether a Name names something which should be documented
 filterName :: Name -- ^ Name to check
            -> Bool -- ^ Predicate result
-filterName (UN n)     | '@':'@':_ <- str n = False
 filterName (UN _)     = True
 filterName (NS n _)   = filterName n
 filterName _          = False
@@ -218,14 +222,14 @@ referredNss (n, Just d, _) =
       names  = concatMap (extractPTermNames) ts
   in  S.map getNs $ S.fromList names
 
-  where getFunDocs (FunDoc f)                  = [f]
-        getFunDocs (DataDoc f fs)              = f:fs
-        getFunDocs (ClassDoc _ _ fs _ _ _ _ _) = fs
-        getFunDocs (RecordDoc _ _ f fs _)      = f:fs
-        getFunDocs (NamedInstanceDoc _ fd)     = [fd]
-        getFunDocs (ModDoc _ _)                = []
-        types (FD _ _ args t _)                = t:(map second args)
-        second (_, x, _, _)                    = x
+  where getFunDocs (FunDoc f)                      = [f]
+        getFunDocs (DataDoc f fs)                  = f:fs
+        getFunDocs (InterfaceDoc _ _ fs _ _ _ _ _) = fs
+        getFunDocs (RecordDoc _ _ f fs _)          = f:fs
+        getFunDocs (NamedImplementationDoc _ fd)         = [fd]
+        getFunDocs (ModDoc _ _)                    = []
+        types (FD _ _ args t _)                    = t:(map second args)
+        second (_, x, _, _)                        = x
 
 
 -- | Returns an NsDict of containing all known namespaces and their contents
@@ -419,7 +423,7 @@ createIndex :: S.Set NsName -- ^ Set of namespace names to
 createIndex nss out =
   do (path, h) <- openTempFile out "index.html"
      BS2.hPut h $ renderHtml $ wrapper Nothing $ do
-       H.h1 $ "Namespaces"
+       H.h1 "Namespaces"
        H.ul ! class_ "names" $ do
          let path ns  = "docs" ++ "/" ++ genRelNsPath ns "html"
              item ns  = do let n    = toHtml $ nsName2Str ns
@@ -519,7 +523,7 @@ genTypeHeader ist (FD n _ args ftype _) = do
         docExtractor (_, _, _, Nothing) = Nothing
         docExtractor (n, _, _, Just d)  = Just (n, doc2Str d)
                          -- TODO: Remove <p> tags more robustly
-        doc2Str d      = let dirty = renderMarkup $ contents $ Docstrings.renderHtml $ d
+        doc2Str d      = let dirty = renderMarkup $ contents $ Docstrings.renderHtml d
                          in  take (length dirty - 8) $ drop 3 dirty
 
         name (NS n ns) = show (NS (sUN $ name n) ns)
@@ -573,13 +577,13 @@ createFunDoc ist fd@(FD name docstring args ftype fixity) = do
 
 
 -- | Generates HTML documentation for any Docs type
---   TODO: Generate actual signatures for typeclasses
+--   TODO: Generate actual signatures for interfaces
 createOtherDoc :: IState -- ^ Needed to determine the types of names
                -> Docs   -- ^ Namespace item to generate HTML block for
                -> H.Html -- ^ Resulting HTML
 createOtherDoc ist (FunDoc fd)                = createFunDoc ist fd
 
-createOtherDoc ist (ClassDoc n docstring fds _ _ _ _ c) = do
+createOtherDoc ist (InterfaceDoc n docstring fds _ _ _ _ c) = do
   H.dt ! (A.id $ toValue $ show n) $ do
     H.span ! class_ "word" $ do "interface"; nbsp
     H.span ! class_ "name type"
@@ -639,7 +643,7 @@ createOtherDoc ist (DataDoc fd@(FD n docstring args _ _) fds) = do
           H.dt $ toHtml $ show name
           H.dd $ Docstrings.renderHtml docstring
 
-createOtherDoc ist (NamedInstanceDoc _ fd) = createFunDoc ist fd
+createOtherDoc ist (NamedImplementationDoc _ fd) = createFunDoc ist fd
 
 createOtherDoc ist (ModDoc _  docstring) = do
   Docstrings.renderHtml docstring

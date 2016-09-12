@@ -1,6 +1,17 @@
+{-|
+Module      : Idris.Docs
+Description : Data structures and utilities to work with Idris Documentation.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE DeriveFunctor, PatternGuards, MultiWayIf #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
-module Idris.Docs (pprintDocs, getDocs, pprintConstDocs, pprintTypeDoc, FunDoc, FunDoc'(..), Docs, Docs'(..)) where
+module Idris.Docs (
+    pprintDocs
+  , getDocs, pprintConstDocs, pprintTypeDoc
+  , FunDoc, FunDoc'(..), Docs, Docs'(..)
+  ) where
 
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
@@ -34,18 +45,18 @@ type FunDoc = FunDoc' (Docstring DocTerm)
 data Docs' d = FunDoc (FunDoc' d)
              | DataDoc (FunDoc' d) -- type constructor docs
                        [FunDoc' d] -- data constructor docs
-             | ClassDoc Name d   -- class docs
-                        [FunDoc' d] -- method docs
-                        [(Name, Maybe d)] -- parameters and their docstrings
-                        [(Maybe Name, PTerm, (d, [(Name, d)]))] -- instances: name for named instances, the constraint term, the docs
-                        [PTerm] -- subclasses
-                        [PTerm] -- superclasses
-                        (Maybe (FunDoc' d)) -- explicit constructor
+             | InterfaceDoc Name d  -- interface docs
+                            [FunDoc' d] -- method docs
+                            [(Name, Maybe d)] -- parameters and their docstrings
+                            [(Maybe Name, PTerm, (d, [(Name, d)]))] -- implementations: name for named implementations, the constraint term, the docs
+                            [PTerm] -- sub interfaces
+                            [PTerm] -- super interfaces
+                            (Maybe (FunDoc' d)) -- explicit constructor
              | RecordDoc Name d -- record docs
                          (FunDoc' d) -- data constructor docs
                          [FunDoc' d] -- projection docs
                          [(Name, PTerm, Maybe d)] -- parameters with type and doc
-             | NamedInstanceDoc Name (FunDoc' d) -- name is class
+             | NamedImplementationDoc Name (FunDoc' d) -- name is interface
              | ModDoc [String] -- Module name
                       d
   deriving Functor
@@ -58,49 +69,62 @@ showDoc ist d
                 renderDocstring (renderDocTerm (pprintDelab ist) (normaliseAll (tt_ctxt ist) [])) d
 
 pprintFD :: IState -> Bool -> Bool -> FunDoc -> Doc OutputAnnotation
-pprintFD ist totalityFlag nsFlag (FD n doc args ty f)
-    = nest 4 (prettyName True nsFlag [] n <+> colon <+>
-              pprintPTerm ppo [] [ n | (n@(UN n'),_,_,_) <- args
-                                     , not (T.isPrefixOf (T.pack "__") n') ] infixes ty <$>
-              -- show doc
-              renderDocstring (renderDocTerm (pprintDelab ist) (normaliseAll (tt_ctxt ist) [])) doc <$>
-              -- show fixity
-              maybe empty (\f -> text (show f) <> line) f <>
-              -- show arguments doc
-              let argshow = showArgs args [] in
-              (if not (null argshow)
-                then nest 4 $ text "Arguments:" <$> vsep argshow
-                else empty) <>
-              -- show totality status
-              let totality = getTotality in
-              (if totalityFlag && not (null totality) then
-                line <> (vsep . map (\t -> text "The function is" <+> t) $ totality)
-               else
-                empty))
+pprintFD ist totalityFlag nsFlag (FD n doc args ty f) =
+          nest 4 (prettyName True nsFlag [] n
+      <+> colon
+      <+> pprintPTerm ppo [] [ n | (n@(UN n'),_,_,_) <- args
+                             , not (T.isPrefixOf (T.pack "__") n') ] infixes ty
+      -- show doc
+      <$> renderDocstring (renderDocTerm (pprintDelab ist) (normaliseAll (tt_ctxt ist) [])) doc
+      -- show fixity
+      <$> maybe empty (\f -> text (show f) <> line) f
+      -- show arguments doc
+      <> let argshow = showArgs args [] in
+           (if not (null argshow)
+             then nest 4 $ text "Arguments:" <$> vsep argshow
+             else empty)
+      -- show totality status
+      <> let totality = getTotality in
+           (if totalityFlag && not (null totality)
+              then line <> (vsep . map (\t -> text "The function is" <+> t) $ totality)
+              else empty))
 
-    where ppo = ppOptionIst ist
-          infixes = idris_infixes ist
-          showArgs ((n, ty, Exp {}, Just d):args) bnd
-             = bindingOf n False <+> colon <+>
-               pprintPTerm ppo bnd [] infixes ty <>
-               showDoc ist d <> line
-               :
-               showArgs args ((n, False):bnd)
-          showArgs ((n, ty, Constraint {}, Just d):args) bnd
-             = text "Class constraint" <+>
-               pprintPTerm ppo bnd [] infixes ty <> showDoc ist d <> line
-               :
-               showArgs args ((n, True):bnd)
-          showArgs ((n, ty, Imp {}, Just d):args) bnd
-             = text "(implicit)" <+>
-               bindingOf n True <+> colon <+>
-               pprintPTerm ppo bnd [] infixes ty <>
-               showDoc ist d <> line
-               :
-               showArgs args ((n, True):bnd)
-          showArgs ((n, _, _, _):args) bnd = showArgs args ((n, True):bnd)
-          showArgs []                  _ = []
-          getTotality = map (text . show) $ lookupTotal n (tt_ctxt ist)
+    where
+      ppo = ppOptionIst ist
+
+      infixes = idris_infixes ist
+
+      -- Recurse over and show the Function's Documented arguments
+      showArgs ((n, ty, Exp {}, Just d):args)        bnd = -- Explicitly bound.
+            bindingOf n False
+        <+> colon
+        <+> pprintPTerm ppo bnd [] infixes ty
+        <> showDoc ist d
+        <> line : showArgs args ((n, False):bnd)
+      showArgs ((n, ty, Constraint {}, Just d):args) bnd = -- Interface constraints.
+            text "Interface constraint"
+        <+> pprintPTerm ppo bnd [] infixes ty
+        <> showDoc ist d
+        <> line : showArgs args ((n, True):bnd)
+      showArgs ((n, ty, Imp {}, Just d):args)        bnd = -- Implicit arguments.
+            text "(implicit)"
+        <+> bindingOf n True
+        <+> colon
+        <+> pprintPTerm ppo bnd [] infixes ty
+        <> showDoc ist d
+        <> line : showArgs args ((n, True):bnd)
+      showArgs ((n, ty, TacImp{}, Just d):args)      bnd = -- Tacit implicits
+            text "(auto implicit)"
+        <+> bindingOf n True
+        <+> colon
+        <+> pprintPTerm ppo bnd [] infixes ty
+        <> showDoc ist d
+        <> line : showArgs args ((n, True):bnd)
+      showArgs ((n, _, _, _):args)                   bnd = -- Anything else
+            showArgs args ((n, True):bnd)
+      showArgs []                                    _   = [] -- end of arguments
+
+      getTotality = map (text . show) $ lookupTotal n (tt_ctxt ist)
 
 pprintFDWithTotality :: IState -> Bool -> FunDoc -> Doc OutputAnnotation
 pprintFDWithTotality ist = pprintFD ist True
@@ -115,7 +139,7 @@ pprintDocs ist (DataDoc t args)
              if null args then text "No constructors."
              else nest 4 (text "Constructors:" <> line <>
                           vsep (map (pprintFDWithoutTotality ist False) args))
-pprintDocs ist (ClassDoc n doc meths params instances subclasses superclasses ctor)
+pprintDocs ist (InterfaceDoc n doc meths params implementations sub_interfaces super_interfaces ctor)
            = nest 4 (text "Interface" <+> prettyName True (ppopt_impl ppo) [] n <>
                      if nullDocstring doc
                        then empty
@@ -133,33 +157,33 @@ pprintDocs ist (ClassDoc n doc meths params instances subclasses superclasses ct
                    ctor
              <>
              nest 4 (text "Implementations:" <$>
-                       vsep (if null instances then [text "<no implementations>"]
-                             else map pprintInstance normalInstances))
+                       vsep (if null implementations then [text "<no implementations>"]
+                             else map pprintImplementation normalImplementations))
              <>
-             (if null namedInstances then empty
+             (if null namedImplementations then empty
               else line <$> nest 4 (text "Named implementations:" <$>
-                                    vsep (map pprintInstance namedInstances)))
+                                    vsep (map pprintImplementation namedImplementations)))
              <>
-             (if null subclasses then empty
+             (if null sub_interfaces then empty
               else line <$> nest 4 (text "Child interfaces:" <$>
-                                    vsep (map (dumpInstance . prettifySubclasses) subclasses)))
+                                    vsep (map (dumpImplementation . prettifySubInterfaces) sub_interfaces)))
              <>
-             (if null superclasses then empty
+             (if null super_interfaces then empty
               else line <$> nest 4 (text "Default parent implementations:" <$>
-                                     vsep (map dumpInstance superclasses)))
+                                     vsep (map dumpImplementation super_interfaces)))
   where
     params' = zip pNames (repeat False)
-    
-    (normalInstances, namedInstances) = partition (\(n, _, _) -> not $ isJust n)
-                                                  instances
+
+    (normalImplementations, namedImplementations) = partition (\(n, _, _) -> not $ isJust n)
+                                                              implementations
 
     pNames  = map fst params
 
     ppo = ppOptionIst ist
     infixes = idris_infixes ist
 
-    pprintInstance (mname, term, (doc, argDocs)) =
-      nest 4 (iname mname <> dumpInstance term <>
+    pprintImplementation (mname, term, (doc, argDocs)) =
+      nest 4 (iname mname <> dumpImplementation term <>
               (if nullDocstring doc
                   then empty
                   else line <>
@@ -170,13 +194,13 @@ pprintDocs ist (ClassDoc n doc meths params instances subclasses superclasses ct
                          doc) <>
               if null argDocs
                  then empty
-                 else line <> vsep (map (prettyInstanceParam (map fst argDocs)) argDocs))
+                 else line <> vsep (map (prettyImplementationParam (map fst argDocs)) argDocs))
 
 
     iname Nothing = empty
     iname (Just n) = annName n <+> colon <> space
 
-    prettyInstanceParam params (name, doc) =
+    prettyImplementationParam params (name, doc) =
       if nullDocstring doc
          then empty
          else prettyName True False (zip params (repeat False)) name <+>
@@ -186,13 +210,13 @@ pprintDocs ist (ClassDoc n doc meths params instances subclasses superclasses ct
 -- then vsep (map (\(nm,md) -> prettyName True False params' nm <+> maybe empty (showDoc ist) md) params)
 -- else hsep (punctuate comma (map (prettyName True False params' . fst) params))
 
-    dumpInstance :: PTerm -> Doc OutputAnnotation
-    dumpInstance = pprintPTerm ppo params' [] infixes
+    dumpImplementation :: PTerm -> Doc OutputAnnotation
+    dumpImplementation = pprintPTerm ppo params' [] infixes
 
-    prettifySubclasses (PPi (Constraint _ _) _ _ tm _)   = prettifySubclasses tm
-    prettifySubclasses (PPi plcity           nm fc t1 t2) = PPi plcity (safeHead nm pNames) NoFC (prettifySubclasses t1) (prettifySubclasses t2)
-    prettifySubclasses (PApp fc ref args)              = PApp fc ref $ updateArgs pNames args
-    prettifySubclasses tm                              = tm
+    prettifySubInterfaces (PPi (Constraint _ _) _ _ tm _)    = prettifySubInterfaces tm
+    prettifySubInterfaces (PPi plcity           nm fc t1 t2) = PPi plcity (safeHead nm pNames) NoFC (prettifySubInterfaces t1) (prettifySubInterfaces t2)
+    prettifySubInterfaces (PApp fc ref args)                 = PApp fc ref $ updateArgs pNames args
+    prettifySubInterfaces tm                                 = tm
 
     safeHead _ (y:_) = y
     safeHead x []    = x
@@ -204,9 +228,9 @@ pprintDocs ist (ClassDoc n doc meths params instances subclasses superclasses ct
     updateRef nm (PRef fc _ _) = PRef fc [] nm
     updateRef _  pt          = pt
 
-    isSubclass (PPi (Constraint _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args')) = nm == n && map getTm args == map getTm args'
-    isSubclass (PPi _   _            _ _ pt)                                           = isSubclass pt
-    isSubclass _                                                                       = False
+    isSubInterface (PPi (Constraint _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args')) = nm == n && map getTm args == map getTm args'
+    isSubInterface (PPi _   _            _ _ pt)                                           = isSubInterface pt
+    isSubInterface _                                                                       = False
 
     prettyParameters =
       if any (isJust . snd) params
@@ -240,8 +264,8 @@ pprintDocs ist (RecordDoc n doc ctor projs params)
          else hsep (punctuate comma (map prettyParam [(n,pt) | (n,pt,_) <- params]))
     prettyParam (n,pt) = prettyName True False params' n <+> text ":" <+> pprintPTerm ppo params' [] infixes pt
 
-pprintDocs ist (NamedInstanceDoc _cls doc)
-   = nest 4 (text "Named instance:" <$> pprintFDWithoutTotality ist True doc)
+pprintDocs ist (NamedImplementationDoc _cls doc)
+   = nest 4 (text "Named implementation:" <$> pprintFDWithoutTotality ist True doc)
 
 pprintDocs ist (ModDoc mod docs)
    = nest 4 $ text "Module" <+> text (concat (intersperse "." mod)) <> colon <$>
@@ -263,24 +287,24 @@ getDocs n@(NS n' ns) w | n' == modDocName
                              " do not exist! This shouldn't have happened and is a bug."
 getDocs n w
    = do i <- getIState
-        docs <- if | Just ci <- lookupCtxtExact n (idris_classes i)
-                     -> docClass n ci
+        docs <- if | Just ci <- lookupCtxtExact n (idris_interfaces i)
+                     -> docInterface n ci
                    | Just ri <- lookupCtxtExact n (idris_records i)
                      -> docRecord n ri
                    | Just ti <- lookupCtxtExact n (idris_datatypes i)
                      -> docData n ti
-                   | Just class_ <- classNameForInst i n
+                   | Just interface_ <- interfaceNameForImpl i n
                      -> do fd <- docFun n
-                           return $ NamedInstanceDoc class_ fd
+                           return $ NamedImplementationDoc interface_ fd
                    | otherwise
                      -> do fd <- docFun n
                            return (FunDoc fd)
         return $ fmap (howMuch w) docs
-  where classNameForInst :: IState -> Name -> Maybe Name
-        classNameForInst ist n =
+  where interfaceNameForImpl :: IState -> Name -> Maybe Name
+        interfaceNameForImpl ist n =
           listToMaybe [ cn
-                      | (cn, ci) <- toAlist (idris_classes ist)
-                      , n `elem` map fst (class_instances ci)
+                      | (cn, ci) <- toAlist (idris_interfaces ist)
+                      , n `elem` map fst (interface_implementations ci)
                       ]
 
 docData :: Name -> TypeInfo -> Idris Docs
@@ -289,44 +313,44 @@ docData n ti
        cdocs <- mapM docFun (con_names ti)
        return (DataDoc tdoc cdocs)
 
-docClass :: Name -> ClassInfo -> Idris Docs
-docClass n ci
+docInterface :: Name -> InterfaceInfo -> Idris Docs
+docInterface n ci
   = do i <- getIState
        let docStrings = listToMaybe $ lookupCtxt n $ idris_docstrings i
            docstr = maybe emptyDocstring fst docStrings
            params = map (\pn -> (pn, docStrings >>= (lookup pn . snd)))
-                        (class_params ci)
-           docsForInstance inst = fromMaybe (emptyDocstring, []) .
+                        (interface_params ci)
+           docsForImplementation impl = fromMaybe (emptyDocstring, []) .
                                   flip lookupCtxtExact (idris_docstrings i) $
-                                  inst
-           instances = map (\inst -> (namedInst inst,
-                                      delabTy i inst,
-                                      docsForInstance inst))
-                           (nub (map fst (class_instances ci)))
-           (subclasses, instances') = partition (isSubclass . (\(_,tm,_) -> tm)) instances
-           superclasses = catMaybes $ map getDInst (class_default_superclasses ci)
-       mdocs <- mapM (docFun . fst) (class_methods ci)
-       let ctorN = instanceCtorName ci
+                                  impl
+           implementations = map (\impl -> (namedImpl impl,
+                                            delabTy i impl,
+                                            docsForImplementation impl))
+                             (nub (map fst (interface_implementations ci)))
+           (sub_interfaces, implementations') = partition (isSubInterface . (\(_,tm,_) -> tm)) implementations
+           super_interfaces = catMaybes $ map getDImpl (interface_default_super_interfaces ci)
+       mdocs <- mapM (docFun . fst) (interface_methods ci)
+       let ctorN = implementationCtorName ci
        ctorDocs <- case basename ctorN of
                      SN _ -> return Nothing
                      _    -> fmap Just $ docFun ctorN
-       return $ ClassDoc
+       return $ InterfaceDoc
                   n docstr mdocs params
-                  instances' (map (\(_,tm,_) -> tm) subclasses) superclasses
+                  implementations' (map (\(_,tm,_) -> tm) sub_interfaces) super_interfaces
                   ctorDocs
   where
-    namedInst (NS n ns) = fmap (flip NS ns) (namedInst n)
-    namedInst n@(UN _)  = Just n
-    namedInst _         = Nothing
-    
-    getDInst (PInstance _ _ _ _ _ _ _ _ _ _ _ _ t _ _) = Just t
-    getDInst _                                         = Nothing
+    namedImpl (NS n ns) = fmap (flip NS ns) (namedImpl n)
+    namedImpl n@(UN _)  = Just n
+    namedImpl _         = Nothing
 
-    isSubclass (PPi (Constraint _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args'))
+    getDImpl (PImplementation _ _ _ _ _ _ _ _ _ _ _ _ t _ _) = Just t
+    getDImpl _                                         = Nothing
+
+    isSubInterface (PPi (Constraint _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args'))
       = nm == n && map getTm args == map getTm args'
-    isSubclass (PPi _ _ _ _ pt)
-      = isSubclass pt
-    isSubclass _
+    isSubInterface (PPi _ _ _ _ pt)
+      = isSubInterface pt
+    isSubInterface _
       = False
 
 docRecord :: Name -> RecordInfo -> Idris Docs
@@ -380,4 +404,4 @@ pprintConstDocs ist c str = text "Primitive" <+> text (if constIsType c then "ty
 
 pprintTypeDoc :: IState -> Doc OutputAnnotation
 pprintTypeDoc ist = prettyIst ist (PType emptyFC) <+> colon <+> type1Doc <+>
-                     nest 4 (line <> text typeDescription) 
+                     nest 4 (line <> text typeDescription)

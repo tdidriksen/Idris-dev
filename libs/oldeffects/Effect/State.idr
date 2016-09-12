@@ -9,7 +9,7 @@ data State : Effect where
   Put : b -> { a ==> b } State () 
 
 using (m : Type -> Type)
-  instance Handler State m where
+  implementation Handler State m where
      handle st Get     k = k st st
      handle st (Put n) k = k () n
 
@@ -36,5 +36,5 @@ locally newst prog = do st <- get
                         putM newst
                         val <- prog
                         putM st
-                        return val
+                        pure val
 

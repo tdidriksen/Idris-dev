@@ -1,5 +1,14 @@
-module Idris.Imports(IFileType(..), findImport, findInPath, findPkgIndex,
-                     ibcPathNoFallback, installedPackages, pkgIndex) where
+{-|
+Module      : Idris.Imports
+Description : Code to handle import declarations.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+module Idris.Imports(
+    IFileType(..), findImport, findInPath, findPkgIndex
+  , ibcPathNoFallback, installedPackages, pkgIndex
+  ) where
 
 import Control.Applicative ((<$>))
 import Data.List (isSuffixOf)
@@ -39,7 +48,7 @@ ibcPath :: FilePath -> Bool -> FilePath -> FilePath
 ibcPath ibcsd use_ibcsd fp = let (d_fp, n_fp) = splitFileName fp
                                  d = if (not use_ibcsd) || ibcsd == ""
                                      then d_fp
-                                     else d_fp </> ibcsd
+                                     else ibcsd </> d_fp
                                  n = dropExtension n_fp
                              in d </> n <.> "ibc"
 
@@ -62,9 +71,6 @@ findImport (d:ds) ibcsd fp = do let fp_full = d </> fp
                                 ibc <- runIO $ doesFileExist' ibcp
                                 idr  <- runIO $ doesFileExist' idrp
                                 lidr <- runIO $ doesFileExist' lidrp
---                              when idr $ putStrLn $ idrp ++ " ok"
---                              when lidr $ putStrLn $ lidrp ++ " ok"
---                              when ibc $ putStrLn $ ibcp ++ " ok"
                                 let isrc = if lidr
                                            then LIDR lidrp
                                            else IDR idrp

@@ -1,4 +1,10 @@
-
+{-|
+Module      : Idris.Directives
+Description : Act upon Idris directives.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 module Idris.Directives(directiveAction) where
 
 import Idris.AbsSyntax
@@ -42,6 +48,14 @@ directiveAction (DFreeze n') = do
   mapM_ (\n -> do
             setAccessibility n Frozen
             addIBC (IBCAccess n Frozen)) ns
+directiveAction (DThaw n') = do
+  ns <- allNamespaces n'
+  mapM_ (\n -> do
+            ctxt <- getContext
+            case lookupDefAccExact n False ctxt of
+                 Just (_, Frozen) -> do setAccessibility n Public
+                                        addIBC (IBCAccess n Public)
+                 _ -> throwError (Msg (show n ++ " is not frozen"))) ns
 directiveAction (DInjective n') = do
   ns <- allNamespaces n'
   mapM_ (\n -> do
@@ -63,7 +77,7 @@ directiveAction (DDynamicLibs libs) = do
   added <- addDyLib libs
   case added of
     Left lib  -> addIBC (IBCDyLib (lib_name lib))
-    Right msg -> fail $ msg
+    Right msg -> fail msg
 
 directiveAction (DNameHint ty tyFC ns) = do
   ty' <- disambiguate ty

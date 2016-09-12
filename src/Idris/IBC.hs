@@ -1,3 +1,10 @@
+{-|
+Module      : Idris.IBC
+Description : Core representations and code to generate IBC files.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 
@@ -39,8 +46,10 @@ import System.FilePath
 import System.Directory
 import Codec.Archive.Zip
 
+import Debug.Trace
+
 ibcVersion :: Word16
-ibcVersion = 143
+ibcVersion = 149
 
 -- | When IBC is being loaded - we'll load different things (and omit
 -- different structures/definitions) depending on which phase we're in.
@@ -54,12 +63,13 @@ data IBCFile = IBCFile {
   , ibc_reachablenames         :: ![Name]
   , ibc_imports                :: ![(Bool, FilePath)]
   , ibc_importdirs             :: ![FilePath]
+  , ibc_sourcedirs             :: ![FilePath]
   , ibc_implicits              :: ![(Name, [PArg])]
   , ibc_fixes                  :: ![FixDecl]
   , ibc_statics                :: ![(Name, [Bool])]
-  , ibc_classes                :: ![(Name, ClassInfo)]
+  , ibc_interfaces             :: ![(Name, InterfaceInfo)]
   , ibc_records                :: ![(Name, RecordInfo)]
-  , ibc_instances              :: ![(Bool, Bool, Name, Name)]
+  , ibc_implementations        :: ![(Bool, Bool, Name, Name)]
   , ibc_dsls                   :: ![(Name, DSL)]
   , ibc_datatypes              :: ![(Name, TypeInfo)]
   , ibc_optimise               :: ![(Name, OptInfo)]
@@ -98,6 +108,7 @@ data IBCFile = IBCFile {
   , ibc_injective              :: ![(Name, Injectivity)]
   , ibc_access                 :: ![(Name, Accessibility)]
   , ibc_fragile                :: ![(Name, String)]
+  , ibc_constraints            :: ![(FC, UConstraint)]
   }
   deriving Show
 {-!
@@ -105,7 +116,7 @@ deriving instance Binary IBCFile
 !-}
 
 initIBC :: IBCFile
-initIBC = IBCFile ibcVersion "" [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] Nothing [] [] [] [] [] [] [] [] []
+initIBC = IBCFile ibcVersion "" [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] Nothing [] [] [] [] [] [] [] [] [] []
 
 hasValidIBCVersion :: FilePath -> Idris Bool
 hasValidIBCVersion fp = do
@@ -140,7 +151,7 @@ loadIBC reexport phase fp
 
 -- | Load an entire package from its index file
 loadPkgIndex :: String -> Idris ()
-loadPkgIndex pkg = do ddir <- runIO $ getIdrisLibDir
+loadPkgIndex pkg = do ddir <- runIO getIdrisLibDir
                       addImportDir (ddir </> pkg)
                       fp <- findPkgIndex pkg
                       loadIBC True IBC_Building fp
@@ -157,12 +168,13 @@ entries i = catMaybes [Just $ toEntry "ver" 0 (encode $ ver i),
                        makeEntry "sourcefile"  (sourcefile i),
                        makeEntry "ibc_imports"  (ibc_imports i),
                        makeEntry "ibc_importdirs"  (ibc_importdirs i),
+                       makeEntry "ibc_sourcedirs"  (ibc_sourcedirs i),
                        makeEntry "ibc_implicits"  (ibc_implicits i),
                        makeEntry "ibc_fixes"  (ibc_fixes i),
                        makeEntry "ibc_statics"  (ibc_statics i),
-                       makeEntry "ibc_classes"  (ibc_classes i),
+                       makeEntry "ibc_interfaces"  (ibc_interfaces i),
                        makeEntry "ibc_records"  (ibc_records i),
-                       makeEntry "ibc_instances"  (ibc_instances i),
+                       makeEntry "ibc_implementations"  (ibc_implementations i),
                        makeEntry "ibc_dsls"  (ibc_dsls i),
                        makeEntry "ibc_datatypes"  (ibc_datatypes i),
                        makeEntry "ibc_optimise"  (ibc_optimise i),
@@ -201,6 +213,8 @@ entries i = catMaybes [Just $ toEntry "ver" 0 (encode $ ver i),
                        makeEntry "ibc_injective"  (ibc_injective i),
                        makeEntry "ibc_access"  (ibc_access i),
                        makeEntry "ibc_fragile" (ibc_fragile i)]
+-- TODO: Put this back in shortly after minimising/pruning constraints
+--                        makeEntry "ibc_constraints" (ibc_constraints i)]
 
 writeArchive :: FilePath -> IBCFile -> Idris ()
 writeArchive fp i = do let a = L.foldl (\x y -> addEntryToArchive y x) emptyArchive (entries i)
@@ -254,16 +268,16 @@ ibc i (IBCStatic n) f
                    = case lookupCtxtExact n (idris_statics i) of
                         Just v -> return f { ibc_statics = (n,v): ibc_statics f     }
                         _ -> ifail "IBC write failed"
-ibc i (IBCClass n) f
-                   = case lookupCtxtExact n (idris_classes i) of
-                        Just v -> return f { ibc_classes = (n,v): ibc_classes f     }
+ibc i (IBCInterface n) f
+                   = case lookupCtxtExact n (idris_interfaces i) of
+                        Just v -> return f { ibc_interfaces = (n,v): ibc_interfaces f     }
                         _ -> ifail "IBC write failed"
 ibc i (IBCRecord n) f
                    = case lookupCtxtExact n (idris_records i) of
                         Just v -> return f { ibc_records = (n,v): ibc_records f     }
                         _ -> ifail "IBC write failed"
-ibc i (IBCInstance int res n ins) f
-                   = return f { ibc_instances = (int, res, n, ins) : ibc_instances f }
+ibc i (IBCImplementation int res n ins) f
+                   = return f { ibc_implementations = (int, res, n, ins) : ibc_implementations f }
 ibc i (IBCDSL n) f
                    = case lookupCtxtExact n (idris_dsls i) of
                         Just v -> return f { ibc_dsls = (n,v): ibc_dsls f     }
@@ -279,6 +293,7 @@ ibc i (IBCSyntax n) f = return f { ibc_syntax = n : ibc_syntax f }
 ibc i (IBCKeyword n) f = return f { ibc_keywords = n : ibc_keywords f }
 ibc i (IBCImport n) f = return f { ibc_imports = n : ibc_imports f }
 ibc i (IBCImportDir n) f = return f { ibc_importdirs = n : ibc_importdirs f }
+ibc i (IBCSourceDir n) f = return f { ibc_sourcedirs = n : ibc_sourcedirs f }
 ibc i (IBCObj tgt n) f = return f { ibc_objs = (tgt, n) : ibc_objs f }
 ibc i (IBCLib tgt n) f = return f { ibc_libs = (tgt, n) : ibc_libs f }
 ibc i (IBCCGFlag tgt n) f = return f { ibc_cgflags = (tgt, n) : ibc_cgflags f }
@@ -330,6 +345,7 @@ ibc i (IBCExport n) f = return f { ibc_exports = n : ibc_exports f }
 ibc i (IBCAutoHint n h) f = return f { ibc_autohints = (n, h) : ibc_autohints f }
 ibc i (IBCDeprecate n r) f = return f { ibc_deprecated = (n, r) : ibc_deprecated f }
 ibc i (IBCFragile n r)   f = return f { ibc_fragile    = (n,r)  : ibc_fragile f }
+ibc i (IBCConstraint fc u)  f = return f { ibc_constraints = (fc, u) : ibc_constraints f }
 
 getEntry :: (Binary b, NFData b) => b -> FilePath -> Archive -> Idris b
 getEntry alt f a = case findEntryByPath f a of
@@ -349,20 +365,34 @@ process reexp phase archive fn = do
                 when (ver /= ibcVersion) $ do
                                     logIBC 1 "ibc out of date"
                                     let e = if ver < ibcVersion
-                                            then " an earlier " else " a later "
-                                    ifail $ "Incompatible ibc version.\nThis library was built with"
-                                            ++ e ++ "version of Idris.\n" ++ "Please clean and rebuild."
+                                            then "an earlier" else "a later"
+                                    ldir <- runIO $ getIdrisLibDir
+                                    let start = if ldir `L.isPrefixOf` fn
+                                                  then "This external module"
+                                                  else "This module"
+                                    let end = case L.stripPrefix ldir fn of
+                                                Nothing -> "Please clean and rebuild."
+
+                                                Just ploc -> unwords ["Please reinstall:", L.head $ splitDirectories ploc]
+                                    ifail $ unlines [ unwords ["Incompatible ibc version for:", show fn]
+                                                    , unwords [start
+                                                              , "was built with"
+                                                              , e
+                                                              , "version of Idris."]
+                                                    , end
+                                                    ]
                 source <- getEntry "" "sourcefile" archive
                 srcok <- runIO $ doesFileExist source
                 when srcok $ timestampOlder source fn
                 processImportDirs archive
+                processSourceDirs archive
                 processImports reexp phase archive
                 processImplicits archive
                 processInfix archive
                 processStatics archive
-                processClasses archive
+                processInterfaces archive
                 processRecords archive
-                processInstances archive
+                processImplementations archive
                 processDSLs archive
                 processDatatypes  archive
                 processOptimise  archive
@@ -401,6 +431,7 @@ process reexp phase archive fn = do
                 processInjective archive
                 processAccess reexp phase archive
                 processFragile archive
+                processConstraints archive
 
 timestampOlder :: FilePath -> FilePath -> Idris ()
 timestampOlder src ibc = do
@@ -455,10 +486,20 @@ processFragile ar = do
     ns <- getEntry [] "ibc_fragile" ar
     mapM_ (\(n,reason) -> addFragile n reason) ns
 
+processConstraints :: Archive -> Idris ()
+processConstraints ar = do
+    cs <- getEntry [] "ibc_constraints" ar
+    mapM_ (\ (fc, c) -> addConstraints fc (0, [c])) cs
+
 processImportDirs :: Archive -> Idris ()
 processImportDirs ar = do
     fs <- getEntry [] "ibc_importdirs" ar
     mapM_ addImportDir fs
+
+processSourceDirs :: Archive -> Idris ()
+processSourceDirs ar = do
+    fs <- getEntry [] "ibc_sourcedirs" ar
+    mapM_ addSourceDir fs
 
 processImports :: Bool -> IBCPhase -> Archive -> Idris ()
 processImports reexp phase ar = do
@@ -504,18 +545,18 @@ processStatics ar = do
     mapM_ (\ (n, s) ->
         updateIState (\i -> i { idris_statics = addDef n s (idris_statics i) })) ss
 
-processClasses :: Archive -> Idris ()
-processClasses ar = do
-    cs <- getEntry [] "ibc_classes" ar
+processInterfaces :: Archive -> Idris ()
+processInterfaces ar = do
+    cs <- getEntry [] "ibc_interfaces" ar
     mapM_ (\ (n, c) -> do
         i <- getIState
-        -- Don't lose instances from previous IBCs, which
+        -- Don't lose implementations from previous IBCs, which
         -- could have loaded in any order
-        let is = case lookupCtxtExact n (idris_classes i) of
+        let is = case lookupCtxtExact n (idris_interfaces i) of
                     Just (CI _ _ _ _ _ ins _) -> ins
                     _ -> []
-        let c' = c { class_instances = class_instances c ++ is }
-        putIState (i { idris_classes = addDef n c' (idris_classes i) })) cs
+        let c' = c { interface_implementations = interface_implementations c ++ is }
+        putIState (i { idris_interfaces = addDef n c' (idris_interfaces i) })) cs
 
 processRecords :: Archive -> Idris ()
 processRecords ar = do
@@ -523,10 +564,10 @@ processRecords ar = do
     mapM_ (\ (n, r) ->
         updateIState (\i -> i { idris_records = addDef n r (idris_records i) })) rs
 
-processInstances :: Archive -> Idris ()
-processInstances ar = do
-    cs <- getEntry [] "ibc_instances" ar
-    mapM_ (\ (i, res, n, ins) -> addInstance i res n ins) cs
+processImplementations :: Archive -> Idris ()
+processImplementations ar = do
+    cs <- getEntry [] "ibc_implementations" ar
+    mapM_ (\ (i, res, n, ins) -> addImplementation i res n ins) cs
 
 processDSLs :: Archive -> Idris ()
 processDSLs ar = do
@@ -1182,6 +1223,7 @@ instance Binary FnOpt where
                                  put x1
                 AutoHint -> putWord8 15
                 PEGenerated -> putWord8 16
+                StaticFn -> putWord8 17
         get
           = do i <- getWord8
                case i of
@@ -1204,6 +1246,7 @@ instance Binary FnOpt where
                             return $ CExport x1
                    15 -> return AutoHint
                    16 -> return PEGenerated
+                   17 -> return StaticFn
                    _ -> error "Corrupted binary data for FnOpt"
 
 instance Binary Fixity where
@@ -1367,7 +1410,7 @@ instance (Binary t) => Binary (PDecl' t) where
                                                 put x10
                                                 put x11
                                                 put x12
-                PClass x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12
+                PInterface x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12
                                          -> do putWord8 7
                                                put x1
                                                put x2
@@ -1381,7 +1424,7 @@ instance (Binary t) => Binary (PDecl' t) where
                                                put x10
                                                put x11
                                                put x12
-                PInstance x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 ->
+                PImplementation x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 ->
                   do putWord8 8
                      put x1
                      put x2
@@ -1508,7 +1551,7 @@ instance (Binary t) => Binary (PDecl' t) where
                            x10 <- get
                            x11 <- get
                            x12 <- get
-                           return (PClass x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12)
+                           return (PInterface x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12)
                    8 -> do x1 <- get
                            x2 <- get
                            x3 <- get
@@ -1524,7 +1567,7 @@ instance (Binary t) => Binary (PDecl' t) where
                            x13 <- get
                            x14 <- get
                            x15 <- get
-                           return (PInstance x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15)
+                           return (PImplementation x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15)
                    9 -> do x1 <- get
                            x2 <- get
                            return (PDSL x1 x2)
@@ -1825,8 +1868,6 @@ instance Binary PTerm where
                 PIdiom x1 x2 -> do putWord8 27
                                    put x1
                                    put x2
-                PReturn x1 -> do putWord8 28
-                                 put x1
                 PMetavar x1 x2 -> do putWord8 29
                                      put x1
                                      put x2
@@ -1844,8 +1885,9 @@ instance Binary PTerm where
                 PDisamb x1 x2 -> do putWord8 37
                                     put x1
                                     put x2
-                PUniverse x1 -> do putWord8 38
-                                   put x1
+                PUniverse x1 x2 -> do putWord8 38
+                                      put x1
+                                      put x2
                 PRunElab x1 x2 x3 -> do putWord8 39
                                         put x1
                                         put x2
@@ -1977,8 +2019,6 @@ instance Binary PTerm where
                    27 -> do x1 <- get
                             x2 <- get
                             return (PIdiom x1 x2)
-                   28 -> do x1 <- get
-                            return (PReturn x1)
                    29 -> do x1 <- get
                             x2 <- get
                             return (PMetavar x1 x2)
@@ -1997,7 +2037,8 @@ instance Binary PTerm where
                             x2 <- get
                             return (PDisamb x1 x2)
                    38 -> do x1 <- get
-                            return (PUniverse x1)
+                            x2 <- get
+                            return (PUniverse x1 x2)
                    39 -> do x1 <- get
                             x2 <- get
                             x3 <- get
@@ -2113,7 +2154,7 @@ instance (Binary t) => Binary (PTactic' t) where
                                         put x1
                                         put x2
                                         put x3
-                TCInstance -> putWord8 31
+                TCImplementation -> putWord8 31
                 GoalType x1 x2 -> do putWord8 32
                                      put x1
                                      put x2
@@ -2194,7 +2235,7 @@ instance (Binary t) => Binary (PTactic' t) where
                             x2 <- get
                             x3 <- get
                             return (LetTacTy x1 x2 x3)
-                   31 -> return TCInstance
+                   31 -> return TCImplementation
                    32 -> do x1 <- get
                             x2 <- get
                             return (GoalType x1 x2)
@@ -2325,7 +2366,7 @@ instance (Binary t) => Binary (PArg' t) where
                    _ -> error "Corrupted binary data for PArg'"
 
 
-instance Binary ClassInfo where
+instance Binary InterfaceInfo where
         put (CI x1 x2 x3 x4 x5 _ x6)
           = do put x1
                put x2
@@ -2420,7 +2461,7 @@ instance Binary Syntax where
                    _ -> error "Corrupted binary data for Syntax"
 
 instance (Binary t) => Binary (DSL' t) where
-        put (DSL x1 x2 x3 x4 x5 x6 x7 x8 x9 x10)
+        put (DSL x1 x2 x3 x4 x5 x6 x7 x8 x9)
           = do put x1
                put x2
                put x3
@@ -2430,7 +2471,6 @@ instance (Binary t) => Binary (DSL' t) where
                put x7
                put x8
                put x9
-               put x10
         get
           = do x1 <- get
                x2 <- get
@@ -2441,8 +2481,7 @@ instance (Binary t) => Binary (DSL' t) where
                x7 <- get
                x8 <- get
                x9 <- get
-               x10 <- get
-               return (DSL x1 x2 x3 x4 x5 x6 x7 x8 x9 x10)
+               return (DSL x1 x2 x3 x4 x5 x6 x7 x8 x9)
 
 instance Binary SSymbol where
         put x

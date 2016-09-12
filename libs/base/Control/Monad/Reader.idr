@@ -7,7 +7,7 @@ import Control.Monad.Trans
 %access public export
 
 ||| A monad representing a computation that runs in an immutable context
-interface Monad m => MonadReader r (m : Type -> Type) where
+interface Monad m => MonadReader r (m : Type -> Type) | m where
     ||| Return the context
     ask   : m r
     ||| Temprorarily modify the input and run an action in the new context
@@ -39,7 +39,7 @@ implementation Monad m => Monad (ReaderT r m) where
                                  ka r
 
 implementation Monad m => MonadReader r (ReaderT r m) where
-    ask            = RD return
+    ask            = RD pure
     local f (RD m) = RD $ m . f
 
 implementation MonadTrans (ReaderT r) where
@@ -48,7 +48,7 @@ implementation MonadTrans (ReaderT r) where
 ||| Evaluate a function in the context of a Reader monad
 asks : MonadReader r m => (r -> a) -> m a
 asks f = do r <- ask
-            return (f r)
+            pure (f r)
 
 ||| The reader monad. See MonadReader
 Reader : Type -> Type -> Type

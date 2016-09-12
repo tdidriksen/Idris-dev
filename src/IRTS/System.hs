@@ -1,6 +1,21 @@
+{-|
+Module      : IRTS.System
+Description : Utilities for interacting with the System.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE CPP #-}
-module IRTS.System(getDataFileName, getDataDir, getTargetDir,getCC,getLibFlags,getIdrisLibDir,
-                   getIncFlags, getEnvFlags, version) where
+module IRTS.System( getDataFileName
+                  , getDataDir
+                  , getTargetDir
+                  , getCC
+                  , getLibFlags
+                  , getIdrisLibDir
+                  , getIncFlags
+                  , getEnvFlags
+                  , version
+                  ) where
 
 import Data.List.Split
 
@@ -17,8 +32,13 @@ import Paths_idris
 #endif
 
 overrideDataDirWith :: String -> IO FilePath
-overrideDataDirWith envVar = do envValue <- lookupEnv envVar
-                                maybe getDataDir return envValue
+overrideDataDirWith envVar = do
+  envValue <- lookupEnv envVar
+  case envValue of
+    Nothing -> do
+      ddir <- getDataDir
+      return (ddir </> "libs")
+    Just ddir -> return ddir
 
 getCC :: IO String
 getCC = fromMaybe "gcc" <$> lookupEnv "IDRIS_CC"

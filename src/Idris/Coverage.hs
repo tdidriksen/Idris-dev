@@ -1,6 +1,11 @@
-{-# LANGUAGE PatternGuards #-}
-{-| The coverage and totality checkers for Idris are in this module.
+{-|
+Module      : Idris.Coverage
+Description : The coverage and totality checkers for Idris are in this module.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
 -}
+{-# LANGUAGE PatternGuards #-}
 module Idris.Coverage where
 
 import Idris.Core.TT
@@ -12,6 +17,7 @@ import Idris.Delaborate
 import Idris.Error
 import Idris.Output (iWarn, iputStrLn)
 
+import Data.Char
 import Data.List
 import Data.Either
 import Data.Maybe
@@ -35,6 +41,12 @@ mkPatTm t = do i <- getIState
     toTT (PApp _ t args) = do t' <- toTT t
                               args' <- mapM (toTT . getTm) args
                               return $ mkApp t' args'
+    toTT (PDPair _ _ _ l _ r) = do l' <- toTT l
+                                   r' <- toTT r
+                                   return $ mkApp (P Ref sigmaCon Erased) [Erased, Erased, l', r']
+    toTT (PPair _ _ _ l r) = do l' <- toTT l
+                                r' <- toTT r
+                                return $ mkApp (P Ref pairCon Erased) [Erased, Erased, l', r']
     -- For alternatives, pick the first and drop the namespaces. It doesn't
     -- really matter which is taken since matching will ignore the namespace.
     toTT (PAlternative _ _ (a : as)) = toTT a
@@ -70,10 +82,11 @@ genClauses fc n xs given
         logCoverage 5 $ "non-concrete args " ++ show (genPH i nty)
 
         logCoverage 5 $ show (lhs_tms, lhss)
-        logCoverage 5 $ show (map length argss) ++ "\n" ++ show (map length all_args)
-        logCoverage 10 $ show argss ++ "\n" ++ show all_args
+        logCoverage 5 $ "Args are: " ++ show argss
+        logCoverage 5 $ show (map length argss) ++ "\nAll args:\n" ++ show (map length all_args)
+        logCoverage 10 $ "All args are: " ++ show all_args
         logCoverage 3 $ "Original: \n" ++
-             showSep "\n" (map (\t -> showTm i (delab' i t True True)) xs)
+             showSep "\n" (map (\t -> showTmImpls (delab' i t True True)) xs)
         -- add an infinite supply of explicit arguments to update the possible
         -- cases for (the return type may be variadic, or function type, so
         -- there may be more case splitting that the idris_implicits record
@@ -192,46 +205,73 @@ recoverableCoverage _ _ = False
 
 genAll :: IState -> (Bool, [PTerm]) -> [PTerm]
 genAll i (addPH, args)
-   = case filter (/=Placeholder) $ fnub (concatMap otherPats (fnub args)) of
+   = case filter (/=Placeholder) $ fnub $ mergePHs $ fnub (concatMap otherPats (fnub args)) of
           [] -> [Placeholder]
-          xs -> ph $ inventConsts xs
+          xs -> ph xs
   where
     ph ts = if addPH then Placeholder : ts else ts
 
-    -- if they're constants, invent a new one to make sure that
-    -- constants which are not explicitly handled are covered
-    inventConsts cs@(PConstant fc c : _) = map (PConstant NoFC) (ic' (mapMaybe getConst cs))
-      where getConst (PConstant _ c) = Just c
-            getConst _ = Nothing
-    inventConsts xs = xs
+    -- Merge patterns with placeholders in other patterns, to ensure we've
+    -- covered all possible generated cases
+    -- e.g. if we have (True, _) (False, _) (_, True) (_, False) 
+    -- we should merge these to get (True, True), (False, False)
+    -- (False, True) and (True, False)
+    mergePHs :: [PTerm] -> [PTerm]
+    mergePHs xs = mergePHs' xs xs
 
-    -- try constants until they're not in the list.
-    -- FIXME: It is, of course, possible that someone has enumerated all
-    -- the constants and matched on them (maybe in generated code) and this
-    -- will be really slow. This is sufficiently unlikely that we won't
-    -- worry for now...
+    mergePHs' [] all = []
+    mergePHs' (x : xs) all = mergePH x all ++ mergePHs' xs all
 
-    ic' xs@(I _ : _) = firstMissing xs (lotsOfNums I)
-    ic' xs@(BI _ : _) = firstMissing xs (lotsOfNums BI)
-    ic' xs@(Fl _ : _) = firstMissing xs (lotsOfNums Fl)
-    ic' xs@(B8 _ : _) = firstMissing xs (lotsOfNums B8)
-    ic' xs@(B16 _ : _) = firstMissing xs (lotsOfNums B16)
-    ic' xs@(B32 _ : _) = firstMissing xs (lotsOfNums B32)
-    ic' xs@(B64 _ : _) = firstMissing xs (lotsOfNums B64)
-    ic' xs@(Ch _ : _) = firstMissing xs lotsOfChars
-    ic' xs@(Str _ : _) = firstMissing xs lotsOfStrings
-    -- The rest are types with only one case
-    ic' xs = xs
+    mergePH :: PTerm -> [PTerm] -> [PTerm]
+    mergePH tm [] = []
+    mergePH tm (x : xs) 
+          | Just merged <- mergePTerm tm x = merged : mergePH tm xs
+          | otherwise = mergePH tm xs
 
-    firstMissing cs (x : xs) | x `elem` cs = firstMissing cs xs
-                             | otherwise = x : cs
+    mergePTerm :: PTerm -> PTerm -> Maybe PTerm
+    mergePTerm x Placeholder = Just x
+    mergePTerm Placeholder x = Just x
+    mergePTerm tm@(PRef fc1 hl1 n1) (PRef fc2 hl2 n2)
+          | n1 == n2 = Just tm
+    mergePTerm (PPair fc1 hl1 p1 x1 y1) (PPair fc2 hl2 p2 x2 y2)
+          = do x <- mergePTerm x1 x2
+               y <- mergePTerm y1 y2
+               Just (PPair fc1 hl1 p1 x y)
+    mergePTerm (PDPair fc1 hl1 p1 x1 t1 y1) (PDPair fc2 hl2 p2 x2 t2 y2)
+          = do x <- mergePTerm x1 x2
+               y <- mergePTerm y1 y2
+               t <- mergePTerm t1 t2
+               Just (PDPair fc1 hl1 p1 x t y)
+    mergePTerm (PApp fc1 f1 args1) (PApp fc2 f2 args2)
+          = do fm <- mergePTerm f1 f2
+               margs <- mergeArgs args1 args2
+               Just (PApp fc1 fm margs)
+      where
+        mergeArgs [] [] = Just []
+        mergeArgs (a : as) (b : bs)
+                  = do ma_in <- mergePTerm (getTm a) (getTm b)
+                       let ma = a { getTm = ma_in }
+                       mas <- mergeArgs as bs
+                       Just (ma : mas)
+        mergeArgs _ _ = Nothing
+    mergePTerm x y | x == y = Just x
+                   | otherwise = Nothing
 
-    lotsOfNums t = map t [0..]
-    lotsOfChars = map Ch ['a'..]
-    lotsOfStrings = map Str (map (("some string " ++).show) [1..])
+    -- for every constant in a term (at any level) take next one to make sure
+    -- that constants which are not explicitly handled are covered
+    nextConst (PConstant fc c) = PConstant NoFC (nc' c)
+    nextConst o = o
 
-    nubMap f acc [] = acc
-    nubMap f acc (x : xs) = nubMap f (fnub' acc (f x)) xs
+    nc' (I c) = I (c + 1)
+    nc' (BI c) = BI (c + 1)
+    nc' (Fl c) = Fl (c + 1)
+    nc' (B8 c) = B8 (c + 1)
+    nc' (B16 c) = B16 (c + 1)
+    nc' (B32 c) = B32 (c + 1)
+    nc' (B64 c) = B64 (c + 1)
+    nc' (Ch c) = Ch (chr $ ord c + 1)
+    nc' (Str c) = Str (c ++ "'")
+    nc' o = o
 
     otherPats :: PTerm -> [PTerm]
     otherPats o@(PRef fc hl n) = ph $ ops fc n [] o
@@ -246,7 +286,7 @@ genAll i (addPH, args)
                 ([pimp (sUN "a") Placeholder True,
                   pimp (sUN "P") Placeholder True] ++
                  [pexp t,pexp v]) o
-    otherPats o@(PConstant _ c) = ph $ inventConsts [o] -- return o
+    otherPats o@(PConstant _ c) = ph [o, nextConst o]
     otherPats arg = return Placeholder
 
     ops fc n xs o
@@ -300,6 +340,7 @@ genAll i (addPH, args)
     quickEq :: PTerm -> PTerm -> Bool
     quickEq (PConstant _ n) (PConstant _ n') = n == n'
     quickEq (PRef _ _ n) (PRef _ _ n') = n == n'
+    quickEq (PPair _ _ _ l r) (PPair _ _ _ l' r') = quickEq l l' && quickEq r r'
     quickEq (PApp _ t as) (PApp _ t' as')
         | length as == length as'
            = quickEq t t' && and (zipWith quickEq (map getTm as) (map getTm as'))
@@ -352,7 +393,7 @@ checkPositive mut_ns (cn, ty')
   where
     args t = [0..length (getArgTys t)-1]
 
-    cp i (Bind n (Pi _ aty _) sc) 
+    cp i (Bind n (Pi _ aty _) sc)
          = posArg i aty && cp i sc
     cp i t | (P _ n' _ , args) <- unApply t,
              n' `elem` mut_ns = all noRec args
@@ -459,16 +500,43 @@ checkTotality path fc n
 checkDeclTotality :: (FC, Name) -> Idris Totality
 checkDeclTotality (fc, n)
     = do logCoverage 2 $ "Checking " ++ show n ++ " for totality"
---          buildSCG (fc, n)
---          logCoverage 2 $ "Built SCG"
          i <- getIState
-         let opts = case lookupCtxt n (idris_flags i) of
-                              [fs] -> fs
+         let opts = case lookupCtxtExact n (idris_flags i) of
+                              Just fs -> fs
                               _ -> []
          when (CoveringFn `elem` opts) $ checkAllCovering fc [] n n
          t <- checkTotality [] fc n
          return t
 
+-- If the name calls something which is partial, set it as partial
+verifyTotality :: (FC, Name) -> Idris ()
+verifyTotality (fc, n)
+    = do logCoverage 2 $ "Checking " ++ show n ++ "'s descendents are total"
+         ist <- getIState
+         case lookupTotalExact n (tt_ctxt ist) of
+              Just (Total _) -> do
+                 let ns = getNames (tt_ctxt ist)
+
+                 case getPartial ist [] ns of
+                      Nothing -> return ()
+                      Just bad -> do let t' = Partial (Other bad)
+                                     logCoverage 2 $ "Set to " ++ show t'
+                                     setTotality n t'
+                                     addIBC (IBCTotal n t')
+              _ -> return ()
+  where
+    getNames ctxt = case lookupDefExact n ctxt of
+                         Just (CaseOp  _ _ _ _ _ defs)
+                           -> let (top, def) = cases_compiletime defs in
+                                  map fst (findCalls' True def top)
+                         _ -> []
+
+    getPartial ist [] [] = Nothing
+    getPartial ist bad [] = Just bad
+    getPartial ist bad (n : ns)
+        = case lookupTotalExact n (tt_ctxt ist) of
+               Just (Partial _) -> getPartial ist (n : bad) ns
+               _ -> getPartial ist bad ns
 
 -- | Calculate the size change graph for this definition
 --
@@ -519,8 +587,9 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
                             findCalls [] Toplevel (dePat rhs') (patvars lhs')
                                       (zip pargs [0..])
 
-  findCalls cases Delayed ap@(P _ n _) pvs args
-     | n == topfn = []
+  -- Under a delay, calls are excluded from the graph - if it's a call to a
+  -- non-total function we'll find that in the final totality check
+  findCalls cases Delayed ap@(P _ n _) pvs args = []
   findCalls cases guarded ap@(App _ f a) pvs pargs
      -- under a call to "assert_total", don't do any checking, just believe
      -- that it is total.
@@ -530,7 +599,7 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
      | (P _ n _, _) <- unApply ap,
        Just opts <- lookupCtxtExact n (idris_flags ist),
        AssertTotal `elem` opts = []
-     -- under a guarded call to "Delay LazyCodata", we are 'Delayed', so don't
+     -- under a guarded call to "Delay Infinite", we are 'Delayed', so don't
      -- check under guarded constructors.
      | (P _ (UN del) _, [_,_,arg]) <- unApply ap,
        Guarded <- guarded,
@@ -538,15 +607,17 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
            = findCalls cases Delayed arg pvs pargs
      | (P _ n _, args) <- unApply ap,
        Delayed <- guarded,
-       n == topfn -- Under a delayed recursive call to the top level function,
-                  -- just check the arguments
-           = concatMap (\x -> findCalls cases Unguarded x pvs pargs) args
-     | (P _ n _, args) <- unApply ap,
-       Delayed <- guarded,
        isConName n (tt_ctxt ist)
            = -- Still under a 'Delay' and constructor guarded, so check
              -- just the arguments to the constructor, remaining Delayed
              concatMap (\x -> findCalls cases guarded x pvs pargs) args
+     | (P _ ifthenelse _, [_, _, t, e]) <- unApply ap,
+       ifthenelse == sNS (sUN "ifThenElse") ["Bool", "Prelude"]
+       -- Continue look inside if...then...else blocks
+       -- TODO: Consider whether we should do this for user defined ifThenElse
+       -- rather than just the one in the Prelude as a special case
+       = findCalls cases guarded t pvs pargs ++
+         findCalls cases guarded e pvs pargs
      | (P _ n _, args) <- unApply ap,
        caseName n && n /= topfn,
        notPartial (lookupTotalExact n (tt_ctxt ist))
@@ -558,6 +629,10 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
              if n `notElem` cases
                 then findCallsCase (n : cases) guarded n args pvs pargs
                 else []
+     | (P _ n _, args) <- unApply ap,
+       Delayed <- guarded
+       -- Under a delayed recursive call just check the arguments
+           = concatMap (\x -> findCalls cases Unguarded x pvs pargs) args
      | (P _ n _, args) <- unApply ap
         -- Ordinary call, not under a delay.
         -- If n is a constructor, set 'args' as Guarded
@@ -714,15 +789,25 @@ type MultiPath = [SCGEntry]
 
 mkMultiPaths :: IState -> MultiPath -> [SCGEntry] -> [MultiPath]
 mkMultiPaths ist path [] = [reverse path]
-mkMultiPaths ist path cg
-    = concat (map extend cg)
+mkMultiPaths ist path cg = concatMap extend cg
   where extend (nextf, args)
-           | (nextf, args) `elem` path = [ reverse ((nextf, args) : path) ]
+           | (nextf, args) `inPath` path = [ reverse ((nextf, args) : path) ]
            | [Unchecked] <- lookupTotal nextf (tt_ctxt ist)
                = case lookupCtxt nextf (idris_callgraph ist) of
                     [ncg] -> mkMultiPaths ist ((nextf, args) : path) (scg ncg)
                     _ -> [ reverse ((nextf, args) : path) ]
            | otherwise = [ reverse ((nextf, args) : path) ]
+
+        inPath :: SCGEntry -> [SCGEntry] -> Bool
+        inPath f [] = False
+        inPath f (g : gs) = smallerEq f g || f == g || inPath f gs
+
+        smallerEq :: SCGEntry -> SCGEntry -> Bool
+        smallerEq (f, args) (g, args')
+            = f == g && not (null (filter smallers args))
+                     && filter smallers args == filter smallers args'
+        smallers (Just (_, Smaller)) = True
+        smallers _ = False
 
 -- If any route along the multipath leads to infinite descent, we're fine.
 -- Try a route beginning with every argument.

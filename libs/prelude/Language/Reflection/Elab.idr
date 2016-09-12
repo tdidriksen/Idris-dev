@@ -182,7 +182,7 @@ data Elab : Type -> Type where
   Prim__DefineFunction : FunDefn Raw -> Elab ()
   Prim__DeclareDatatype : TyDecl -> Elab ()
   Prim__DefineDatatype : DataDefn -> Elab ()
-  Prim__AddInstance : TTName -> TTName -> Elab ()
+  Prim__AddImplementation : TTName -> TTName -> Elab ()
   Prim__IsTCName : TTName -> Elab Bool
 
   Prim__ResolveTC : TTName -> Elab ()
@@ -253,7 +253,7 @@ namespace Tactics
   export
   lookupTyExact : TTName -> Elab (TTName, NameType, TT)
   lookupTyExact n = case !(lookupTy n) of
-                      [res] => return res
+                      [res] => pure res
                       []    => fail [NamePart n, TextPart "is not defined."]
                       xs    => fail [NamePart n, TextPart "is ambiguous."]
 
@@ -269,7 +269,7 @@ namespace Tactics
   export
   lookupDatatypeExact : TTName -> Elab Datatype
   lookupDatatypeExact n = case !(lookupDatatype n) of
-                            [res] => return res
+                            [res] => pure res
                             []    => fail [TextPart "No datatype named", NamePart n]
                             xs    => fail [TextPart "More than one datatype named", NamePart n]
 
@@ -285,7 +285,7 @@ namespace Tactics
   export
   lookupFunDefnExact : TTName -> Elab (FunDefn TT)
   lookupFunDefnExact n = case !(lookupFunDefn n) of
-                           [res] => return res
+                           [res] => pure res
                            []    => fail [TextPart "No function named", NamePart n]
                            xs    => fail [TextPart "More than one function named", NamePart n]
 
@@ -299,7 +299,7 @@ namespace Tactics
   export
   lookupArgsExact : TTName -> Elab (TTName, List FunArg, Raw)
   lookupArgsExact n = case !(lookupArgs n) of
-                        [res] => return res
+                        [res] => pure res
                         []    => fail [NamePart n, TextPart "is not defined."]
                         xs    => fail [NamePart n, TextPart "is ambiguous."]
 
@@ -555,10 +555,15 @@ namespace Tactics
   ||| Register a new implementation for interface resolution.
   |||
   ||| @ ifaceName the name of the interface for which an implementation is being registered
-  ||| @ instName the name of the definition to use in implementation search
+  ||| @ implName the name of the definition to use in implementation search
   export
-  addInstance : (ifaceName, instName : TTName) -> Elab ()
-  addInstance ifaceName instName = Prim__AddInstance ifaceName instName
+  addImplementation : (ifaceName, implName : TTName) -> Elab ()
+  addImplementation ifaceName implName = Prim__AddImplementation ifaceName implName
+
+  export
+  addInstance : (ifaceName, implName : TTName) -> Elab ()
+  addInstance = addImplementation
+  %deprecate addInstance "`addInstance` is deprecated, Please use `addImplementation` instead."
 
   ||| Determine whether a name denotes an interface.
   |||

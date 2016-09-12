@@ -8,7 +8,7 @@ Primitive Types
 ===============
 
 Idris defines several primitive types: ``Int``, ``Integer`` and
-``Float`` for numeric operations, ``Char`` and ``String`` for text
+``Double`` for numeric operations, ``Char`` and ``String`` for text
 manipulation, and ``Ptr`` which represents foreign pointers. There are
 also several data types declared in the library, including ``Bool``,
 with values ``True`` and ``False``. We can declare some constants with
@@ -469,7 +469,7 @@ It is a matter of taste whether you want to do this — sometimes it can
 help document a function by making the purpose of an argument more
 clear.
 
-Furthermore, ``{}`` can be used to pattern match on the left hand side, i.e. 
+Furthermore, ``{}`` can be used to pattern match on the left hand side, i.e.
 ``{var = pat}`` gets an implicit variable and attempts to pattern match on "pat";
 For example :
 
@@ -537,10 +537,11 @@ Note: Declaration Order and ``mutual`` blocks
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In general, functions and data types must be defined before use, since
-dependent types allow functions to appear as part of types, and their
-reduction behaviour to affect type checking. However, this restriction
-can be relaxed by using a ``mutual`` block, which allows data types
-and functions to be defined simultaneously:
+dependent types allow functions to appear as part of types, and type
+checking can rely on how particular functions are defined (though this
+is only true of total functions; see Section :ref:`sect-totality`)).
+However, this restriction can be relaxed by using a ``mutual`` block,
+which allows data types and functions to be defined simultaneously:
 
 .. code-block:: idris
 
@@ -683,6 +684,95 @@ without any explicit use of ``Force`` or ``Delay``:
     ifThenElse : Bool -> Lazy a -> Lazy a -> a;
     ifThenElse True  t e = t;
     ifThenElse False t e = e;
+
+Codata Types
+============
+
+Codata types are like regular data types, except that they allow for us to
+define infinite data structures.  More precisely, for a type ``T``, each of its
+constructor arguments of type ``T`` are transformed into a coinductive parameter
+``Inf T``. This makes each of the ``T`` arguments lazy, and allows infinite data
+structures of type ``T`` to be built. One example of a codata type is Stream,
+which is defined as follows.
+
+.. code-block:: idris
+
+    codata Stream : Type -> Type where
+      (::) : (e : a) -> Stream a -> Stream a
+
+This gets translated into the following by the compiler.
+
+.. code-block:: idris
+
+    data Stream : Type -> Type where
+      (::) : (e : a) -> Inf (Stream a) -> Stream a
+
+The following is an example of how the codata type ``Stream`` can be used to
+form an infinite data structure. In this case we are creating an infinite stream
+of ones.
+
+.. code-block:: idris
+
+    ones :: Stream Nat
+    ones = 1 :: ones
+
+It is important to note that codata does not allow the creation of infinite
+mutually recursive data structures. For example the following will create an
+infinite loop and cause a stack overflow.
+
+.. code-block:: idris
+
+    mutual
+      codata Blue a = B a (Red a)
+      codata Red a = R a (Blue a)
+
+    mutual
+      blue : Blue Nat
+      blue = B 1 red
+
+      red : Red Nat
+      red = R 1 blue
+
+    mutual
+      findB : (a -> Bool) -> Blue a -> a
+      findB f (B x r) = if f x then x else findR f r
+
+      findR : (a -> Bool) -> Red a -> a
+      findR f (R x b) = if f x then x else findB f b
+
+    main : IO ()
+    main = do printLn $ findB (== 1) blue
+
+To fix this we must add explicit ``Inf`` declarations to the constructor
+parameter types, since codata will not add it to constructor parameters of a
+**different** type from the one being defined. For example, the following
+outputs "1".
+
+.. code-block:: idris
+
+    mutual
+      data Blue : Type -> Type where
+       B : a -> Inf (Red a) -> Blue a
+
+      data Red : Type -> Type where
+       R : a -> Inf (Blue a) -> Red a
+
+    mutual
+      blue : Blue Nat
+      blue = B 1 red
+
+      red : Red Nat
+      red = R 1 blue
+
+    mutual
+      findB : (a -> Bool) -> Blue a -> a
+      findB f (B x r) = if f x then x else findR f r
+
+      findR : (a -> Bool) -> Red a -> a
+      findR f (R x b) = if f x then x else findB f b
+
+    main : IO ()
+    main = do printLn $ findB (== 1) blue
 
 Useful Data Types
 =================
@@ -977,13 +1067,14 @@ updated):
 
     *record> record { firstName = "Jim" } fred
     MkPerson "Jim" "Joe" "Bloggs" 30 : Person
-    *record> record { firstName = "Jim", age = 20 } fred
-    MkPerson "Jim" "Joe" "Bloggs" 20 : Person
+    *record> record { firstName = "Jim", age $= (+ 1) } fred
+    MkPerson "Jim" "Joe" "Bloggs" 31 : Person
 
 The syntax ``record { field = val, ... }`` generates a function which
-updates the given fields in a record.
+updates the given fields in a record. ``=`` assigns a new value to a field,
+and ``$=`` applies a function to update its value.
 
-Each record is defined in its own namespace, which means that field names 
+Each record is defined in its own namespace, which means that field names
 can be reused in multiple records.
 
 Records, and fields within records, can have dependent types. Updates
@@ -1126,8 +1217,9 @@ Pythagorean triples as follows:
 The ``[a..b]`` notation is another shorthand which builds a list of
 numbers between ``a`` and ``b``. Alternatively ``[a,b..c]`` builds a
 list of numbers between ``a`` and ``c`` with the increment specified
-by the difference between ``a`` and ``b``. This works for any numeric
-type, using the ``count`` function from the prelude.
+by the difference between ``a`` and ``b``. This works for type ``Nat``,
+``Int`` and ``Integer``, using the ``enumFromTo`` and ``enumFromThenTo``
+function from the prelude.
 
 ``case`` expressions
 --------------------
@@ -1182,3 +1274,79 @@ matching ``let`` and lambda bindings. It will *only* work if:
 - The type of the result is "known". i.e. the type of the expression
   can be determined *without* type checking the ``case``-expression
   itself.
+
+Totality
+========
+
+A *total* function is a function that terminates for all possible
+inputs, or one that is guaranteed to produce some output before making
+a recursive call. For example, Idris' ``head`` function is total for
+all lists:
+
+::
+
+    Idris> :t Prelude.List.head
+    head : (l : List a) -> {auto ok : NonEmpty l} -> a
+
+The ``{auto ok : NonEmpty l}`` tells us that Idris won't compile if we
+try to call ``head`` on an empty list. The implementation is as follows:
+
+.. code-block:: idris
+
+    ||| Get the first element of a non-empty list
+    ||| @ ok proof that the list is non-empty
+    head : (l : List a) -> {auto ok : NonEmpty l} -> a
+    head []      {ok=IsNonEmpty} impossible
+    head (x::xs) {ok=p}    = x
+
+(Note that this implementation is in contrast to Haskell's ``head``,
+which is  *not* total and will fail at runtime rather than compile time.)
+The following Idris code will compile:
+
+.. code-block:: idris
+
+    module Main
+
+    main : IO ()
+    main = do
+      let x : Integer = head [1,2,3]
+      print x
+
+And will print ``1``. However, the same code with ``head []`` won't compile:
+
+::
+
+    test.idr:5:26:When checking right hand side of main with expected type
+        IO ()
+
+    When checking argument ok to function Prelude.List.head:
+          Can't find a value of type
+                  NonEmpty []
+
+We can't bind and print ``x`` because ``head []`` doesn't type check.
+
+However, we might imagine a function, ``unsafeHead``, that is identical to
+Idris' ``head`` function except that it is *not* total: it will error out
+at runtime if called on an empty list. (This is similar to the behavior of
+Haskell's ``head`` function.) ``unsafeHead`` might look like this:
+
+.. code-block:: idris
+
+    -- Unsafe head example!
+    unsafeHead : List a -> a
+    unsafeHead (x::xs) = x
+
+And although it typechecks and compiles, it will not reduce (that is, evaluation
+of the function will cause it to change):
+
+::
+
+    unsafe> the Integer $ unsafeHead [1, 2, 3]
+    1 : Integer
+    unsafe> the Integer $ unsafeHead []
+    unsafeHead [] : Integer
+
+Functions that are not total are known as *partial functions*. As
+mentioned in the note about ``mutual`` blocks, non-total definitions
+aren't reduced when type checking because they are not well-defined
+for all possible inputs.

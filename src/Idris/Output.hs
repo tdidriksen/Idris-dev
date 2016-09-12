@@ -1,3 +1,11 @@
+{-|
+Module      : Idris.Output
+Description : Utilities to display Idris' internals and other informtation to the user.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 
 module Idris.Output where
@@ -13,6 +21,7 @@ import Idris.IdeMode
 
 import Util.Pretty
 import Util.ScreenSize (getScreenWidth)
+import Util.System (isATTY)
 
 import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT)
 
@@ -59,13 +68,14 @@ iRender d = do w <- getWidth
                let ideMode = case idris_outputmode ist of
                                 IdeMode _ _ -> True
                                 _            -> False
+               tty <- runIO isATTY
                case w of
                  InfinitelyWide -> return $ renderPretty 1.0 1000000000 d
                  ColsWide n -> return $
                                if n < 1
                                  then renderPretty 1.0 1000000000 d
                                  else renderPretty 0.8 n d
-                 AutomaticWidth | ideMode  -> return $ renderPretty 1.0 80 d
+                 AutomaticWidth | ideMode || not tty -> return $ renderPretty 1.0 80 d
                                 | otherwise -> do width <- runIO getScreenWidth
                                                   return $ renderPretty 0.8 width d
 
@@ -99,7 +109,7 @@ iPrintFunTypes bnd n overloads = do ist <- getIState
                                     let output = vsep (map (uncurry (ppOverload ppo infixes)) overloads)
                                     iRenderResult output
   where fullName ppo n | length overloads > 1 = prettyName True True bnd n
-                       | otherwise = prettyName True (ppopt_impl ppo) bnd n 
+                       | otherwise = prettyName True (ppopt_impl ppo) bnd n
         ppOverload ppo infixes n tm =
           fullName ppo n <+> colon <+> align tm
 

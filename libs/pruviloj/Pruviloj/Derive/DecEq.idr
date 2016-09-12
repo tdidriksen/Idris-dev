@@ -116,7 +116,7 @@ mkRhs fn fam k =
                                       focus a1; fill rTm1; solve
                                       focus a2; fill rTm2; solve
                                       focus dH; resolveTC fn
-                          return (Var eq)
+                          pure (Var eq)
                      matchCase tms
       _ => fail [TextPart "Inapplicable"]
 
@@ -127,7 +127,7 @@ mkRhs fn fam k =
 ||| deriving to occur. It must consist of zero or more non-constraint
 ||| arguments followed by zero or more constraint arguments, followed
 ||| by the two values to compare. The constraint arguments must
-||| provide sufficient instances of `DecEq` to decide the equality of
+||| provide sufficient implementations of `DecEq` to decide the equality of
 ||| each constructor field. The final two arguments to the function
 ||| declaration must be the two values that will be compared for
 ||| equality.
@@ -165,7 +165,7 @@ deriveDecEq fn =
              (a2 :: a1 :: rest) =>
                do (constrs, bindings) <- partitionM (\x => isConstr (binderTy (snd x)))
                                                     (reverse rest)
-                  return (bindings, constrs, a1, a2)
+                  pure (bindings, constrs, a1, a2)
        let todo = [(c1, c2) | c1 <- constructors datatype
                             , c2 <- constructors datatype]
        clauses <- for todo
@@ -178,7 +178,7 @@ deriveDecEq fn =
     isConstr : Raw -> Elab Bool
     isConstr tm = case headName tm of
                     Just n => isTCName n
-                    Nothing => return False
+                    Nothing => pure False
 
     partial -- mkRhs
     mkCase : Nat -> TTName -> (x, y : (TTName, List CtorArg, Raw)) -> Elab (Maybe (FunClause Raw))

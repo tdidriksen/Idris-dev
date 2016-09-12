@@ -1,7 +1,11 @@
-{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies, DeriveFunctor, 
-             DeriveDataTypeable, PatternGuards #-}
-{-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
-{-| TT is the core language of Idris. The language has:
+{-|
+Module      : Idris.Core.TT
+Description : The core language of Idris, TT.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+
+TT is the core language of Idris. The language has:
 
    * Full dependent types
 
@@ -18,36 +22,40 @@
    * We have a simple collection of tactics which we use to elaborate source
      programs with implicit syntax into fully explicit terms.
 -}
-
-module Idris.Core.TT(AppStatus(..), ArithTy(..), Binder(..), Const(..), Ctxt(..),
-                     ConstraintFC(..), DataOpt(..), DataOpts(..), Datatype(..),
-                     Env(..), EnvTT(..), Err(..), Err'(..), ErrorReportPart(..),
-                     FC(..), FC'(..), ImplicitInfo(..), IntTy(..), Name(..),
-                     NameOutput(..), NameType(..), NativeTy(..), OutputAnnotation(..),
-                     Provenance(..), Raw(..), SpecialName(..), TC(..), Term(..),
-                     TermSize(..), TextFormatting(..), TT(..),Type(..), TypeInfo(..),
-                     UConstraint(..), UCs(..), UExp(..), Universe(..),
-                     addAlist, addBinder, addDef, allTTNames, arity, bindAll,
-                     bindingOf, bindTyArgs, caseName, constDocs, constIsType, deleteDefExact,
-                     discard, emptyContext, emptyFC, explicitNames, fc_end, fc_fname,
-                     fc_start, fcIn, fileFC, finalise, fmapMB, forget, forgetEnv,
-                     freeNames, getArgTys, getRetTy, implicitable, instantiate,
-                     intTyName, isInjective, isTypeConst, liftPats, lookupCtxt,
-                     lookupCtxtExact, lookupCtxtName, mapCtxt, mkApp, nativeTyWidth,
-                     nextName, noOccurrence, nsroot, occurrences, orderPats,
-                     pEraseType, pmap, pprintRaw, pprintTT, prettyEnv, psubst, pToV,
-                     pToVs, pureTerm, raw_apply, raw_unapply, refsIn, safeForget,
-                     safeForgetEnv, showCG, showEnv, showEnvDbg, showSep,
-                     sInstanceN, sMN, sNS, spanFC, str, subst, substNames, substTerm,
-                     substV, sUN, tcname, termSmallerThan, tfail, thead, tnull,
-                     toAlist, traceWhen, txt, unApply, uniqueBinders, uniqueName,
-                     uniqueNameFrom, uniqueNameSet, unList, updateDef, vToP, weakenTm) where
+{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies, DeriveFunctor,
+             DeriveDataTypeable, DeriveGeneric, PatternGuards #-}
+{-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
+module Idris.Core.TT(
+    AppStatus(..), ArithTy(..), Binder(..), Const(..), Ctxt(..)
+  , ConstraintFC(..), DataOpt(..), DataOpts(..), Datatype(..)
+  , Env(..), EnvTT(..), Err(..), Err'(..), ErrorReportPart(..)
+  , FC(..), FC'(..), ImplicitInfo(..), IntTy(..), Name(..)
+  , NameOutput(..), NameType(..), NativeTy(..), OutputAnnotation(..)
+  , Provenance(..), Raw(..), SpecialName(..), TC(..), Term(..)
+  , TermSize(..), TextFormatting(..), TT(..),Type(..), TypeInfo(..)
+  , UConstraint(..), UCs(..), UExp(..), Universe(..)
+  , addAlist, addBinder, addDef, allTTNames, arity, bindAll
+  , bindingOf, bindTyArgs, caseName, constDocs, constIsType, deleteDefExact
+  , discard, emptyContext, emptyFC, explicitNames, fc_end, fc_fname
+  , fc_start, fcIn, fileFC, finalise, fmapMB, forget, forgetEnv
+  , freeNames, getArgTys, getRetTy, implicitable, instantiate, internalNS
+  , intTyName, isInjective, isTypeConst, lookupCtxt
+  , lookupCtxtExact, lookupCtxtName, mapCtxt, mkApp, nativeTyWidth
+  , nextName, noOccurrence, nsroot, occurrences
+  , pEraseType, pmap, pprintRaw, pprintTT, pprintTTClause, prettyEnv, psubst
+  , pToV, pToVs, pureTerm, raw_apply, raw_unapply, refsIn, safeForget
+  , safeForgetEnv, showCG, showEnv, showEnvDbg, showSep
+  , sImplementationN, sMN, sNS, spanFC, str, subst, substNames, substTerm
+  , substV, sUN, tcname, termSmallerThan, tfail, thead, tnull
+  , toAlist, traceWhen, txt, unApply, uniqueBinders, uniqueName
+  , uniqueNameFrom, uniqueNameSet, unList, updateDef, vToP, weakenTm
+  ) where
 
 -- Work around AMP without CPP
 import Prelude (Eq(..), Show(..), Ord(..), Functor(..), Monad(..), String, Int,
                 Integer, Ordering(..), Maybe(..), Num(..), Bool(..), Enum(..),
-                Read(..), FilePath, Double, (&&), (||), ($), (.), div, error, fst,
-                snd, not, mod, read, otherwise)
+                Read(..), FilePath, Double, (&&), (||), ($), (.), div, error, flip,
+                fst, snd, not, mod, read, otherwise)
 
 import Control.Applicative (Applicative (..), Alternative)
 import qualified Control.Applicative as A (Alternative (..))
@@ -72,6 +80,7 @@ import qualified Data.Vector.Unboxed as V
 import qualified Data.Binary as B
 import Data.Binary hiding (get, put)
 import Foreign.Storable (sizeOf)
+import GHC.Generics (Generic)
 
 import Numeric.IEEE (IEEE (identicalIEEE))
 
@@ -88,7 +97,7 @@ data FC = FC { _fc_fname :: String, -- ^ Filename
              }
         | NoFC -- ^ Locations for machine-generated terms
         | FileFC { _fc_fname :: String } -- ^ Locations with file only
-  deriving (Data, Typeable, Ord)
+  deriving (Data, Generic, Typeable, Ord)
 
 -- TODO: find uses and destroy them, doing this case analysis at call sites
 -- | Give a notion of filename associated with an FC
@@ -151,7 +160,7 @@ instance Eq FC where
   _ == _ = True
 
 -- | FC with equality
-newtype FC' = FC' { unwrapFC :: FC } deriving (Data, Typeable, Ord)
+newtype FC' = FC' { unwrapFC :: FC } deriving (Data, Generic, Typeable, Ord)
 
 instance Eq FC' where
   FC' fc == FC' fc' = fcEq fc fc'
@@ -173,7 +182,6 @@ fileFC s = FileFC s
 
 {-!
 deriving instance Binary FC
-deriving instance NFData FC
 !-}
 
 instance Sized FC where
@@ -190,10 +198,10 @@ instance Show FC where
     show (FileFC f) = f
 
 -- | Output annotation for pretty-printed name - decides colour
-data NameOutput = TypeOutput | FunOutput | DataOutput | MetavarOutput | PostulateOutput deriving (Show, Eq)
+data NameOutput = TypeOutput | FunOutput | DataOutput | MetavarOutput | PostulateOutput deriving (Show, Eq, Generic)
 
 -- | Text formatting output
-data TextFormatting = BoldText | ItalicText | UnderlineText deriving (Show, Eq)
+data TextFormatting = BoldText | ItalicText | UnderlineText deriving (Show, Eq, Generic)
 
 -- | Output annotations for pretty-printing
 data OutputAnnotation = AnnName Name (Maybe NameOutput) (Maybe String) (Maybe String)
@@ -219,7 +227,7 @@ data OutputAnnotation = AnnName Name (Maybe NameOutput) (Maybe String) (Maybe St
                         -- from that file.
                       | AnnQuasiquote
                       | AnnAntiquote
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
 
 -- | Used for error reflection
 data ErrorReportPart = TextPart String
@@ -227,7 +235,7 @@ data ErrorReportPart = TextPart String
                      | TermPart Term
                      | RawPart Raw
                      | SubReport [ErrorReportPart]
-                       deriving (Show, Eq, Data, Typeable)
+                       deriving (Show, Eq, Data, Generic, Typeable)
 
 
 data Provenance = ExpectedType
@@ -235,9 +243,8 @@ data Provenance = ExpectedType
                 | InferredVal
                 | GivenVal
                 | SourceTerm Term
-  deriving (Show, Eq, Data, Typeable)
+  deriving (Show, Eq, Data, Generic, Typeable)
 {-!
-deriving instance NFData Err
 deriving instance Binary Err
 !-}
 
@@ -287,7 +294,7 @@ data Err' t
           | NonCollapsiblePostulate Name
           | AlreadyDefined Name
           | ProofSearchFail (Err' t)
-          | NoRewriting t
+          | NoRewriting t t t
           | At FC (Err' t)
           | Elaborating String Name (Maybe t) (Err' t)
           | ElaboratingArg Name Name [(Name, Name)] (Err' t)
@@ -301,7 +308,7 @@ data Err' t
           | RunningElabScript (Err' t) -- ^ The error occurred during a top-level elaboration script
           | ElabScriptStaging Name
           | FancyMsg [ErrorReportPart]
-  deriving (Eq, Functor, Data, Typeable)
+  deriving (Eq, Functor, Data, Generic, Typeable)
 
 type Err = Err' Term
 
@@ -317,7 +324,7 @@ bindTC x k = case x of
 
 instance Monad TC where
     return x = OK x
-    x >>= k = bindTC x k 
+    x >>= k = bindTC x k
     fail e = Error (InternalMsg e)
 
 instance MonadPlus TC where
@@ -334,10 +341,6 @@ instance Applicative TC where
 instance Alternative TC where
     empty = mzero
     (<|>) = mplus
-
-{-!
-deriving instance NFData Err
-!-}
 
 instance Sized ErrorReportPart where
   size (TextPart msg) = 1 + length msg
@@ -357,7 +360,7 @@ instance Sized Err where
   size (NoTypeDecl name) = size name
   size (NotInjective l c r) = size l + size c + size r
   size (CantResolve _ trm _) = size trm
-  size (NoRewriting trm) = size trm
+  size (NoRewriting l r t) = size l + size r + size t
   size (CantResolveAlts _) = 1
   size (IncompleteTerm trm) = size trm
   size ProgramLineComment = 1
@@ -386,7 +389,7 @@ instance Show Err where
     show (At f e) = show f ++ ":" ++ show e
     show (ElaboratingArg f x prev e) = "Elaborating " ++ show f ++ " arg " ++
                                        show x ++ ": " ++ show e
-    show (Elaborating what n ty e) = "Elaborating " ++ what ++ show n ++ 
+    show (Elaborating what n ty e) = "Elaborating " ++ what ++ show n ++
                                      showType ty ++ ":" ++ show e
         where
           showType Nothing = ""
@@ -459,7 +462,7 @@ data Name = UN !T.Text -- ^ User-provided name
           | MN !Int !T.Text -- ^ Machine chosen names
           | SN !SpecialName -- ^ Decorated function names
           | SymRef Int -- ^ Reference to IBC file symbol table (used during serialisation)
-  deriving (Eq, Ord, Data, Typeable)
+  deriving (Eq, Ord, Data, Generic, Typeable)
 
 txt :: String -> T.Text
 txt = T.pack
@@ -490,26 +493,24 @@ caseName _ = False
 
 {-!
 deriving instance Binary Name
-deriving instance NFData Name
 !-}
 
 data SpecialName = WhereN !Int !Name !Name
                  | WithN !Int !Name
-                 | InstanceN !Name [T.Text]
+                 | ImplementationN !Name [T.Text]
                  | ParentN !Name !T.Text
                  | MethodN !Name
                  | CaseN !FC' !Name
                  | ElimN !Name
-                 | InstanceCtorN !Name
+                 | ImplementationCtorN !Name
                  | MetaN !Name !Name
-  deriving (Eq, Ord, Data, Typeable)
+  deriving (Eq, Ord, Data, Generic, Typeable)
 {-!
 deriving instance Binary SpecialName
-deriving instance NFData SpecialName
 !-}
 
-sInstanceN :: Name -> [String] -> SpecialName
-sInstanceN n ss = InstanceN n (map T.pack ss)
+sImplementationN :: Name -> [String] -> SpecialName
+sImplementationN n ss = ImplementationN n (map T.pack ss)
 
 sParentN :: Name -> String -> SpecialName
 sParentN n s = ParentN n (T.pack s)
@@ -543,13 +544,13 @@ instance Show Name where
 instance Show SpecialName where
     show (WhereN i p c) = show p ++ ", " ++ show c
     show (WithN i n) = "with block in " ++ show n
-    show (InstanceN cl inst) = showSep ", " (map T.unpack inst) ++ " implementation of " ++ show cl
+    show (ImplementationN cl impl) = showSep ", " (map T.unpack impl) ++ " implementation of " ++ show cl
     show (MethodN m) = "method " ++ show m
     show (ParentN p c) = show p ++ "#" ++ T.unpack c
     show (CaseN fc n) = "case block in " ++ show n ++
                         if fc == FC' emptyFC then "" else " at " ++ show fc
     show (ElimN n) = "<<" ++ show n ++ " eliminator>>"
-    show (InstanceCtorN n) = "constructor of " ++ show n
+    show (ImplementationCtorN n) = "constructor of " ++ show n
     show (MetaN parent meta) = "<<" ++ show parent ++ " " ++ show meta ++ ">>"
 
 -- Show a name in a way decorated for code generation, not human reading
@@ -561,12 +562,12 @@ showCG (MN i s) = "{" ++ T.unpack s ++ show i ++ "}"
 showCG (SN s) = showCG' s
   where showCG' (WhereN i p c) = showCG p ++ ":" ++ showCG c ++ ":" ++ show i
         showCG' (WithN i n) = "_" ++ showCG n ++ "_with_" ++ show i
-        showCG' (InstanceN cl inst) = '@':showCG cl ++ '$':showSep ":" (map T.unpack inst)
+        showCG' (ImplementationN cl impl) = '@':showCG cl ++ '$':showSep ":" (map T.unpack impl)
         showCG' (MethodN m) = '!':showCG m
         showCG' (ParentN p c) = showCG p ++ "#" ++ show c
         showCG' (CaseN fc c) = showCG c ++ showFC' fc ++ "_case"
         showCG' (ElimN sn) = showCG sn ++ "_elim"
-        showCG' (InstanceCtorN n) = showCG n ++ "_ictor"
+        showCG' (ImplementationCtorN n) = showCG n ++ "_ictor"
         showCG' (MetaN parent meta) = showCG parent ++ "_meta_" ++ showCG meta
         showFC' (FC' NoFC) = ""
         showFC' (FC' (FileFC f)) = "_" ++ cgFN f
@@ -589,11 +590,10 @@ mapCtxt :: (a -> b) -> Ctxt a -> Ctxt b
 mapCtxt = fmap . fmap
 
 -- |Return True if the argument 'Name' should be interpreted as the name of a
--- typeclass.
-tcname (UN xs) | T.null xs = False
-               | otherwise = T.head xs == '@'
+-- interface.
+tcname (UN xs) = False
 tcname (NS n _) = tcname n
-tcname (SN (InstanceN _ _)) = True
+tcname (SN (ImplementationN _ _)) = True
 tcname (SN (MethodN _)) = True
 tcname (SN (ParentN _ _)) = True
 tcname _ = False
@@ -668,7 +668,7 @@ addAlist [] ctxt = ctxt
 addAlist ((n, tm) : ds) ctxt = addDef n tm (addAlist ds ctxt)
 
 data NativeTy = IT8 | IT16 | IT32 | IT64
-    deriving (Show, Eq, Ord, Enum, Data, Typeable)
+    deriving (Show, Eq, Ord, Enum, Data, Generic, Typeable)
 
 instance Pretty NativeTy OutputAnnotation where
     pretty IT8  = text "Bits8"
@@ -677,7 +677,7 @@ instance Pretty NativeTy OutputAnnotation where
     pretty IT64 = text "Bits64"
 
 data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
-    deriving (Show, Eq, Ord, Data, Typeable)
+    deriving (Show, Eq, Ord, Data, Generic, Typeable)
 
 intTyName :: IntTy -> String
 intTyName ITNative = "Int"
@@ -686,12 +686,7 @@ intTyName (ITFixed sized) = "B" ++ show (nativeTyWidth sized)
 intTyName (ITChar) = "Char"
 
 data ArithTy = ATInt IntTy | ATFloat -- TODO: Float vectors https://github.com/idris-lang/Idris-dev/issues/1723
-    deriving (Show, Eq, Ord, Data, Typeable)
-{-!
-deriving instance NFData IntTy
-deriving instance NFData NativeTy
-deriving instance NFData ArithTy
-!-}
+    deriving (Show, Eq, Ord, Data, Generic, Typeable)
 
 instance Pretty ArithTy OutputAnnotation where
     pretty (ATInt ITNative) = text "Int"
@@ -718,7 +713,7 @@ data Const = I Int | BI Integer | Fl Double | Ch Char | Str String
            | AType ArithTy | StrType
            | WorldType | TheWorld
            | VoidType | Forgot
-  deriving (Ord, Data, Typeable)
+  deriving (Ord, Data, Generic, Typeable)
 
 -- We need to compare Double using bit-pattern identity rather than
 -- Haskell's Eq, which equates 0.0 and -0.0, leading to a
@@ -744,7 +739,6 @@ instance Eq Const where
 
 {-!
 deriving instance Binary Const
-deriving instance NFData Const
 !-}
 
 isTypeConst :: Const -> Bool
@@ -814,7 +808,7 @@ constDocs (B64 w)                          = "The sixty-four-bit value 0x" ++
 constDocs prim                             = "Undocumented"
 
 data Universe = NullType | UniqueType | AllTypes
-  deriving (Eq, Ord, Data, Typeable)
+  deriving (Eq, Ord, Data, Generic, Typeable)
 
 instance Show Universe where
     show UniqueType = "UniqueType"
@@ -827,7 +821,7 @@ data Raw = Var Name
          | RType
          | RUType Universe
          | RConstant Const
-  deriving (Show, Eq, Data, Typeable)
+  deriving (Show, Eq, Data, Generic, Typeable)
 
 instance Sized Raw where
   size (Var name) = 1
@@ -842,15 +836,14 @@ instance Pretty Raw OutputAnnotation where
 
 {-!
 deriving instance Binary Raw
-deriving instance NFData Raw
 !-}
 
-data ImplicitInfo = Impl { tcinstance :: Bool, toplevel_imp :: Bool }
-  deriving (Show, Eq, Ord, Data, Typeable)
+data ImplicitInfo = Impl { tcimplementation :: Bool, toplevel_imp :: Bool,
+                           machine_gen :: Bool }
+  deriving (Show, Eq, Ord, Data, Generic, Typeable)
 
 {-!
 deriving instance Binary ImplicitInfo
-deriving instance NFData ImplicitInfo
 !-}
 
 -- The type parameter `b` will normally be something like `TT Name` or just
@@ -898,10 +891,9 @@ data Binder b = Lam   { binderTy  :: !b {-^ type annotation for bound variable-}
                 -- that make up pattern-match clauses)
               | PVTy  { binderTy  :: !b }
                 -- ^ The type of a pattern binding
-  deriving (Show, Eq, Ord, Functor, Foldable, Traversable, Data, Typeable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable, Data, Generic, Typeable)
 {-!
 deriving instance Binary Binder
-deriving instance NFData Binder
 !-}
 
 instance Sized a => Sized (Binder a) where
@@ -937,34 +929,35 @@ raw_unapply t = ua [] t where
 
 -- WELL TYPED TERMS ---------------------------------------------------------
 
+internalNS :: String
+internalNS = "(internal)"
+
 -- | Universe expressions for universe checking
-data UExp = UVar Int -- ^ universe variable
+data UExp = UVar String Int -- ^ universe variable, with source file to disambiguate
           | UVal Int -- ^ explicit universe level
-  deriving (Eq, Ord, Data, Typeable)
-{-!
-deriving instance NFData UExp
-!-}
+  deriving (Eq, Ord, Data, Generic, Typeable)
 
 instance Sized UExp where
   size _ = 1
 
 instance Show UExp where
-    show (UVar x) | x < 26 = [toEnum (x + fromEnum 'a')]
-                  | otherwise = toEnum ((x `mod` 26) + fromEnum 'a') : show (x `div` 26)
+    show (UVar ns x) 
+       | x < 26 = ns ++ "." ++ [toEnum (x + fromEnum 'a')]
+       | otherwise = ns ++ "." ++ toEnum ((x `mod` 26) + fromEnum 'a') : show (x `div` 26)
     show (UVal x) = show x
 --     show (UMax l r) = "max(" ++ show l ++ ", " ++ show r ++")"
 
 -- | Universe constraints
 data UConstraint = ULT UExp UExp -- ^ Strictly less than
                  | ULE UExp UExp -- ^ Less than or equal to
-  deriving (Eq, Ord, Data, Typeable)
+  deriving (Eq, Ord, Data, Generic, Typeable)
 
 data ConstraintFC = ConstraintFC { uconstraint :: UConstraint,
                                    ufc :: FC }
-  deriving (Show, Data, Typeable)
+  deriving (Show, Data, Generic, Typeable)
 
 instance Eq ConstraintFC where
-    x == y = uconstraint x == uconstraint y  
+    x == y = uconstraint x == uconstraint y
 
 instance Ord ConstraintFC where
     compare x y = compare (uconstraint x) (uconstraint y)
@@ -979,10 +972,9 @@ data NameType = Bound
               | Ref
               | DCon {nt_tag :: Int, nt_arity :: Int, nt_unique :: Bool} -- ^ Data constructor
               | TCon {nt_tag :: Int, nt_arity :: Int} -- ^ Type constructor
-  deriving (Show, Ord, Data, Typeable)
+  deriving (Show, Ord, Data, Generic, Typeable)
 {-!
 deriving instance Binary NameType
-deriving instance NFData NameType
 !-}
 
 instance Sized NameType where
@@ -1001,7 +993,7 @@ instance Eq NameType where
 data AppStatus n = Complete
                  | MaybeHoles
                  | Holes [n]
-    deriving (Eq, Ord, Functor, Data, Typeable, Show)
+    deriving (Eq, Ord, Functor, Data, Generic, Typeable, Show)
 
 -- | Terms in the core language. The type parameter is the type of
 -- identifiers used for bindings and explicit named references;
@@ -1019,10 +1011,9 @@ data TT n = P NameType n (TT n) -- ^ named references with type
           | Impossible -- ^ special case for totality checking
           | TType UExp -- ^ the type of types at some level
           | UType Universe -- ^ Uniqueness type universe (disjoint from TType)
-  deriving (Ord, Functor, Data, Typeable)
+  deriving (Ord, Functor, Data, Generic, Typeable)
 {-!
 deriving instance Binary TT
-deriving instance NFData TT
 !-}
 
 class TermSize a where
@@ -1084,7 +1075,7 @@ data DataOpt = Codata -- ^ Set if the the data-type is coinductive
              | DefaultEliminator -- ^ Set if an eliminator should be generated for data type
              | DefaultCaseFun -- ^ Set if a case function should be generated for data type
              | DataErrRev
-    deriving (Show, Eq)
+    deriving (Show, Eq, Generic)
 
 type DataOpts = [DataOpt]
 
@@ -1093,10 +1084,9 @@ data TypeInfo = TI { con_names :: [Name],
                      data_opts :: DataOpts,
                      param_pos :: [Int],
                      mutual_types :: [Name] }
-    deriving Show
+    deriving (Show, Generic)
 {-!
 deriving instance Binary TypeInfo
-deriving instance NFData TypeInfo
 !-}
 
 instance Eq n => Eq (TT n) where
@@ -1294,10 +1284,24 @@ substTerm :: Eq n => TT n {-^ Old term -} ->
              TT n {-^ template term -}
              -> TT n
 substTerm old new = st where
-  st t | t == old = new
+  st t | eqAlpha [] t old = new
   st (App s f a) = App s (st f) (st a)
   st (Bind x b sc) = Bind x (fmap st b) (st sc)
   st t = t
+
+  eqAlpha as (P _ x _) (P _ y _) 
+       = x == y || (x, y) `elem` as || (y, x) `elem` as
+  eqAlpha as (V x) (V y) = x == y
+  eqAlpha as (Bind x xb xs) (Bind y yb ys)
+       = eqAlphaB as xb yb && eqAlpha ((x, y) : as) xs ys
+  eqAlpha as (App _ fx ax) (App _ fy ay) = eqAlpha as fx fy && eqAlpha as ax ay
+  eqAlpha as x y = x == y
+
+  eqAlphaB as (Let xt xv) (Let yt yv)
+       = eqAlpha as xt yt && eqAlpha as xv yv
+  eqAlphaB as (Guess xt xv) (Guess yt yv)
+       = eqAlpha as xt yt && eqAlpha as xv yv
+  eqAlphaB as bx by = eqAlpha as (binderTy bx) (binderTy by) 
 
 -- | Return number of occurrences of V 0 or bound name i the term
 occurrences :: Eq n => n -> TT n -> Int
@@ -1484,12 +1488,12 @@ nextName (SN x) = SN (nextName' x)
   where
     nextName' (WhereN i f x) = WhereN i f (nextName x)
     nextName' (WithN i n) = WithN i (nextName n)
-    nextName' (InstanceN n ns) = InstanceN (nextName n) ns
+    nextName' (ImplementationN n ns) = ImplementationN (nextName n) ns
     nextName' (ParentN n ns) = ParentN (nextName n) ns
     nextName' (CaseN fc n) = CaseN fc (nextName n)
     nextName' (ElimN n) = ElimN (nextName n)
     nextName' (MethodN n) = MethodN (nextName n)
-    nextName' (InstanceCtorN n) = InstanceCtorN (nextName n)
+    nextName' (ImplementationCtorN n) = ImplementationCtorN (nextName n)
     nextName' (MetaN parent meta) = MetaN parent (nextName meta)
 nextName (SymRef i) = error "Can't generate a name from a symbol reference"
 
@@ -1641,14 +1645,14 @@ showEnv' env t dbg = se 10 env t where
 -- | Check whether a term has any hole bindings in it - impure if so
 pureTerm :: TT Name -> Bool
 pureTerm (App _ f a) = pureTerm f && pureTerm a
-pureTerm (Bind n b sc) = notClassName n && pureBinder b && pureTerm sc where
+pureTerm (Bind n b sc) = notInterfaceName n && pureBinder b && pureTerm sc where
     pureBinder (Hole _) = False
     pureBinder (Guess _ _) = False
     pureBinder (Let t v) = pureTerm t && pureTerm v
     pureBinder t = pureTerm (binderTy t)
 
-    notClassName (MN _ c) | c == txt "__class" = False
-    notClassName _ = True
+    notInterfaceName (MN _ c) | c == txt "__interface" = False
+    notInterfaceName _ = True
 
 pureTerm _ = True
 
@@ -1676,30 +1680,6 @@ weakenEnv env = wk (length env - 1) env
 weakenTmEnv :: Int -> EnvTT n -> EnvTT n
 weakenTmEnv i = map (\ (n, b) -> (n, fmap (weakenTm i) b))
 
--- | Gather up all the outer 'PVar's and 'Hole's in an expression and reintroduce
--- them in a canonical order
-orderPats :: Term -> Term
-orderPats tm = op [] tm
-  where
-    op [] (App s f a) = App s f (op [] a) -- for Infer terms
-
-    op ps (Bind n (PVar t) sc) = op ((n, PVar t) : ps) sc
-    op ps (Bind n (Hole t) sc) = op ((n, Hole t) : ps) sc
-    op ps (Bind n (Pi i t k) sc) = op ((n, Pi i t k) : ps) sc
-    op ps sc = bindAll (sortP ps) sc
-
-    sortP ps = pick [] (reverse ps)
-
-    pick acc [] = reverse acc
-    pick acc ((n, t) : ps) = pick (insert n t acc) ps
-
-    insert n t [] = [(n, t)]
-    insert n t ((n',t') : ps)
-        | n `elem` (refsIn (binderTy t') ++
-                      concatMap refsIn (map (binderTy . snd) ps))
-            = (n', t') : insert n t ps
-        | otherwise = (n,t):(n',t'):ps
-
 refsIn :: TT Name -> [Name]
 refsIn (P _ n _) = [n]
 refsIn (Bind n b t) = nub $ nb b ++ refsIn t
@@ -1708,45 +1688,6 @@ refsIn (Bind n b t) = nub $ nb b ++ refsIn t
         nb t = refsIn (binderTy t)
 refsIn (App s f a) = nub (refsIn f ++ refsIn a)
 refsIn _ = []
-
--- Make sure all the pattern bindings are as far out as possible
-liftPats :: Term -> Term
-liftPats tm = let (tm', ps) = runState (getPats tm) [] in
-                  orderPats $ bindPats (reverse ps) tm'
-  where
-    bindPats []          tm = tm
-    bindPats ((n, t):ps) tm
-         | n `notElem` map fst ps = Bind n (PVar t) (bindPats ps tm)
-         | otherwise = bindPats ps tm
-
-    getPats :: Term -> State [(Name, Type)] Term
-    getPats (Bind n (PVar t) sc) = do ps <- get
-                                      put ((n, t) : ps)
-                                      getPats sc
-    getPats (Bind n (Guess t v) sc) = do t' <- getPats t
-                                         v' <- getPats v
-                                         sc' <- getPats sc
-                                         return (Bind n (Guess t' v') sc')
-    getPats (Bind n (Let t v) sc) = do t' <- getPats t
-                                       v' <- getPats v
-                                       sc' <- getPats sc
-                                       return (Bind n (Let t' v') sc')
-    getPats (Bind n (Pi i t k) sc) = do t' <- getPats t
-                                        k' <- getPats k
-                                        sc' <- getPats sc
-                                        return (Bind n (Pi i t' k') sc')
-    getPats (Bind n (Lam t) sc) = do t' <- getPats t
-                                     sc' <- getPats sc
-                                     return (Bind n (Lam t') sc')
-    getPats (Bind n (Hole t) sc) = do t' <- getPats t
-                                      sc' <- getPats sc
-                                      return (Bind n (Hole t') sc')
-
-
-    getPats (App s f a) = do f' <- getPats f
-                             a' <- getPats a
-                             return (App s f' a')
-    getPats t = return t
 
 allTTNames :: Eq n => TT n -> [n]
 allTTNames = nub . allNamesIn
@@ -1846,6 +1787,23 @@ pprintTT bound tm = pp startPrec bound tm
     bracket outer inner doc
       | outer > inner = lparen <> doc <> rparen
       | otherwise     = doc
+
+pprintTTClause :: [(Name, Type)] -> Term -> Term -> Doc OutputAnnotation
+pprintTTClause pvars lhs rhs =
+    vars pvars . group . align $
+      pprintTT (map fst pvars) lhs <$>
+      text "↦" <$>
+      (pprintTT (map fst pvars) rhs)
+  where vars [] terms = terms
+        vars (v:vs) terms =
+          annotate AnnKeyword (text "var") <+>
+          group (align (sep (punctuate comma (reverse (bindVars [] (v:vs)))))) <+>
+          annotate AnnKeyword (text ".") <$>
+          indent 2 terms
+        bindVars _ [] = []
+        bindVars ns ((n, ty):vs) =
+          bindingOf n False <+> colon <+> pprintTT ns ty : bindVars (n:ns) vs
+
 
 -- | Pretty-print a raw term.
 pprintRaw :: [Name] -- ^ Bound names, for highlighting

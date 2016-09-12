@@ -1,3 +1,10 @@
+{-|
+Module      : Idris.Elab.Rewrite
+Description : Code to elaborate rewrite rules.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards, ViewPatterns #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 module Idris.Elab.Rewrite(elabRewrite, elabRewriteLemma) where
@@ -67,7 +74,7 @@ elabRewrite elab ist fc substfn_in rule sc_in newg
                   (P _ (UN q) _, [lt, rt, l, r]) | q == txt "=" ->
                      do substfn <- findSubstFn substfn_in ist lt rt
                         let pred_tt = mkP (P Bound rname rt) l r g
-                        when (g == pred_tt) $ lift $ tfail (NoRewriting g)
+                        when (g == pred_tt) $ lift $ tfail (NoRewriting l r g)
                         let pred = PLam fc rname fc Placeholder
                                         (delab ist pred_tt)
                         let rewrite = stripImpls $
@@ -226,7 +233,7 @@ mkLemma info lemma tcon ps ty =
   where
     fc = emptyFC
 
-    namesFrom x i = sMN i x : namesFrom x (i + 1)
+    namesFrom x i = sMN i (x ++ show i) : namesFrom x (i + 1)
 
     mkTy fn pinfo ps is
          = PApp fc (PRef fc [] fn) (mkArgs pinfo ps is)

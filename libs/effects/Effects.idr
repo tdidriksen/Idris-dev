@@ -303,15 +303,15 @@ staticEff = id
 toEff : .(xs' : List EFFECT) -> EffM m a xs (\v => xs') -> EffM m a xs (\v => xs')
 toEff xs' = id
 
-return : a -> EffM m a xs (\v => xs)
-return x = Value x
-
--- ------------------------------------------------------ [ for idiom brackets ]
-
 infixl 2 <*>
 
 pure : a -> EffM m a xs (\v => xs)
 pure = Value
+
+return : a -> EffM m a xs (\v => xs)
+return = pure
+
+%deprecate Effects.return "Please use `pure`."
 
 pureM : (val : a) -> EffM m a (xs val) xs
 pureM = Value
@@ -320,7 +320,7 @@ pureM = Value
         EffM m a xs (\v => xs) -> EffM m b xs (\v => xs)
 (<*>) prog v = do fn <- prog
                   arg <- v
-                  return (fn arg)
+                  pure (fn arg)
 
 (<$>) : (a -> b) ->
         EffM m a xs (\v => xs) -> EffM m b xs (\v => xs)
@@ -366,7 +366,7 @@ eff env (l :- prog) k
    = let env' = unlabel env in
          eff env' prog (\p', envk => k p' (relabel l envk))
 
--- yuck :) Haven't got interface instances working nicely in tactic
+-- yuck :) Haven't got interface implementations working nicely in tactic
 -- proofs yet, and 'search' can't be told about any hints yet,
 -- so just brute force it.
 syntax MkDefaultEnv = with Env
@@ -448,19 +448,19 @@ runEnv env prog = eff env prog (\r, env => pure (r ** env))
 
 -- ----------------------------------------------- [ some higher order things ]
 
-mapE : (a -> {xs} EffM m b) -> List a -> {xs} EffM m (List b)
+mapE : (a -> EffM m b xs (\_ => xs)) -> List a -> EffM m (List b) xs (\_ => xs)
 mapE f []        = pure []
 mapE f (x :: xs) = [| f x :: mapE f xs |]
 
 
-mapVE : (a -> {xs} EffM m b) ->
+mapVE : (a -> EffM m b xs (\_ => xs)) ->
         Vect n a ->
-        {xs} EffM m (Vect n b)
+        EffM m (Vect n b) xs (\_ => xs)
 mapVE f []        = pure []
 mapVE f (x :: xs) = [| f x :: mapVE f xs |]
 
 
-when : Bool -> Lazy ({xs} EffM m ()) -> {xs} EffM m ()
+when : Bool -> Lazy (EffM m () xs (\_ => xs)) -> EffM m () xs (\_ => xs)
 when True  e = Force e
 when False e = pure ()
 

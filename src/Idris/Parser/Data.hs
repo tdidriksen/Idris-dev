@@ -1,12 +1,21 @@
+{-|
+Module      : Idris.Parser.Data
+Description : Parse Data declarations.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds, PatternGuards #-}
 module Idris.Parser.Data where
 
 import Prelude hiding (pi)
 
 import Text.Trifecta.Delta
-import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace, Err)
-import Text.Parser.LookAhead
-import Text.Parser.Expression
+import Text.Trifecta hiding ( span, stringLiteral, charLiteral, natural
+                            , symbol, char, string, whiteSpace, Err)
+
+import           Text.Parser.LookAhead
+import           Text.Parser.Expression
 import qualified Text.Parser.Token as Tok
 import qualified Text.Parser.Char as Chr
 import qualified Text.Parser.Token.Highlight as Hi
@@ -26,11 +35,11 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.State.Strict
 
-import Data.Maybe
+import           Data.Maybe
 import qualified Data.List.Split as Spl
-import Data.List
-import Data.Monoid
-import Data.Char
+import           Data.List
+import           Data.Monoid
+import           Data.Char
 import qualified Data.HashSet as HS
 import qualified Data.Text as T
 import qualified Data.ByteString.UTF8 as UTF8
@@ -189,7 +198,8 @@ SimpleConstructorList ::=
   ;
 -}
 data_ :: SyntaxInfo -> IdrisParser PDecl
-data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
+data_ syn = checkDeclFixity $
+            do (doc, argDocs, acc, dataOpts) <- try (do
                     (doc, argDocs) <- option noDocs docComment
                     pushIndent
                     acc <- accessibility
@@ -223,7 +233,7 @@ data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
                                              let kw = (if DefaultEliminator `elem` dataOpts then "%elim" else "") ++ (if Codata `elem` dataOpts then "co" else "") ++ "data "
                                              let n  = show tyn_in ++ " "
                                              let s  = kw ++ n
-                                             let as = concat (intersperse " " $ map show args) ++ " "
+                                             let as = unwords (map show args) ++ " "
                                              let ns = concat (intersperse " -> " $ map ((\x -> "(" ++ x ++ " : Type)") . show) args)
                                              let ss = concat (intersperse " -> " $ map (const "Type") args)
                                              let fix1 = s ++ as ++ " = ..."
@@ -268,6 +278,7 @@ constructor syn
          let doc' = annotCode (tryFullExpr syn ist) doc
              argDocs' = [ (n, annotCode (tryFullExpr syn ist) d)
                         | (n, d) <- argDocs ]
+         checkNameFixity cn
          return (doc', argDocs', cn, nfc, ty, fc, fs)
       <?> "constructor"
 
@@ -284,6 +295,7 @@ simpleConstructor syn
           fc <- getFC
           args <- many (do notEndApp
                            simpleExpr syn)
+          checkNameFixity cn
           return (doc', [], cn, nfc, args, fc, [])
        <?> "constructor"
 

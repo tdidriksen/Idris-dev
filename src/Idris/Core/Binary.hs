@@ -1,6 +1,11 @@
+{-|
+Module      : Idris.Core.Binary
+Description : Binary instances for the core datatypes
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
-
-{-| Binary instances for the core datatypes -}
 module Idris.Core.Binary where
 
 import Control.Applicative ((<*>), (<$>))
@@ -141,8 +146,10 @@ instance Binary a => Binary (Err' a) where
                               put n
   put (ProofSearchFail e) = do putWord8 25
                                put e
-  put (NoRewriting t) = do putWord8 26
-                           put t
+  put (NoRewriting l r t) = do putWord8 26
+                               put l
+                               put r
+                               put t
   put (At fc e) = do putWord8 27
                      put fc
                      put e
@@ -232,7 +239,8 @@ instance Binary a => Binary (Err' a) where
              23 -> fmap NonCollapsiblePostulate get
              24 -> fmap AlreadyDefined get
              25 -> fmap ProofSearchFail get
-             26 -> fmap NoRewriting get
+             26 -> do l <- get; r <- get; t <- get
+                      return $ NoRewriting l r t
              27 -> do x <- get ; y <- get
                       return $ At x y
              28 -> do w <- get; x <- get ; y <- get ; z <- get
@@ -271,7 +279,7 @@ instance Binary a => Binary (Err' a) where
 
 instance Binary FC where
         put x =
-          case x of 
+          case x of
             (FC x1 (x2, x3) (x4, x5)) -> do putWord8 0
                                             put x1
                                             put (x2 * 65536 + x3)
@@ -334,9 +342,9 @@ instance Binary SpecialName where
                                       put x1
                                       put x2
                                       put x3
-                InstanceN x1 x2 -> do putWord8 1
-                                      put x1
-                                      put x2
+                ImplementationN x1 x2 -> do putWord8 1
+                                            put x1
+                                            put x2
                 ParentN x1 x2 -> do putWord8 2
                                     put x1
                                     put x2
@@ -344,7 +352,7 @@ instance Binary SpecialName where
                                  put x1
                 CaseN x1 x2 -> do putWord8 4; put x1; put x2
                 ElimN x1 -> do putWord8 5; put x1
-                InstanceCtorN x1 -> do putWord8 6; put x1
+                ImplementationCtorN x1 -> do putWord8 6; put x1
                 WithN x1 x2 -> do putWord8 7
                                   put x1
                                   put x2
@@ -360,7 +368,7 @@ instance Binary SpecialName where
                            return (WhereN x1 x2 x3)
                    1 -> do x1 <- get
                            x2 <- get
-                           return (InstanceN x1 x2)
+                           return (ImplementationN x1 x2)
                    2 -> do x1 <- get
                            x2 <- get
                            return (ParentN x1 x2)
@@ -372,7 +380,7 @@ instance Binary SpecialName where
                    5 -> do x1 <- get
                            return (ElimN x1)
                    6 -> do x1 <- get
-                           return (InstanceCtorN x1)
+                           return (ImplementationCtorN x1)
                    7 -> do x1 <- get
                            x2 <- get
                            return (WithN x1 x2)
@@ -485,11 +493,11 @@ instance Binary Raw where
 instance Binary ImplicitInfo where
         put x
           = case x of
-                Impl x1 x2 -> do put x1; put x2
+                Impl x1 x2 x3 -> do put x1; put x2
         get
           = do x1 <- get
                x2 <- get
-               return (Impl x1 x2)
+               return (Impl x1 x2 False)
 
 instance (Binary b) => Binary (Binder b) where
         put x
@@ -587,15 +595,17 @@ instance Binary NameType where
 -- record concrete levels only, for now
 instance Binary UExp where
     put x = case x of
-                 UVar t -> do putWord8 0
-                              put ((-1) :: Int) -- TMP HACK!
-                 UVal t -> do putWord8 1 
+                 UVar ns t -> do putWord8 0
+                                 put ns
+                                 put t
+                 UVal t -> do putWord8 1
                               put t
 
     get = do i <- getWord8
              case i of
                  0 -> do x1 <- get
-                         return (UVar x1)
+                         x2 <- get
+                         return (UVar x1 x2)
                  1 -> do x1 <- get
                          return (UVal x1)
                  _ -> error "Corrupted binary data for UExp"
@@ -653,7 +663,7 @@ instance {- (Binary n) => -} Binary (TT Name) where
                            x2 <- getWord8
                            return (Proj x1 ((fromEnum x2)-1))
                    6 -> return Erased
-                   7 -> do x1 <- get 
+                   7 -> do x1 <- get
                            return (TType x1)
                    8 -> return Impossible
                    9 -> do x1 <- get
@@ -661,4 +671,3 @@ instance {- (Binary n) => -} Binary (TT Name) where
                    10 -> do x1 <- get
                             return (UType x1)
                    _ -> error "Corrupted binary data for TT"
-

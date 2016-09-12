@@ -1,7 +1,17 @@
+{-|
+Module      : Idris.AbsSyntax
+Description : Provides Idris' core data definitions and utility code.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, DeriveFunctor,
              TypeSynonymInstances, PatternGuards #-}
 
-module Idris.AbsSyntax(module Idris.AbsSyntax, module Idris.AbsSyntaxTree) where
+module Idris.AbsSyntax(
+    module Idris.AbsSyntax
+  , module Idris.AbsSyntaxTree
+  ) where
 
 import Idris.Core.TT
 import Idris.Core.Evaluate
@@ -36,6 +46,8 @@ import Data.Generics.Uniplate.Data (descend, descendM)
 import Debug.Trace
 
 import System.IO.Error(isUserError, ioeGetErrorString, tryIOError)
+
+import Network (PortID(PortNumber))
 
 import Util.Pretty
 import Util.ScreenSize
@@ -412,9 +424,9 @@ getFragile n = do
   return $ lookupCtxtExact n (idris_fragile i)
 
 push_estack :: Name -> Bool -> Idris ()
-push_estack n inst
+push_estack n impl
     = do i <- getIState
-         putIState (i { elab_stack = (n, inst) : elab_stack i })
+         putIState (i { elab_stack = (n, impl) : elab_stack i })
 
 pop_estack :: Idris ()
 pop_estack = do i <- getIState
@@ -422,27 +434,27 @@ pop_estack = do i <- getIState
     where ptail [] = []
           ptail (x : xs) = xs
 
--- | Add a class instance function.
+-- | Add an interface implementation function.
 --
--- Precondition: the instance should have the correct type.
+-- Precondition: the implementation should have the correct type.
 --
--- Dodgy hack 1: Put integer instances first in the list so they are
+-- Dodgy hack 1: Put integer implementations first in the list so they are
 -- resolved by default.
 --
--- Dodgy hack 2: put constraint chasers (@@) last
-addInstance :: Bool -- ^ whether the name is an Integer instance
-            -> Bool -- ^ whether to include the instance in instance search
-            -> Name -- ^ the name of the class
-            -> Name -- ^ the name of the instance
-            -> Idris ()
-addInstance int res n i
+-- Dodgy hack 2: put constraint chasers (ParentN) last
+addImplementation :: Bool -- ^ whether the name is an Integer implementation
+                  -> Bool -- ^ whether to include the implementation in implementation search
+                  -> Name -- ^ the name of the interface
+                  -> Name -- ^ the name of the implementation
+                  -> Idris ()
+addImplementation int res n i
     = do ist <- getIState
-         case lookupCtxt n (idris_classes ist) of
+         case lookupCtxt n (idris_interfaces ist) of
                 [CI a b c d e ins fds] ->
-                     do let cs = addDef n (CI a b c d e (addI i ins) fds) (idris_classes ist)
-                        putIState $ ist { idris_classes = cs }
-                _ -> do let cs = addDef n (CI (sMN 0 "none") [] [] [] [] [(i, res)] []) (idris_classes ist)
-                        putIState $ ist { idris_classes = cs }
+                     do let cs = addDef n (CI a b c d e (addI i ins) fds) (idris_interfaces ist)
+                        putIState $ ist { idris_interfaces = cs }
+                _ -> do let cs = addDef n (CI (sMN 0 "none") [] [] [] [] [(i, res)] []) (idris_interfaces ist)
+                        putIState $ ist { idris_interfaces = cs }
   where addI, insI :: Name -> [(Name, Bool)] -> [(Name, Bool)]
         addI i ins | int = (i, res) : ins
                    | chaser n = ins ++ [(i, res)]
@@ -451,12 +463,11 @@ addInstance int res n i
         insI i (n : ns) | chaser (fst n) = (i, res) : n : ns
                         | otherwise = n : insI i ns
 
-        chaser (UN nm)
-             | ('@':'@':_) <- str nm = True
+        chaser (SN (ParentN _ _)) = True
         chaser (NS n _) = chaser n
         chaser _ = False
 
--- | Add a privileged implementation - one which instance search will
+-- | Add a privileged implementation - one which implementation search will
 -- happily resolve immediately if it is type correct This is used for
 -- naming parent implementations when defining an implementation with
 -- constraints.  Returns the old list, so we can revert easily at the
@@ -482,13 +493,13 @@ getOpenImpl :: Idris [Name]
 getOpenImpl = do ist <- getIState
                  return (idris_openimpls ist)
 
-addClass :: Name -> ClassInfo -> Idris ()
-addClass n i
+addInterface :: Name -> InterfaceInfo -> Idris ()
+addInterface n i
    = do ist <- getIState
-        let i' = case lookupCtxt n (idris_classes ist) of
-                      [c] -> c { class_instances = class_instances i }
+        let i' = case lookupCtxt n (idris_interfaces ist) of
+                      [c] -> c { interface_implementations = interface_implementations i }
                       _ -> i
-        putIState $ ist { idris_classes = addDef n i' (idris_classes ist) }
+        putIState $ ist { idris_interfaces = addDef n i' (idris_interfaces ist) }
 
 addRecord :: Name -> RecordInfo -> Idris ()
 addRecord n ri = do ist <- getIState
@@ -574,7 +585,7 @@ getSO = do i <- getIState
 
 setSO :: Maybe String -> Idris ()
 setSO s = do i <- getIState
-             putIState $ (i { compiled_so = s })
+             putIState (i { compiled_so = s })
 
 getIState :: Idris IState
 getIState = get
@@ -608,7 +619,7 @@ runIO x = liftIO (tryIOError x) >>= either (throwError . Msg . show) return
 getName :: Idris Int
 getName = do i <- getIState;
              let idx = idris_name i;
-             putIState $ (i { idris_name = idx + 1 })
+             putIState (i { idris_name = idx + 1 })
              return idx
 
 -- | InternalApp keeps track of the real function application for
@@ -677,20 +688,24 @@ isUndefined fc n
              _ -> return True
 
 setContext :: Context -> Idris ()
-setContext ctxt = do i <- getIState; putIState $ (i { tt_ctxt = ctxt } )
+setContext ctxt = do i <- getIState; putIState (i { tt_ctxt = ctxt } )
 
 updateContext :: (Context -> Context) -> Idris ()
-updateContext f = do i <- getIState; putIState $ (i { tt_ctxt = f (tt_ctxt i) } )
+updateContext f = do i <- getIState; putIState (i { tt_ctxt = f (tt_ctxt i) } )
 
 addConstraints :: FC -> (Int, [UConstraint]) -> Idris ()
 addConstraints fc (v, cs)
-    = do i <- getIState
-         let ctxt = tt_ctxt i
-         let ctxt' = ctxt { next_tvar = v }
-         let ics = insertAll (zip cs (repeat fc)) (idris_constraints i)
-         putIState $ i { tt_ctxt = ctxt', idris_constraints = ics }
+    = do tit <- typeInType
+         when (not tit) $ do
+             i <- getIState
+             let ctxt = tt_ctxt i
+             let ctxt' = ctxt { next_tvar = v }
+             let ics = insertAll (zip cs (repeat fc)) (idris_constraints i)
+             putIState $ i { tt_ctxt = ctxt', idris_constraints = ics }
   where
     insertAll [] c = c
+    insertAll ((ULE (UVal 0) _, fc) : cs) ics = insertAll cs ics
+    insertAll ((ULE x y, fc) : cs) ics | x == y = insertAll cs ics
     insertAll ((c, fc) : cs) ics
        = insertAll cs $ S.insert (ConstraintFC c fc) ics
 
@@ -1049,6 +1064,23 @@ allImportDirs = do i <- getIState
                    let optdirs = opt_importdirs (idris_options i)
                    return ("." : reverse optdirs)
 
+addSourceDir :: FilePath -> Idris ()
+addSourceDir fp = do i <- getIState
+                     let opts = idris_options i
+                     let opts' = opts { opt_sourcedirs = nub $ fp : opt_sourcedirs opts  }
+                     putIState $ i { idris_options = opts' }
+
+setSourceDirs :: [FilePath] -> Idris ()
+setSourceDirs fps = do i <- getIState
+                       let opts = idris_options i
+                       let opts' = opts { opt_sourcedirs = nub $ fps  }
+                       putIState $ i { idris_options = opts' }
+
+allSourceDirs :: Idris [FilePath]
+allSourceDirs = do i <- getIState
+                   let optdirs = opt_sourcedirs (idris_options i)
+                   return ("." : reverse optdirs)
+
 colourise :: Idris Bool
 colourise = do i <- getIState
                return $ idris_colourRepl i
@@ -1321,8 +1353,8 @@ expandParamsD rhs ist dec ps ns (PParams f params pds)
 --                (map (expandParamsD ist dec ps ns) pds)
 expandParamsD rhs ist dec ps ns (PMutual f pds)
    = PMutual f (map (expandParamsD rhs ist dec ps ns) pds)
-expandParamsD rhs ist dec ps ns (PClass doc info f cs n nfc params pDocs fds decls cn cd)
-   = PClass doc info f
+expandParamsD rhs ist dec ps ns (PInterface doc info f cs n nfc params pDocs fds decls cn cd)
+   = PInterface doc info f
            (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) cs)
            n nfc
            (map (\(n, fc, t) -> (n, fc, expandParams dec ps ns [] t)) params)
@@ -1331,27 +1363,27 @@ expandParamsD rhs ist dec ps ns (PClass doc info f cs n nfc params pDocs fds dec
            (map (expandParamsD rhs ist dec ps ns) decls)
            cn
            cd
-expandParamsD rhs ist dec ps ns (PInstance doc argDocs info f cs pnames acc opts n nfc params pextra ty cn decls)
+expandParamsD rhs ist dec ps ns (PImplementation doc argDocs info f cs pnames acc opts n nfc params pextra ty cn decls)
    = let cn' = case cn of
                     Just n -> if n `elem` ns then Just (dec n) else Just n
                     Nothing -> Nothing in
-     PInstance doc argDocs info f
-           (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) cs)
-           pnames acc opts n
-           nfc
-           (map (expandParams dec ps ns []) params)
-           (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) pextra)
-           (expandParams dec ps ns [] ty)
-           cn'
-           (map (expandParamsD True ist dec ps ns) decls)
+     PImplementation doc argDocs info f
+                     (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) cs)
+                     pnames acc opts n
+                     nfc
+                     (map (expandParams dec ps ns []) params)
+                     (map (\ (n, t) -> (n, expandParams dec ps ns [] t)) pextra)
+                     (expandParams dec ps ns [] ty)
+                     cn'
+                     (map (expandParamsD True ist dec ps ns) decls)
 expandParamsD rhs ist dec ps ns d = d
 
 mapsnd f (x, t) = (x, f t)
 
-expandInstanceScope ist dec ps ns (PInstance doc argDocs info f cs pnames acc opts n nfc params pextra ty cn decls)
-    = PInstance doc argDocs info f cs pnames acc opts n nfc params (ps ++ pextra)
-                ty cn decls
-expandInstanceScope ist dec ps ns d = d
+expandImplementationScope ist dec ps ns (PImplementation doc argDocs info f cs pnames acc opts n nfc params pextra ty cn decls)
+    = PImplementation doc argDocs info f cs pnames acc opts n nfc params (ps ++ pextra)
+                      ty cn decls
+expandImplementationScope ist dec ps ns d = d
 
 -- | Calculate a priority for a type, for deciding elaboration order
 -- * if it's just a type variable or concrete type, do it early (0)
@@ -1444,7 +1476,7 @@ addStatics n tm ptm =
     freeArgNames tm = let (_, args) = unApply tm in
                           concatMap freeNames args
 
-    -- if a name appears in a type class or tactic implicit index, it doesn't
+    -- if a name appears in an interface or tactic implicit index, it doesn't
     -- affect its 'uniquely inferrable' from a static status since these are
     -- resolved by searching.
     searchArg (Constraint _ _) = True
@@ -1533,7 +1565,7 @@ addUsingImpls syn n fc t
          -- if all of args in ns, then add it
          doAdd (UImplicit n ty : cs) ns t
              | elem n ns
-                   = PPi (Imp [] Dynamic False Nothing False) n NoFC ty (doAdd cs ns t)
+                   = PPi impl_gen n NoFC ty (doAdd cs ns t)
              | otherwise = doAdd cs ns t
 
          -- bind the free names which weren't in the using block
@@ -1541,7 +1573,7 @@ addUsingImpls syn n fc t
          bindFree (n:ns) tm
              | elem n (map iname uimpls) = bindFree ns tm
              | otherwise
-                    = PPi (Imp [InaccessibleArg] Dynamic False Nothing False) n NoFC Placeholder (bindFree ns tm)
+                    = PPi (impl_gen { pargopts = [InaccessibleArg] }) n NoFC Placeholder (bindFree ns tm)
 
          getArgnames (PPi _ n _ c sc)
              = n : getArgnames sc
@@ -1726,9 +1758,9 @@ implicitise auto syn ignore ist tm = -- trace ("INCOMING " ++ showImp True tm) $
     pibind using []     sc = sc
     pibind using (n:ns) sc
       = case lookup n using of
-            Just ty -> PPi (Imp [] Dynamic False (Just (Impl False True)) False)
+            Just ty -> PPi impl_gen
                            n NoFC ty (pibind using ns sc)
-            Nothing -> PPi (Imp [InaccessibleArg] Dynamic False (Just (Impl False True)) False)
+            Nothing -> PPi (impl_gen { pargopts = [InaccessibleArg] })
                            n NoFC Placeholder (pibind using ns sc)
 
 -- | Add implicit arguments in function calls
@@ -1744,7 +1776,7 @@ addImplBoundInf ist ns inf = addImpl' False ns inf [] ist
 -- | Add the implicit arguments to applications in the term [Name]
 -- gives the names to always expend, even when under a binder of that
 -- name (this is to expand methods with implicit arguments in
--- dependent type classes).
+-- dependent interfaces).
 addImpl :: [Name] -> IState -> PTerm -> PTerm
 addImpl = addImpl' False [] []
 
@@ -1845,13 +1877,12 @@ addImpl' inpat env infns imp_meths ist ptm
                       sc' = ai inpat qq ((n, Just ty):env) ds sc in
                       PLam fc n nfc ty' sc'
     ai inpat qq env ds (PLet fc n nfc ty val sc)
-      = case lookupDef n (tt_ctxt ist) of
-             [] -> let ty' = ai inpat qq env ds ty
-                       val' = ai inpat qq env ds val
-                       sc' = ai inpat qq ((n, Just ty):env) ds sc in
-                       PLet fc n nfc ty' val' sc'
-             defs ->
-               ai inpat qq env ds (PCase fc val [(PRef fc [] n, sc)])
+      = if canBeDConName n (tt_ctxt ist)
+           then ai inpat qq env ds (PCase fc val [(PRef fc [] n, sc)])
+           else let ty' = ai inpat qq env ds ty
+                    val' = ai inpat qq env ds val
+                    sc' = ai inpat qq ((n, Just ty):env) ds sc in
+                    PLet fc n nfc ty' val' sc'
     ai inpat qq env ds (PPi p n nfc ty sc)
       = let ty' = ai inpat qq env ds ty
             env' = if n `elem` imp_meths then env
@@ -1927,9 +1958,9 @@ aiFn topname inpat expat qq imp_meths ist fc f ffc ds as
           case ns' of
             [(f',ns)] -> Right $ mkPApp fc (length ns) (PRef ffc [ffc] (isImpName f f'))
                                      (insertImpl ns as)
-            [] -> if f `elem` (map fst (idris_metavars ist))
-                    then Right $ PApp fc (PRef ffc [ffc] f) as
-                    else Right $ mkPApp fc (length as) (PRef ffc [ffc] f) as
+            [] -> case metaVar f (map fst (idris_metavars ist)) of
+                    Just f' -> Right $ PApp fc (PRef ffc [ffc] f') as
+                    Nothing -> Right $ mkPApp fc (length as) (PRef ffc [ffc] f) as
             alts -> Right $
                          PAlternative [] (ExactlyOne True) $
                            map (\(f', ns) -> mkPApp fc (length ns) (PRef ffc [ffc] (isImpName f f'))
@@ -1939,6 +1970,12 @@ aiFn topname inpat expat qq imp_meths ist fc f ffc ds as
     -- name rather than the global one after expanding implicits
     isImpName f f' | f `elem` imp_meths = f
                    | otherwise = f'
+
+    -- If it's a metavariable name, try to qualify it from the list of
+    -- unsolved metavariables
+    metaVar f (mvn : ns) | f == nsroot mvn = Just mvn
+    metaVar f (_ : ns) = metaVar f ns
+    metaVar f [] = Nothing
 
     trimAlts [] alts = alts
     trimAlts ns alts
@@ -2238,7 +2275,6 @@ matchClause' names i x y = checkRpts $ match (fullApp x) (fullApp y) where
     match (PTactics _) _ = return []
     match (PResolveTC _) (PResolveTC _) = return []
     match (PTrue _ _) (PTrue _ _) = return []
-    match (PReturn _) (PReturn _) = return []
     match (PPi _ _ _ t s) (PPi _ _ _ t' s') = do mt <- match' t t'
                                                  ms <- match' s s'
                                                  return (mt ++ ms)
@@ -2478,3 +2514,128 @@ mkUniqueNames env shadows tm
   mkUniq ql nmap (PUnquote tm) = fmap PUnquote (mkUniq (ql - 1) nmap tm)
 
   mkUniq ql nmap tm = descendM (mkUniq ql nmap) tm
+
+
+getFile :: Opt -> Maybe String
+getFile (Filename str) = Just str
+getFile _ = Nothing
+
+getBC :: Opt -> Maybe String
+getBC (BCAsm str) = Just str
+getBC _ = Nothing
+
+getOutput :: Opt -> Maybe String
+getOutput (Output str) = Just str
+getOutput _ = Nothing
+
+getIBCSubDir :: Opt -> Maybe String
+getIBCSubDir (IBCSubDir str) = Just str
+getIBCSubDir _ = Nothing
+
+getImportDir :: Opt -> Maybe String
+getImportDir (ImportDir str) = Just str
+getImportDir _ = Nothing
+
+getSourceDir :: Opt -> Maybe String
+getSourceDir (SourceDir str) = Just str
+getSourceDir _ = Nothing
+
+getPkgDir :: Opt -> Maybe String
+getPkgDir (Pkg str) = Just str
+getPkgDir _ = Nothing
+
+getPkg :: Opt -> Maybe (Bool, String)
+getPkg (PkgBuild str) = Just (False, str)
+getPkg (PkgInstall str) = Just (True, str)
+getPkg _ = Nothing
+
+getPkgClean :: Opt -> Maybe String
+getPkgClean (PkgClean str) = Just str
+getPkgClean _ = Nothing
+
+getPkgREPL :: Opt -> Maybe String
+getPkgREPL (PkgREPL str) = Just str
+getPkgREPL _ = Nothing
+
+getPkgCheck :: Opt -> Maybe String
+getPkgCheck (PkgCheck str) = Just str
+getPkgCheck _              = Nothing
+
+-- | Returns None if given an Opt which is not PkgMkDoc
+--   Otherwise returns Just x, where x is the contents of PkgMkDoc
+getPkgMkDoc :: Opt          -- ^ Opt to extract
+            -> Maybe String -- ^ Result
+getPkgMkDoc (PkgMkDoc str) = Just str
+getPkgMkDoc _              = Nothing
+
+getPkgTest :: Opt          -- ^ the option to extract
+           -> Maybe String -- ^ the package file to test
+getPkgTest (PkgTest f) = Just f
+getPkgTest _ = Nothing
+
+getCodegen :: Opt -> Maybe Codegen
+getCodegen (UseCodegen x) = Just x
+getCodegen _ = Nothing
+
+getCodegenArgs :: Opt -> Maybe String
+getCodegenArgs (CodegenArgs args) = Just args
+getCodegenArgs _ = Nothing
+
+getConsoleWidth :: Opt -> Maybe ConsoleWidth
+getConsoleWidth (UseConsoleWidth x) = Just x
+getConsoleWidth _ = Nothing
+
+
+getExecScript :: Opt -> Maybe String
+getExecScript (InterpretScript expr) = Just expr
+getExecScript _ = Nothing
+
+getPkgIndex :: Opt -> Maybe FilePath
+getPkgIndex (PkgIndex file) = Just file
+getPkgIndex _ = Nothing
+
+getEvalExpr :: Opt -> Maybe String
+getEvalExpr (EvalExpr expr) = Just expr
+getEvalExpr _ = Nothing
+
+getOutputTy :: Opt -> Maybe OutputType
+getOutputTy (OutputTy t) = Just t
+getOutputTy _ = Nothing
+
+getLanguageExt :: Opt -> Maybe LanguageExt
+getLanguageExt (Extension e) = Just e
+getLanguageExt _ = Nothing
+
+getTriple :: Opt -> Maybe String
+getTriple (TargetTriple x) = Just x
+getTriple _ = Nothing
+
+getCPU :: Opt -> Maybe String
+getCPU (TargetCPU x) = Just x
+getCPU _ = Nothing
+
+getOptLevel :: Opt -> Maybe Int
+getOptLevel (OptLevel x) = Just x
+getOptLevel _ = Nothing
+
+getOptimisation :: Opt -> Maybe (Bool,Optimisation)
+getOptimisation (AddOpt p)    = Just (True,  p)
+getOptimisation (RemoveOpt p) = Just (False, p)
+getOptimisation _             = Nothing
+
+getColour :: Opt -> Maybe Bool
+getColour (ColourREPL b) = Just b
+getColour _ = Nothing
+
+getClient :: Opt -> Maybe String
+getClient (Client x) = Just x
+getClient _ = Nothing
+
+-- Get the first valid port
+getPort :: [Opt] -> Maybe REPLPort
+getPort []            = Nothing
+getPort (Port p : xs) = Just p
+getPort (_      : xs) = getPort xs
+
+opt :: (Opt -> Maybe a) -> [Opt] -> [a]
+opt = mapMaybe

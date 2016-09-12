@@ -1,4 +1,11 @@
-{-# LANGUAGE PatternGuards, DeriveFunctor #-}
+{-|
+Module      : IRTS.Lang
+Description : Internal representation of Idris' constructs.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+{-# LANGUAGE PatternGuards, DeriveFunctor, DeriveGeneric #-}
 
 module IRTS.Lang where
 
@@ -10,6 +17,7 @@ import Idris.Core.CaseTree
 
 import Data.List
 import Debug.Trace
+import GHC.Generics (Generic)
 
 data Endianness = Native | BE | LE deriving (Show, Eq)
 
@@ -19,19 +27,19 @@ data LVar = Loc Int | Glob Name
 -- ASSUMPTION: All variable bindings have unique names here
 -- Constructors commented as lifted are not present in the LIR provided to the different backends.
 data LExp = LV LVar
-          | LApp Bool LExp [LExp] -- True = tail call
-          | LLazyApp Name [LExp] -- True = tail call
-          | LLazyExp LExp -- lifted out before compiling
-          | LForce LExp -- make sure Exp is evaluted
-          | LLet Name LExp LExp -- name just for pretty printing
-          | LLam [Name] LExp -- lambda, lifted out before compiling
-          | LProj LExp Int -- projection
-          | LCon (Maybe LVar) -- Location to reallocate, if available
+          | LApp Bool LExp [LExp]    -- True = tail call
+          | LLazyApp Name [LExp]     -- True = tail call
+          | LLazyExp LExp            -- lifted out before compiling
+          | LForce LExp              -- make sure Exp is evaluted
+          | LLet Name LExp LExp      -- name just for pretty printing
+          | LLam [Name] LExp         -- lambda, lifted out before compiling
+          | LProj LExp Int           -- projection
+          | LCon (Maybe LVar)        -- Location to reallocate, if available
                  Int Name [LExp]
           | LCase CaseType LExp [LAlt]
           | LConst Const
-          | LForeign FDesc -- Function descriptor (usually name as string)
-                     FDesc -- Return type descriptor
+          | LForeign FDesc           -- Function descriptor (usually name as string)
+                     FDesc           -- Return type descriptor
                      [(FDesc, LExp)] -- first LExp is the FFI type description
           | LOp PrimFn [LExp]
           | LNothing
@@ -86,7 +94,7 @@ data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
                    -- core or another machine. 'id' is a valid implementation
             | LExternal Name
             | LNoOp
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
 
 -- Supported target languages for foreign calls
 
@@ -206,7 +214,7 @@ lift env (LForeign t s args) = do args' <- mapM (liftF env) args
 lift env (LOp f args) = do args' <- mapM (lift env) args
                            return (LOp f args')
 lift env (LError str) = return $ LError str
-lift env LNothing = return $ LNothing
+lift env LNothing = return LNothing
 
 allocUnique :: LDefs -> (Name, LDecl) -> (Name, LDecl)
 allocUnique defs p@(n, LConstructor _ _ _) = p
@@ -294,6 +302,30 @@ usedIn env (LCase up e alts) = usedIn env e ++ concatMap (usedInA env) alts
 usedIn env (LForeign _ _ args) = concatMap (usedIn env) (map snd args)
 usedIn env (LOp f args) = concatMap (usedIn env) args
 usedIn env _ = []
+
+lsubst :: Name -> LExp -> LExp -> LExp
+lsubst n new (LV (Glob x)) | n == x = new
+lsubst n new (LApp t e args) = let e' = lsubst n new e
+                                   args' = map (lsubst n new) args in
+                                   LApp t e' args'
+lsubst n new (LLazyApp fn args) = let args' = map (lsubst n new) args in
+                                      LLazyApp fn args'
+lsubst n new (LLazyExp e) = LLazyExp (lsubst n new e)
+lsubst n new (LForce e) = LForce (lsubst n new e)
+lsubst n new (LLet v val sc) = LLet v (lsubst n new val) (lsubst n new sc)
+lsubst n new (LLam ns sc) = LLam ns (lsubst n new sc)
+lsubst n new (LProj e i) = LProj (lsubst n new e) i
+lsubst n new (LCon lv t cn args) = let args' = map (lsubst n new) args in
+                                       LCon lv t cn args'
+lsubst n new (LOp op args) = let args' = map (lsubst n new) args in
+                                 LOp op args'
+lsubst n new (LForeign fd rd args) 
+     = let args' = map (\(d, a) -> (d, lsubst n new a)) args in
+           LForeign fd rd args'
+lsubst n new (LCase t e alts) = let e' = lsubst n new e
+                                    alts' = map (fmap (lsubst n new)) alts in
+                                    LCase t e' alts'
+lsubst n new tm = tm
 
 instance Show LExp where
    show e = show' [] "" e where

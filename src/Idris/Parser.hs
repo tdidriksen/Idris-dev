@@ -1,3 +1,10 @@
+{-|
+Module      : Idris.Parser
+Description : Idris' parser.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds, PatternGuards #-}
 {-# OPTIONS_GHC -O0 #-}
 module Idris.Parser(module Idris.Parser,
@@ -172,8 +179,8 @@ Decl ::=
   | Params
   | Mutual
   | Namespace
-  | Class
-  | Instance
+  | Interface
+  | Implementation
   | DSL
   | Directive
   | Provider
@@ -212,14 +219,14 @@ internalDecl syn
                      <|> fail "End of readable input"
   where declBody :: Bool -> IdrisParser [PDecl]
         declBody b =
-                   try (instance_ True syn)
+                   try (implementation True syn)
                    <|> try (openInterface syn)
                    <|> declBody' b
                    <|> using_ syn
                    <|> params syn
                    <|> mutual syn
                    <|> namespace syn
-                   <|> class_ syn
+                   <|> interface_ syn
                    <|> do d <- dsl syn; return [d]
                    <|> directive syn
                    <|> provider syn
@@ -310,7 +317,7 @@ declExtension syn ns rules =
 
     -- Below is a lot of tedious boilerplate which updates any top level
     -- names in the declaration. It will only change names which are bound in
-    -- the declaration (including method names in classes and field names in
+    -- the declaration (including method names in interfaces and field names in
     -- record declarations, not including pattern variables)
     updateB :: [(Name, SynMatch)] -> Name -> Name
     updateB ns (NS n mods) = NS (updateB ns n) mods
@@ -334,15 +341,15 @@ declExtension syn ns rules =
                    (updateRecCon ns cname)
                    cdoc
                    s
-    updateNs ns (PClass docs s fc cs cn fc' ps pdocs pdets ds cname cdocs)
-         = PClass docs s fc cs (updateB ns cn) fc' ps pdocs pdets
-                  (map (updateNs ns) ds)
-                  (updateRecCon ns cname)
-                  cdocs
-    updateNs ns (PInstance docs pdocs s fc cs pnames acc opts cn fc' ps pextra ity ni ds)
-         = PInstance docs pdocs s fc cs pnames acc opts (updateB ns cn) fc'
-                     ps pextra ity (fmap (updateB ns) ni)
-                            (map (updateNs ns) ds)
+    updateNs ns (PInterface docs s fc cs cn fc' ps pdocs pdets ds cname cdocs)
+         = PInterface docs s fc cs (updateB ns cn) fc' ps pdocs pdets
+                      (map (updateNs ns) ds)
+                      (updateRecCon ns cname)
+                      cdocs
+    updateNs ns (PImplementation docs pdocs s fc cs pnames acc opts cn fc' ps pextra ity ni ds)
+         = PImplementation docs pdocs s fc cs pnames acc opts (updateB ns cn) fc'
+                           ps pextra ity (fmap (updateB ns) ni)
+                           (map (updateNs ns) ds)
     updateNs ns (PMutual fc ds) = PMutual fc (map (updateNs ns) ds)
     updateNs ns (PProvider docs s fc fc' pw n)
         = PProvider docs s fc fc' pw (updateB ns n)
@@ -592,7 +599,7 @@ fnDecl syn = try (do notEndBlock
 @
 -}
 fnDecl' :: SyntaxInfo -> IdrisParser PDecl
-fnDecl' syn = checkFixity $
+fnDecl' syn = checkDeclFixity $
               do (doc, argDocs, fc, opts', n, nfc, acc) <- try (do
                         pushIndent
                         (doc, argDocs) <- docstring syn
@@ -612,22 +619,6 @@ fnDecl' syn = checkFixity $
             <|> caf syn
             <|> pattern syn
             <?> "function declaration"
-    where checkFixity :: IdrisParser PDecl -> IdrisParser PDecl
-          checkFixity p = do decl <- p
-                             case getName decl of
-                               Nothing -> return decl
-                               Just n -> do fOk <- fixityOK n
-                                            unless fOk . fail $
-                                              "Missing fixity declaration for " ++ show n
-                                            return decl
-          getName (PTy _ _ _ _ _ n _ _) = Just n
-          getName _ = Nothing
-          fixityOK (NS n _) = fixityOK n
-          fixityOK (UN n)  | all (flip elem opChars) (str n) =
-                               do fixities <- fmap idris_infixes get
-                                  return . elem (str n) . map (\ (Fix _ op) -> op) $ fixities
-                           | otherwise                 = return True
-          fixityOK _        = return True
 
 {-| Parses a series of function and accessbility options
 
@@ -695,8 +686,12 @@ fnOpt = do reservedHL "total"; return TotalFn
                     return NoImplicit
         <|> do try (lchar '%' *> reserved "inline");
                     return Inlinable
+        <|> do try (lchar '%' *> reserved "static");
+                    return StaticFn
         <|> do try (lchar '%' *> reserved "assert_total");
-                    return AssertTotal
+               fc <- getFC
+               parserWarning fc Nothing (Msg "%assert_total is deprecated. Use the 'assert_total' function instead.")
+               return AssertTotal
         <|> do try (lchar '%' *> reserved "error_handler");
                     return ErrorHandler
         <|> do try (lchar '%' *> reserved "error_reverse");
@@ -798,7 +793,7 @@ openInterface syn =
     <?> "open interface declaration"
 
 
-       
+
 
 
 {-| Parses a mutual declaration (for mutually recursive functions)
@@ -859,53 +854,52 @@ namespace syn =
        return [PNamespace n nfc (concat ds)]
      <?> "namespace declaration"
 
-{-| Parses a methods block (for instances)
+{-| Parses a methods block (for implementations)
 
 @
-  InstanceBlock ::= 'where' OpenBlock FnDecl* CloseBlock
+  ImplementationBlock ::= 'where' OpenBlock FnDecl* CloseBlock
 @
 -}
-instanceBlock :: SyntaxInfo -> IdrisParser [PDecl]
-instanceBlock syn = do reservedHL "where"
-                       openBlock
-                       ds <- many (fnDecl syn)
-                       closeBlock
-                       return (concat ds)
-                    <?> "implementation block"
+implementationBlock :: SyntaxInfo -> IdrisParser [PDecl]
+implementationBlock syn = do reservedHL "where"
+                             openBlock
+                             ds <- many (fnDecl syn)
+                             closeBlock
+                             return (concat ds)
+                          <?> "implementation block"
 
-{-| Parses a methods and instances block (for type classes)
+{-| Parses a methods and implementations block (for interfaces)
 
 @
-MethodOrInstance ::=
+MethodOrImplementation ::=
    FnDecl
-   | Instance
+   | Implementation
    ;
 @
 
 @
-ClassBlock ::=
-  'where' OpenBlock Constructor? MethodOrInstance* CloseBlock
+InterfaceBlock ::=
+  'where' OpenBlock Constructor? MethodOrImplementation* CloseBlock
   ;
 @
 -}
-classBlock :: SyntaxInfo -> IdrisParser (Maybe (Name, FC), Docstring (Either Err PTerm), [PDecl])
-classBlock syn = do reservedHL "where"
-                    openBlock
-                    (cn, cd) <- option (Nothing, emptyDocstring) $
-                                try (do (doc, _) <- option noDocs docComment
-                                        n <- constructor
-                                        return (Just n, doc))
-                    ist <- get
-                    let cd' = annotate syn ist cd
+interfaceBlock :: SyntaxInfo -> IdrisParser (Maybe (Name, FC), Docstring (Either Err PTerm), [PDecl])
+interfaceBlock syn = do reservedHL "where"
+                        openBlock
+                        (cn, cd) <- option (Nothing, emptyDocstring) $
+                                    try (do (doc, _) <- option noDocs docComment
+                                            n <- constructor
+                                            return (Just n, doc))
+                        ist <- get
+                        let cd' = annotate syn ist cd
 
-                    ds <- many (notEndBlock >> try (instance_ True syn)
-                                               <|> do x <- data_ syn
-                                                      return [x]
-                                               <|> fnDecl syn)
-                    closeBlock
-                    return (cn, cd', concat ds)
-                 <?> "class block"
-
+                        ds <- many (notEndBlock >> try (implementation True syn)
+                                                   <|> do x <- data_ syn
+                                                          return [x]
+                                                   <|> fnDecl syn)
+                        closeBlock
+                        return (cn, cd', concat ds)
+                     <?> "interface block"
   where
     constructor :: IdrisParser (Name, FC)
     constructor = reservedHL "constructor" *> fnName
@@ -913,44 +907,44 @@ classBlock syn = do reservedHL "where"
     annotate :: SyntaxInfo -> IState -> Docstring () -> Docstring (Either Err PTerm)
     annotate syn ist = annotCode $ tryFullExpr syn ist
 
-{-| Parses a type class declaration
+{-| Parses an interface declaration
 
 @
-ClassArgument ::=
+InterfaceArgument ::=
    Name
    | '(' Name ':' Expr ')'
    ;
 @
 
 @
-Class ::=
-  DocComment_t? Accessibility? 'class' ConstraintList? Name ClassArgument* ClassBlock?
+Interface ::=
+  DocComment_t? Accessibility? 'interface' ConstraintList? Name InterfaceArgument* InterfaceBlock?
   ;
 @
 -}
-class_ :: SyntaxInfo -> IdrisParser [PDecl]
-class_ syn = do (doc, argDocs, acc)
-                  <- try (do (doc, argDocs) <- docstring syn
-                             acc <- accessibility
-                             classKeyword
-                             return (doc, argDocs, acc))
-                fc <- getFC
-                cons <- constraintList syn
-                let cons' = [(c, ty) | (c, _, ty) <- cons]
-                (n_in, nfc) <- fnName
-                let n = expandNS syn n_in
-                cs <- many carg
-                fds <- option [(cn, NoFC) | (cn, _, _) <- cs] fundeps
-                (cn, cd, ds) <- option (Nothing, fst noDocs, []) (classBlock syn)
-                accData acc n (concatMap declared ds)
-                return [PClass doc syn fc cons' n nfc cs argDocs fds ds cn cd]
-             <?> "type-class declaration"
+interface_ :: SyntaxInfo -> IdrisParser [PDecl]
+interface_ syn = do (doc, argDocs, acc)
+                      <- try (do (doc, argDocs) <- docstring syn
+                                 acc <- accessibility
+                                 interfaceKeyword
+                                 return (doc, argDocs, acc))
+                    fc <- getFC
+                    cons <- constraintList syn
+                    let cons' = [(c, ty) | (c, _, ty) <- cons]
+                    (n_in, nfc) <- fnName
+                    let n = expandNS syn n_in
+                    cs <- many carg
+                    fds <- option [(cn, NoFC) | (cn, _, _) <- cs] fundeps
+                    (cn, cd, ds) <- option (Nothing, fst noDocs, []) (interfaceBlock syn)
+                    accData acc n (concatMap declared ds)
+                    return [PInterface doc syn fc cons' n nfc cs argDocs fds ds cn cd]
+                 <?> "interface declaration"
   where
     fundeps :: IdrisParser [(Name, FC)]
     fundeps = do lchar '|'; sepBy name (lchar ',')
 
-    classKeyword :: IdrisParser ()
-    classKeyword = reservedHL "interface"
+    interfaceKeyword :: IdrisParser ()
+    interfaceKeyword = reservedHL "interface"
                <|> do reservedHL "class"
                       fc <- getFC
                       parserWarning fc Nothing (Msg "The 'class' keyword is deprecated. Use 'interface' instead.")
@@ -962,55 +956,55 @@ class_ syn = do (doc, argDocs, acc)
               fc <- getFC
               return (i, ifc, PType fc)
 
-{-| Parses a type class instance declaration
+{-| Parses an interface implementation declaration
 
 @
-  Instance ::=
-    DocComment_t? 'instance' InstanceName? ConstraintList? Name SimpleExpr* InstanceBlock?
+  Implementation ::=
+    DocComment_t? 'implementation' ImplementationName? ConstraintList? Name SimpleExpr* ImplementationBlock?
     ;
 @
 
 @
-InstanceName ::= '[' Name ']';
+ImplementationName ::= '[' Name ']';
 @
 -}
-instance_ :: Bool -> SyntaxInfo -> IdrisParser [PDecl]
-instance_ kwopt syn
-              = do ist <- get
-                   (doc, argDocs) <- docstring syn
-                   (opts, acc) <- fnOpts
-                   if kwopt then optional instanceKeyword
-                            else do instanceKeyword
-                                    return (Just ())
+implementation :: Bool -> SyntaxInfo -> IdrisParser [PDecl]
+implementation kwopt syn
+                   = do ist <- get
+                        (doc, argDocs) <- docstring syn
+                        (opts, acc) <- fnOpts
+                        if kwopt then optional implementationKeyword
+                                 else do implementationKeyword
+                                         return (Just ())
 
-                   fc <- getFC
-                   en <- optional instanceName
-                   cs <- constraintList syn
-                   let cs' = [(c, ty) | (c, _, ty) <- cs]
-                   (cn, cnfc) <- fnName
-                   args <- many (simpleExpr syn)
-                   let sc = PApp fc (PRef cnfc [cnfc] cn) (map pexp args)
-                   let t = bindList (PPi constraint) cs sc
-                   pnames <- instanceUsing
-                   ds <- instanceBlock syn
-                   return [PInstance doc argDocs syn fc cs' pnames acc opts cn cnfc args [] t en ds]
-                 <?> "implementation declaration"
-  where instanceName :: IdrisParser Name
-        instanceName = do lchar '['; n_in <- fst <$> fnName; lchar ']'
-                          let n = expandNS syn n_in
-                          return n
-                       <?> "implementation name"
-        instanceKeyword :: IdrisParser ()
-        instanceKeyword = reservedHL "implementation"
-                      <|> do reservedHL "instance"
-                             fc <- getFC
-                             parserWarning fc Nothing (Msg "The 'instance' keyword is deprecated. Use 'implementation' (or omit it) instead.")
+                        fc <- getFC
+                        en <- optional implementationName
+                        cs <- constraintList syn
+                        let cs' = [(c, ty) | (c, _, ty) <- cs]
+                        (cn, cnfc) <- fnName
+                        args <- many (simpleExpr syn)
+                        let sc = PApp fc (PRef cnfc [cnfc] cn) (map pexp args)
+                        let t = bindList (PPi constraint) cs sc
+                        pnames <- implementationUsing
+                        ds <- implementationBlock syn
+                        return [PImplementation doc argDocs syn fc cs' pnames acc opts cn cnfc args [] t en ds]
+                      <?> "implementation declaration"
+  where implementationName :: IdrisParser Name
+        implementationName = do lchar '['; n_in <- fst <$> fnName; lchar ']'
+                                let n = expandNS syn n_in
+                                return n
+                             <?> "implementation name"
+        implementationKeyword :: IdrisParser ()
+        implementationKeyword = reservedHL "implementation"
+                         <|> do reservedHL "instance"
+                                fc <- getFC
+                                parserWarning fc Nothing (Msg "The 'instance' keyword is deprecated. Use 'implementation' (or omit it) instead.")
 
-        instanceUsing :: IdrisParser [Name]
-        instanceUsing = do reservedHL "using"
-                           ns <- sepBy1 fnName (lchar ',')
-                           return (map fst ns)
-                        <|> return []
+        implementationUsing :: IdrisParser [Name]
+        implementationUsing = do reservedHL "using"
+                                 ns <- sepBy1 fnName (lchar ',')
+                                 return (map fst ns)
+                              <|> return []
 
 -- | Parse a docstring
 docstring :: SyntaxInfo
@@ -1129,7 +1123,9 @@ RHSName ::= '{' FnName '}';
 @
 -}
 rhs :: SyntaxInfo -> Name -> IdrisParser PTerm
-rhs syn n = do lchar '='; expr syn
+rhs syn n = do lchar '='
+               indentPropHolds gtProp
+               expr syn
         <|> do symbol "?=";
                fc <- getFC
                name <- option n' (do symbol "{"; n <- fst <$> fnName; symbol "}";
@@ -1391,6 +1387,7 @@ Directive' ::= 'lib'            CodeGen String_t
            |   'include'        CodeGen String_t
            |   'hide'           Name
            |   'freeze'         Name
+           |   'thaw'           Name
            |   'access'         Accessibility
            |   'default'        Totality
            |   'logging'        Natural
@@ -1423,6 +1420,8 @@ directive syn = do try (lchar '%' *> reserved "lib")
                     return [PDirective (DHide n)]
              <|> do try (lchar '%' *> reserved "freeze"); n <- fst <$> iName []
                     return [PDirective (DFreeze n)]
+             <|> do try (lchar '%' *> reserved "thaw"); n <- fst <$> iName []
+                    return [PDirective (DThaw n)]
              -- injectivity assertins are intended for debugging purposes
              -- only, and won't be documented/could be removed at any point
              <|> do try (lchar '%' *> reserved "assert_injective"); n <- fst <$> fnName
@@ -1602,7 +1601,7 @@ parseImports :: FilePath -> String -> Idris (Maybe (Docstring ()), [String], [Im
 parseImports fname input
     = do i <- getIState
          case parseString (runInnerParser (evalStateT imports i)) (Directed (UTF8.fromString fname) 0 0 0 0) input of
-              Failure err -> fail (show err)
+              Failure (ErrInfo err _) -> fail (show err)
               Success (x, annots, i) ->
                 do putIState i
                    fname' <- runIO $ Dir.makeAbsolute fname
@@ -1664,7 +1663,7 @@ parseProg :: SyntaxInfo -> FilePath -> String -> Maybe Delta ->
 parseProg syn fname input mrk
     = do i <- getIState
          case runparser mainProg i fname input of
-            Failure doc     -> do -- FIXME: Get error location from trifecta
+            Failure (ErrInfo doc _)     -> do -- FIXME: Get error location from trifecta
                                   -- this can't be the solution!
                                   -- Issue #1575 on the issue tracker.
                                   --    https://github.com/idris-lang/Idris-dev/issues/1575
@@ -1839,7 +1838,7 @@ loadSource lidr f toline
                   -- we totality check after every Mutual block, so if
                   -- anything is a single definition, wrap it in a
                   -- mutual block on its own
-                  elabDecls toplevel (map toMutual ds)
+                  elabDecls (toplevelWith f) (map toMutual ds)
                   i <- getIState
                   -- simplify every definition do give the totality checker
                   -- a better chance
@@ -1854,6 +1853,7 @@ loadSource lidr f toline
                   i <- getIState
                   mapM_ buildSCG (idris_totcheck i)
                   mapM_ checkDeclTotality (idris_totcheck i)
+                  mapM_ verifyTotality (idris_totcheck i)
 
                   -- Redo totality check for deferred names
                   let deftots = idris_defertotcheck i
@@ -1910,15 +1910,15 @@ loadSource lidr f toline
     toMutual x = let r = PMutual (fileFC "single mutual") [x] in
                  case x of
                    PClauses{} -> r
-                   PClass{} -> r
+                   PInterface{} -> r
                    PData{} -> r
-                   PInstance{} -> r
+                   PImplementation{} -> r
                    _ -> x
 
     addModDoc :: SyntaxInfo -> [String] -> Docstring () -> Idris ()
     addModDoc syn mname docs =
       do ist <- getIState
-         docs' <- elabDocTerms recinfo (parsedDocs ist)
+         docs' <- elabDocTerms (toplevelWith f) (parsedDocs ist)
          let modDocs' = addDef docName docs' (idris_moduledocs ist)
          putIState ist { idris_moduledocs = modDocs' }
          addIBC (IBCModDocs docName)

@@ -1,15 +1,20 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, PatternGuards #-}
+{-|
+Module      : Idris.Core.Elaborate
+Description : A high level language of tactic composition, for building elaborators from a high level language into the core theory.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
 
-{- A high level language of tactic composition, for building
-   elaborators from a high level language into the core theory.
-
-   This is our interface to proof construction, rather than
-   ProofState, because this gives us a language to build derived
-   tactics out of the primitives.
+This is our interface to proof construction, rather than ProofState,
+because this gives us a language to build derived tactics out of the
+primitives.
 -}
 
-module Idris.Core.Elaborate(module Idris.Core.Elaborate,
-                            module Idris.Core.ProofState) where
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, PatternGuards #-}
+module Idris.Core.Elaborate (
+    module Idris.Core.Elaborate
+  , module Idris.Core.ProofState
+  ) where
 
 import Idris.Core.ProofState
 import Idris.Core.ProofTerm(bound_in, getProofTerm, mkProofTerm, bound_in_term,
@@ -51,7 +56,7 @@ explicit n = do ES (p, a) s m <- get
                 let p' = p { dontunify = n : dontunify p }
                 put (ES (p', a) s m)
 
--- Add a name that's okay to use in proof search (typically either because 
+-- Add a name that's okay to use in proof search (typically either because
 -- it was given explicitly on the lhs, or intrduced as an explicit lambda
 -- or let binding)
 addPSname :: Name -> Elab' aux ()
@@ -78,11 +83,11 @@ loadState = do (ES p s e) <- get
 getNameFrom :: Name -> Elab' aux Name
 getNameFrom n = do (ES (p, a) s e) <- get
                    let next = nextname p
-                   let p' = p { nextname = next + 1 } 
+                   let p' = p { nextname = next + 1 }
                    put (ES (p', a) s e)
                    let n' = case n of
                         UN x -> MN (next+100) x
-                        MN i x -> if i == 99999 
+                        MN i x -> if i == 99999
                                      then MN (next+500) x
                                      else MN (next+100) x
                         NS (UN x) s -> MN (next+100) x
@@ -97,7 +102,7 @@ setNextName = do env <- get_env
 
 initNextNameFrom :: [Name] -> Elab' aux ()
 initNextNameFrom ns = do ES (p, a) s e <- get
-                         let n' = maxName (nextname p) ns 
+                         let n' = maxName (nextname p) ns
                          put (ES (p { nextname = n' }, a) s e)
   where
     maxName m ((MN i _) : xs) = maxName (max m i) xs
@@ -124,7 +129,7 @@ errAt thing n ty = transformErr (Elaborating thing n ty)
 
 
 erunAux :: FC -> Elab' aux a -> Elab' aux (a, aux)
-erunAux f elab 
+erunAux f elab
     = do s <- get
          case runStateT elab s of
             OK (a, s')     -> do put s'
@@ -146,6 +151,7 @@ execElab :: aux -> Elab' aux a -> ProofState -> TC (ElabState aux)
 execElab a e ps = execStateT e (ES (ps, a) "" Nothing)
 
 initElaborator :: Name -- ^ the name of what's to be elaborated
+               -> String -- ^ the current source file
                -> Context -- ^ the current global context
                -> Ctxt TypeInfo -- ^ the value of the idris_datatypes field of IState
                -> Int -- ^ the value of the idris_name field of IState
@@ -153,9 +159,9 @@ initElaborator :: Name -- ^ the name of what's to be elaborated
                -> ProofState
 initElaborator = newProof
 
-elaborate :: Context -> Ctxt TypeInfo -> Int -> Name -> Type -> aux -> Elab' aux a -> TC (a, String)
-elaborate ctxt datatypes globalNames n ty d elab =
-  do let ps = initElaborator n ctxt datatypes globalNames ty
+elaborate :: String -> Context -> Ctxt TypeInfo -> Int -> Name -> Type -> aux -> Elab' aux a -> TC (a, String)
+elaborate tcns ctxt datatypes globalNames n ty d elab =
+  do let ps = initElaborator n tcns ctxt datatypes globalNames ty
      (a, ES ps' str _) <- runElab d elab ps
      return $! (a, str)
 
@@ -323,10 +329,10 @@ checkInjective (tm, l, r) = do ctxt <- get_context
         isInj ctxt (Bind _ (Pi _ _ _) sc) = True
         isInj ctxt _ = False
 
--- | get instance argument names
-get_instances :: Elab' aux [Name]
-get_instances = do ES p _ _ <- get
-                   return $! (instances (fst p))
+-- | get implementation argument names
+get_implementations :: Elab' aux [Name]
+get_implementations = do ES p _ _ <- get
+                         return $! (implementations (fst p))
 
 -- | get auto argument names
 get_autos :: Elab' aux [(Name, ([FailContext], [Name]))]
@@ -489,16 +495,16 @@ dotterm = do ES (p, a) s m <- get
              tm <- get_term
              case holes p of
                   [] -> return ()
-                  (h : hs) -> 
+                  (h : hs) ->
                      do let outer = findOuter h [] tm
                         let p' = p { dotted = (h, outer) : dotted p }
---                         trace ("DOTTING " ++ show (h, outer) ++ "\n" ++ 
+--                         trace ("DOTTING " ++ show (h, outer) ++ "\n" ++
 --                                show tm) $
                         put $ ES (p', a) s m
  where
   findOuter h env (P _ n _) | h == n = env
   findOuter h env (Bind n b sc)
-      = union (foB b) 
+      = union (foB b)
               (findOuter h env (instantiate (P Bound n (binderTy b)) sc))
      where foB (Guess t v) = union (findOuter h env t) (findOuter h (n:env) v)
            foB (Let t v) = union (findOuter h env t) (findOuter h env v)
@@ -506,7 +512,7 @@ dotterm = do ES (p, a) s m <- get
   findOuter h env (App _ f a)
       = union (findOuter h env f) (findOuter h env a)
   findOuter h env _ = []
-  
+
 
 get_dotterm :: Elab' aux [(Name, [Name])]
 get_dotterm = do ES (p, a) s m <- get
@@ -533,8 +539,8 @@ defer ds n = do n' <- unique_hole n
 deferType :: Name -> Raw -> [Name] -> Elab' aux ()
 deferType n ty ns = processTactic' (DeferType n ty ns)
 
-instanceArg :: Name -> Elab' aux ()
-instanceArg n = processTactic' (Instance n)
+implementationArg :: Name -> Elab' aux ()
+implementationArg n = processTactic' (Implementation n)
 
 autoArg :: Name -> Elab' aux ()
 autoArg n = processTactic' (AutoArg n)
@@ -566,10 +572,12 @@ prepare_apply fn imps =
        env <- get_env
        -- let claims = getArgs ty imps
        -- claims <- mkClaims (normalise ctxt env ty) imps []
-       claims <- -- trace (show (fn, imps, ty, map fst env, normalise ctxt env (finalise ty))) $ 
-                 mkClaims (finalise ty) 
-                          (normalise ctxt env (finalise ty))
-                          imps [] (map fst env)
+       -- Count arguments to check if we need to normalise the type
+       let usety = if argsOK (finalise ty) imps
+                      then finalise ty
+                      else normalise ctxt env (finalise ty)
+       claims <- -- trace (show (fn, imps, ty, map fst env, normalise ctxt env (finalise ty))) $
+                 mkClaims usety imps [] (map fst env)
        ES (p, a) s prev <- get
        -- reverse the claims we made so that args go left to right
        let n = length (filter not imps)
@@ -577,13 +585,17 @@ prepare_apply fn imps =
        put (ES (p { holes = h : (reverse (take n hs) ++ drop n hs) }, a) s prev)
        return $! claims
   where
+    argsOK :: Type -> [a] -> Bool
+    argsOK (Bind n (Pi _ _ _) sc) (i : is) = argsOK sc is
+    argsOK _ (i : is) = False
+    argsOK _ [] = True
+
     mkClaims :: Type   -- ^ The type of the operation being applied
-             -> Type   -- ^ Normalised version if we need it
              -> [Bool] -- ^ Whether the arguments are implicit
              -> [(Name, Name)] -- ^ Accumulator for produced claims
              -> [Name] -- ^ Hypotheses
              -> Elab' aux [(Name, Name)] -- ^ The names of the arguments and their holes, resp.
-    mkClaims (Bind n' (Pi _ t_in _) sc) (Bind _ _ scn) (i : is) claims hs = 
+    mkClaims (Bind n' (Pi _ t_in _) sc) (i : is) claims hs =
         do let t = rebind hs t_in
            n <- getNameFrom (mkMN n')
 --            when (null claims) (start_unify n)
@@ -591,11 +603,9 @@ prepare_apply fn imps =
            env <- get_env
            claim n (forgetEnv (map fst env) t)
            when i (movelast n)
-           mkClaims sc' scn is ((n', n) : claims) hs
-    -- if we run out of arguments, we need the normalised version...
-    mkClaims t tn@(Bind _ _ sc) (i : is) cs hs = mkClaims tn tn (i : is) cs hs
-    mkClaims t _ [] claims _ = return $! (reverse claims)
-    mkClaims _ _ _ _ _
+           mkClaims sc' is ((n', n) : claims) hs
+    mkClaims t [] claims _ = return $! (reverse claims)
+    mkClaims _ _ _ _
             | Var n <- fn
                    = do ctxt <- get_context
                         case lookupTy n ctxt of
@@ -648,8 +658,9 @@ apply' fillt fn imps =
        fillt (raw_apply fn (map (Var . snd) args))
        ulog <- getUnifyLog
        g <- goal
-       traceWhen ulog ("Goal " ++ show g ++ " -- when elaborating " ++ show fn) $
-        end_unify
+       traceWhen ulog
+                 ("Goal " ++ show g ++ " -- when elaborating " ++ show fn)
+                 end_unify
        return $! (map (\(argName, argHole) -> (argName, updateUnify unify argHole)) args)
   where updateUnify us n = case lookup n us of
                                 Just (P _ t _) -> t
@@ -657,7 +668,7 @@ apply' fillt fn imps =
 
         getNonUnify acc []     _      = acc
         getNonUnify acc _      []     = acc
-        getNonUnify acc ((i,_):is) ((a, t):as) 
+        getNonUnify acc ((i,_):is) ((a, t):as)
            | i = getNonUnify acc is as
            | otherwise = getNonUnify (t : acc) is as
 
@@ -758,7 +769,7 @@ infer_app infer fun arg str =
     do a <- getNameFrom (sMN 0 "__argTy")
        b <- getNameFrom (sMN 0 "__retTy")
        f <- getNameFrom (sMN 0 "f")
-       s <- getNameFrom (sMN 0 "s")
+       s <- getNameFrom (sMN 0 "is")
        claim a RType
        claim b RType
        claim f (RBind (sMN 0 "_aX") (Pi Nothing (Var a) RType) (Var b))
@@ -787,12 +798,12 @@ infer_app infer fun arg str =
        end_unify
 
 dep_app :: Elab' aux () -> Elab' aux () -> String -> Elab' aux ()
-dep_app fun arg str = 
+dep_app fun arg str =
     do a <- getNameFrom (sMN 0 "__argTy")
        b <- getNameFrom (sMN 0 "__retTy")
        fty <- getNameFrom (sMN 0 "__fnTy")
        f <- getNameFrom (sMN 0 "f")
-       s <- getNameFrom (sMN 0 "s")
+       s <- getNameFrom (sMN 0 "ds")
        claim a RType
        claim fty RType
        claim f (Var fty)
@@ -800,13 +811,13 @@ dep_app fun arg str =
        g <- goal
        start_unify s
        claim s (Var a)
-       
+
        prep_fill f [s]
        focus f; attack; fun
        end_unify
        fty <- goal
        solve
-       focus s; attack; 
+       focus s; attack;
        ctxt <- get_context
        env <- get_env
        case normalise ctxt env fty of
@@ -856,7 +867,7 @@ no_errors tac err
                     ((x, y, _, env, inerr, while, _) : _) ->
                        let (xp, yp) = getProvenance inerr
                            env' = map (\(x, b) -> (x, binderTy b)) env in
-                                  lift $ tfail $ 
+                                  lift $ tfail $
                                          case err of
                                               Nothing -> CantUnify False (x, xp) (y, yp) inerr env' 0
                                               Just e -> e
@@ -867,7 +878,7 @@ try :: Elab' aux a -> Elab' aux a -> Elab' aux a
 try t1 t2 = try' t1 t2 False
 
 handleError :: (Err -> Bool) -> Elab' aux a -> Elab' aux a -> Elab' aux a
-handleError p t1 t2 
+handleError p t1 t2
           = do s <- get
                ps <- get_probs
                case runStateT t1 s of
@@ -884,7 +895,7 @@ try' t1 t2 proofSearch
   = do s <- get
        ps <- get_probs
        ulog <- getUnifyLog
-       ivs <- get_instances
+       ivs <- get_implementations
        case prunStateT 999999 False ps Nothing t1 s of
             OK ((v, _, _), s') -> do put s'
                                      return $! v
@@ -907,7 +918,7 @@ try' t1 t2 proofSearch
         recoverableErr _ = True
 
 tryCatch :: Elab' aux a -> (Err -> Elab' aux a) -> Elab' aux a
-tryCatch t1 t2 
+tryCatch t1 t2
   = do s <- get
        ps <- get_probs
        ulog <- getUnifyLog
@@ -950,10 +961,10 @@ tryAll' constrok xs = doAll [] 999999 xs
     doAll cs pmax    ((x, msg):xs)
        = do s <- get
             ps <- get_probs
-            ivs <- get_instances
+            ivs <- get_implementations
             case prunStateT pmax True ps (if constrok then Nothing
                                                       else Just ivs) x s of
-                OK ((v, newps, probs), s') -> 
+                OK ((v, newps, probs), s') ->
                       do let cs' = if (newps < pmax)
                                       then [do put s'; return $! v]
                                       else (do put s'; return $! v) : cs
@@ -975,18 +986,18 @@ prunStateT pmax zok ps ivs x s
       = case runStateT x s of
              OK (v, s'@(ES (p, _) _ _)) ->
                  let newps = length (problems p) - length ps
-                     ibad = badInstances (instances p) ivs
+                     ibad = badImplementations (implementations p) ivs
                      newpmax = if newps < 0 then 0 else newps in
                  if (newpmax > pmax || (not zok && newps > 0)) -- length ps == 0 && newpmax > 0))
                     then case reverse (problems p) of
                             ((_,_,_,_,e,_,_):_) -> Error e
-                    else if ibad 
+                    else if ibad
                             then Error (InternalMsg "Constraint introduced in disambiguation")
                             else OK ((v, newpmax, problems p), s')
              Error e -> Error e
   where
-    badInstances _ Nothing = False
-    badInstances inow (Just ithen) = length inow > length ithen
+    badImplementations _ Nothing = False
+    badImplementations inow (Just ithen) = length inow > length ithen
 
 debugElaborator :: [ErrorReportPart] -> Elab' aux a
 debugElaborator msg = do ps <- fmap proof get

@@ -1,3 +1,10 @@
+{-|
+Module      : Idris.Elab.Utils
+Description : Elaborator utilities.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards #-}
 module Idris.Elab.Utils where
 
@@ -28,17 +35,21 @@ import qualified Data.Map as Map
 
 recheckC = recheckC_borrowing False True []
 
-recheckC_borrowing uniq_check addConstrs bs fc mkerr env t
+recheckC_borrowing uniq_check addConstrs bs tcns fc mkerr env t
     = do -- t' <- applyOpts (forget t) (doesn't work, or speed things up...)
+         
          ctxt <- getContext
          t' <- case safeForget t of
                     Just ft -> return ft
                     Nothing -> tclift $ tfail $ mkerr (At fc (IncompleteTerm t))
-         (tm, ty, cs) <- tclift $ case recheck_borrowing uniq_check bs ctxt env t' t of
+         (tm, ty, cs) <- tclift $ case recheck_borrowing uniq_check bs tcns ctxt env t' t of
                                    Error e -> tfail (At fc (mkerr e))
                                    OK x -> return x
          logElab 6 $ "CONSTRAINTS ADDED: " ++ show (tm, ty, cs)
-         when addConstrs $ addConstraints fc cs
+         tit <- typeInType
+         when (not tit && addConstrs) $ 
+                           do addConstraints fc cs
+                              mapM_ (\c -> addIBC (IBCConstraint fc c)) (snd cs)
          mapM_ (checkDeprecated fc) (allTTNames tm)
          mapM_ (checkDeprecated fc) (allTTNames ty)
          mapM_ (checkFragile fc) (allTTNames tm)
@@ -73,23 +84,23 @@ checkFragile fc n = do
 iderr :: Name -> Err -> Err
 iderr _ e = e
 
-checkDef :: FC -> (Name -> Err -> Err) -> Bool ->
+checkDef :: ElabInfo -> FC -> (Name -> Err -> Err) -> Bool ->
             [(Name, (Int, Maybe Name, Type, [Name]))] ->
             Idris [(Name, (Int, Maybe Name, Type, [Name]))]
-checkDef fc mkerr definable ns
-   = checkAddDef False True fc mkerr definable ns
+checkDef info fc mkerr definable ns
+   = checkAddDef False True info fc mkerr definable ns
 
-checkAddDef :: Bool -> Bool -> FC -> (Name -> Err -> Err) -> Bool
+checkAddDef :: Bool -> Bool -> ElabInfo -> FC -> (Name -> Err -> Err) -> Bool
             -> [(Name, (Int, Maybe Name, Type, [Name]))]
             -> Idris [(Name, (Int, Maybe Name, Type, [Name]))]
-checkAddDef add toplvl fc mkerr def [] = return []
-checkAddDef add toplvl fc mkerr definable ((n, (i, top, t, psns)) : ns)
+checkAddDef add toplvl info fc mkerr def [] = return []
+checkAddDef add toplvl info fc mkerr definable ((n, (i, top, t, psns)) : ns)
                = do ctxt <- getContext
                     logElab 5 $ "Rechecking deferred name " ++ show (n, t, definable)
-                    (t', _) <- recheckC fc (mkerr n) [] t
+                    (t', _) <- recheckC (constraintNS info) fc (mkerr n) [] t
                     when add $ do addDeferred [(n, (i, top, t, psns, toplvl, definable))]
                                   addIBC (IBCDef n)
-                    ns' <- checkAddDef add toplvl fc mkerr definable ns
+                    ns' <- checkAddDef add toplvl info fc mkerr definable ns
                     return ((n, (i, top, t', psns)) : ns')
 
 -- | Get the list of (index, name) of inaccessible arguments from an elaborated
@@ -174,15 +185,15 @@ decorateid decorate (PClauses f o n cs)
           dappname t = t
 
 
--- if 't' is a type class application, assume its arguments are injective
+-- if 't' is an interface application, assume its arguments are injective
 pbinds :: IState -> Term -> ElabD ()
 pbinds i (Bind n (PVar t) sc)
     = do attack; patbind n
          env <- get_env
          case unApply (normalise (tt_ctxt i) env t) of
-              (P _ c _, args) -> case lookupCtxt c (idris_classes i) of
+              (P _ c _, args) -> case lookupCtxt c (idris_interfaces i) of
                                    [] -> return ()
-                                   _ -> -- type class, set as injective
+                                   _ -> -- interface, set as injective
                                         mapM_ setinjArg args
               _ -> return ()
          pbinds i sc
@@ -259,7 +270,7 @@ getTCinj i ap@(App _ f a)
       isTCName n = mapMaybe getInjName args
     | otherwise = []
   where
-    isTCName n = case lookupCtxtExact n (idris_classes i) of
+    isTCName n = case lookupCtxtExact n (idris_interfaces i) of
                       Just _ -> True
                       _ -> False
     getInjName t | (P _ x _, _) <- unApply t = Just x
@@ -356,14 +367,15 @@ checkVisibility fc n minAcc acc ref
 -- | Find the type constructor arguments that are parameters, given a
 -- list of constructor types.
 --
--- Parameters are names which are unchanged across the structure,
--- which appear exactly once in the return type of a constructor
--- First, find all applications of the constructor, then check over
--- them for repeated arguments
+-- Parameters are names which are unchanged across the structure.
+-- They appear at least once in every constructor type, always appear
+-- in the same argument position(s), and nothing else ever appears in those
+-- argument positions.
 findParams :: Name   -- ^ the name of the family that we are finding parameters for
+           -> Type   -- ^ the type of the type constructor (normalised already)
            -> [Type] -- ^ the declared constructor types
            -> [Int]
-findParams tyn ts =
+findParams tyn famty ts =
     let allapps = map getDataApp ts
         -- do each constructor separately, then merge the results (names
         -- may change between constructors)
@@ -378,9 +390,11 @@ findParams tyn ts =
     paramPos [] = []
     paramPos (args : rest)
           = dropNothing $ keepSame (zip [0..] args) rest
+
     dropNothing [] = []
     dropNothing ((x, Nothing) : ts) = dropNothing ts
     dropNothing ((x, _) : ts) = x : dropNothing ts
+
     keepSame :: [(Int, Maybe Name)] -> [[Maybe Name]] ->
                 [(Int, Maybe Name)]
     keepSame as [] = as
@@ -391,6 +405,7 @@ findParams tyn ts =
         update ((n, Just x) : as) (Just x' : args)
             | x == x' = (n, Just x) : update as args
         update ((n, _) : as) (_ : args) = (n, Nothing) : update as args
+
     getDataApp :: Type -> [[Maybe Name]]
     getDataApp f@(App _ _ _)
         | (P _ d _, args) <- unApply f
@@ -398,16 +413,24 @@ findParams tyn ts =
     getDataApp (Bind n (Pi _ t _) sc)
         = getDataApp t ++ getDataApp (instantiate (P Bound n t) sc)
     getDataApp _ = []
-    -- keep the arguments which are single names, which don't appear
-    -- elsewhere
+
+    -- keep the arguments which are single names, which appear
+    -- in the return type, counting only the first time they appear in
+    -- the return type as the parameter position
     mParam args [] = []
     mParam args (P Bound n _ : rest)
-           | count n args == 1
-              = Just n : mParam args rest
-        where count n [] = 0
-              count n (t : ts)
-                   | n `elem` freeNames t = 1 + count n ts
-                   | otherwise = count n ts
+           | paramIn False n args = Just n : mParam (filter (noN n) args) rest
+        where paramIn ok n [] = ok
+              paramIn ok n (P _ t _ : ts)
+                   = paramIn (ok || n == t) n ts
+              paramIn ok n (t : ts)
+                   | n `elem` freeNames t = False -- not a single name
+                   | otherwise = paramIn ok n ts
+
+              -- If the name appears again later, don't count that appearance
+              -- as a parameter position
+              noN n (P _ t _) = n /= t
+              noN n _ = False
     mParam args (_ : rest) = Nothing : mParam args rest
 
 -- | Mark a name as detaggable in the global state (should be called
@@ -450,3 +473,76 @@ propagateParams i ps t bound (PRef fc hls n)
           isImplicit (PImp _ _ _ x _ : is) n | x == n = True
           isImplicit (_ : is) n = isImplicit is n
 propagateParams i ps t bound x = x
+
+-- | Gather up all the outer 'PVar's and 'Hole's in an expression and reintroduce
+-- them in a canonical order
+orderPats :: Term -> Term
+orderPats tm = op [] tm
+  where
+    op [] (App s f a) = App s f (op [] a) -- for Infer terms
+
+    op ps (Bind n (PVar t) sc) = op ((n, PVar t) : ps) sc
+    op ps (Bind n (Hole t) sc) = op ((n, Hole t) : ps) sc
+    op ps (Bind n (Pi i t k) sc) = op ((n, Pi i t k) : ps) sc
+    op ps sc = bindAll (sortP ps) sc
+
+    -- Keep explicit Pi in the same order, insert others as necessary,
+    -- Pi as early as possible, Hole as late as possible
+    sortP ps = let (exps, imps) = partition isExp ps in
+               pick (reverse exps) imps
+
+    isExp (_, Pi Nothing _ _) = True
+    isExp (_, Pi (Just i) _ _) = toplevel_imp i && not (machine_gen i)
+    isExp _ = False
+
+    pick acc [] = acc
+    pick acc ((n, t) : ps) = pick (insert n t acc) ps
+
+    insert n t [] = [(n, t)]
+    -- if 't' uses any of the names which appear later, insert it later
+    insert n t rest@((n', t') : ps)
+        | any (\x -> x `elem` refsIn (binderTy t)) (n' : map fst ps)
+              = (n', t') : insert n t ps
+        -- otherwise it's fine where it is (preserve ordering)
+        | otherwise = (n, t) : rest
+
+-- Make sure all the pattern bindings are as far out as possible
+liftPats :: Term -> Term
+liftPats tm = let (tm', ps) = runState (getPats tm) [] in
+                  orderPats $ bindPats (reverse ps) tm'
+  where
+    bindPats []          tm = tm
+    bindPats ((n, t):ps) tm
+         | n `notElem` map fst ps = Bind n (PVar t) (bindPats ps tm)
+         | otherwise = bindPats ps tm
+
+    getPats :: Term -> State [(Name, Type)] Term
+    getPats (Bind n (PVar t) sc) = do ps <- get
+                                      put ((n, t) : ps)
+                                      getPats sc
+    getPats (Bind n (Guess t v) sc) = do t' <- getPats t
+                                         v' <- getPats v
+                                         sc' <- getPats sc
+                                         return (Bind n (Guess t' v') sc')
+    getPats (Bind n (Let t v) sc) = do t' <- getPats t
+                                       v' <- getPats v
+                                       sc' <- getPats sc
+                                       return (Bind n (Let t' v') sc')
+    getPats (Bind n (Pi i t k) sc) = do t' <- getPats t
+                                        k' <- getPats k
+                                        sc' <- getPats sc
+                                        return (Bind n (Pi i t' k') sc')
+    getPats (Bind n (Lam t) sc) = do t' <- getPats t
+                                     sc' <- getPats sc
+                                     return (Bind n (Lam t') sc')
+    getPats (Bind n (Hole t) sc) = do t' <- getPats t
+                                      sc' <- getPats sc
+                                      return (Bind n (Hole t') sc')
+
+
+    getPats (App s f a) = do f' <- getPats f
+                             a' <- getPats a
+                             return (App s f' a')
+    getPats t = return t
+
+

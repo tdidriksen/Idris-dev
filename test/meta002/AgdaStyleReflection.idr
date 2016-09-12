@@ -1,5 +1,5 @@
 ||| Implement an Agda-style reflection system as a DSL inside of
-||| Idris's reflected elaboration. Requires handling type class
+||| Idris's reflected elaboration. Requires handling interface
 ||| resolution and implicit arguments - some of the same features as
 ||| the Idris elaborator itself.
 |||
@@ -73,10 +73,10 @@ covering
 quoteTerm' : List TTName -> Raw -> Elab Term
 quoteTerm' env (Var n) =
     case findIndex (==n) env of
-      Just i => return (Var i [])
+      Just i => pure (Var i [])
       Nothing =>
         case findIndex (\(n', _) => n == n') !getEnv of
-          Just i => return (Var i [])
+          Just i => pure (Var i [])
           Nothing => do [(n', nt, ty)] <- lookupTy n
                           | [] => fail [TextPart "No such variable", NamePart n]
                           | vs => fail ([TextPart "Can't disambiguate"] ++
@@ -136,7 +136,7 @@ resolveVar k =
 
   where getVar : Nat -> List TTName -> Elab TTName
         getVar _     []         = fail [TextPart "Variable out of scope"]
-        getVar Z     (n :: _  ) = return n -- NB assumes unique names!
+        getVar Z     (n :: _  ) = pure n -- NB assumes unique names!
         getVar (S k) (_ :: env) = getVar k env
 
 ||| Prepare to apply a global by matching its argument plicities to

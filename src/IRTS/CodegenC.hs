@@ -1,3 +1,10 @@
+{-|
+Module      : IRTS.CodegenC
+Description : The default code generator for Idris, generating C code.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 module IRTS.CodegenC (codegenC) where
 
 import Idris.AbsSyntax
@@ -41,17 +48,17 @@ codegenC ci = do codegenC' (simpleDecls ci)
   where mkLib l = "-l" ++ l
         incdir i = "-I" ++ i
 
-codegenC' :: [(Name, SDecl)] ->
-             String -> -- output file name
-             OutputType ->   -- generate executable if True, only .o if False
-             [FilePath] -> -- include files
-             [String] -> -- extra object files
-             [String] -> -- extra compiler flags (libraries)
-             [String] -> -- extra compiler flags (anything)
-             [ExportIFace] ->
-             Bool -> -- interfaces too (so make a .o instead)
-             DbgLevel ->
-             IO ()
+codegenC' :: [(Name, SDecl)]
+          -> String        -- ^ output file name
+          -> OutputType    -- ^ generate executable if True, only .o if False
+          -> [FilePath]    -- ^ include files
+          -> [String]      -- ^ extra object files
+          -> [String]      -- ^ extra compiler flags (libraries)
+          -> [String]      -- ^ extra compiler flags (anything)
+          -> [ExportIFace]
+          -> Bool          -- ^ interfaces too (so make a .o instead)
+          -> DbgLevel
+          -> IO ()
 codegenC' defs out exec incs objs libs flags exports iface dbg
     = do -- print defs
          let bc = map toBC defs
@@ -620,11 +627,11 @@ doOp v (LExternal wf) [_,x,s]
        = v ++ "MKINT((i_int)(idris_writeStr(GETPTR(" ++ creg x
                               ++ "),GETSTR("
                               ++ creg s ++ "))))"
-doOp v (LExternal vm) [] | vm == sUN "prim__vm" = v ++ "MKPTR(vm, vm)"
 doOp v (LExternal si) [] | si == sUN "prim__stdin" = v ++ "MKPTR(vm, stdin)"
 doOp v (LExternal so) [] | so == sUN "prim__stdout" = v ++ "MKPTR(vm, stdout)"
 doOp v (LExternal se) [] | se == sUN "prim__stderr" = v ++ "MKPTR(vm, stderr)"
 
+doOp v (LExternal vm) [_] | vm == sUN "prim__vm" = v ++ "MKPTR(vm, vm)"
 doOp v (LExternal nul) [] | nul == sUN "prim__null" = v ++ "MKPTR(vm, NULL)"
 doOp v (LExternal eqp) [x, y] | eqp == sUN "prim__eqPtr"
     = v ++ "MKINT((i_int)(GETPTR(" ++ creg x ++ ") == GETPTR(" ++ creg y ++ ")))"
@@ -801,7 +808,7 @@ genDispatcher tags = "void* _idris_get_wrapper(VAL con)\n" ++
 
 genWrapper :: (FDesc, Int) -> String
 genWrapper (desc, tag) | (toFType desc) == FFunctionIO =
-    error $ "Cannot create C callbacks for IO functions, wrap them with unsafePerformIO.\n"
+    error "Cannot create C callbacks for IO functions, wrap them with unsafePerformIO.\n"
 genWrapper (desc, tag) =  ret ++ " " ++ wrapperName tag ++ "(" ++
                           renderArgs argList ++")\n"  ++
                           "{\n" ++

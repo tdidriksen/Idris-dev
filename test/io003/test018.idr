@@ -10,12 +10,13 @@ pong : IO ()
 pong = do (sender, x) <- recvMsg
           putStrLn x
           putStrLn "Received"
-          sendToThread sender "Hello to you too!"
-          return ()
+          sendToThread sender 0 "Hello to you too!"
+          pure ()
 
 ping : Ptr -> IO ()
-ping thread = do sendToThread thread (prim__vm, "Hello!")
-                 return ()
+ping thread = do me <- getMyVM
+                 sendToThread thread 0 (me, "Hello!")
+                 pure ()
 
 pingpong : IO ()
 pingpong

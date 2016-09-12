@@ -1,7 +1,16 @@
+{-|
+Module      : Idris.Elab.Value
+Description : Code to elaborate values.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
-module Idris.Elab.Value(elabVal, elabValBind, elabDocTerms,
-                        elabExec, elabREPL) where
+module Idris.Elab.Value(
+    elabVal, elabValBind, elabDocTerms
+  , elabExec, elabREPL
+  ) where
 
 import Idris.AbsSyntax
 import Idris.ASTUtils
@@ -65,7 +74,7 @@ elabValBind info aspat norm tm_in
         --    * elaboration as a function a -> b
 
         (ElabResult tm' defer is ctxt' newDecls highlights newGName, _) <-
-             tclift (elaborate ctxt (idris_datatypes i) (idris_name i) (sMN 0 "val") infP initEState
+             tclift (elaborate (constraintNS info) ctxt (idris_datatypes i) (idris_name i) (sMN 0 "val") infP initEState
                      (build i info aspat [Reflection] (sMN 0 "val") (infTerm tm)))
 
         -- Extend the context with new definitions created
@@ -76,13 +85,13 @@ elabValBind info aspat norm tm_in
 
         let vtm = orderPats (getInferTerm tm')
 
-        def' <- checkDef (fileFC "(input)") iderr True defer
+        def' <- checkDef info (fileFC "(input)") iderr True defer
         let def'' = map (\(n, (i, top, t, ns)) -> (n, (i, top, t, ns, True, True))) def'
         addDeferred def''
         mapM_ (elabCaseBlock info []) is
 
         logElab 3 ("Value: " ++ show vtm)
-        (vtm_in, vty) <- recheckC (fileFC "(input)") id [] vtm
+        (vtm_in, vty) <- recheckC (constraintNS info) (fileFC "(input)") id [] vtm
 
         let vtm = if norm then normalise (tt_ctxt i) [] vtm_in
                           else vtm_in

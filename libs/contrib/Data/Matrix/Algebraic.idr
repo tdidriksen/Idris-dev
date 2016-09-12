@@ -1,11 +1,11 @@
 ||| Matrix operations with vector space dimensionalities enforced
-||| at the type level. Uses operations from classes in `Control.Algebra`
+||| at the type level. Uses operations from interfaces in `Control.Algebra`
 ||| and `Control.Algebra.VectorSpace`.
 module Data.Matrix.Algebraic
 
 import public Control.Algebra
 import public Control.Algebra.VectorSpace
-import public Control.Algebra.NumericInstances
+import public Control.Algebra.NumericImplementations
 
 import public Data.Matrix
 
@@ -23,7 +23,7 @@ infixr 7 \&\  -- vector tensor product
 infixr 7 <&>  -- matrix tensor product
 
 -----------------------------------------------------------------------
---               Vectors as members of algebraic classes
+--               Vectors as members of algebraic interfaces
 -----------------------------------------------------------------------
 
 implementation Semigroup a => Semigroup (Vect n a) where
@@ -146,4 +146,4 @@ det {n} m = case n of
 --                      Matrix Algebra Properties
 -----------------------------------------------------------------------
 
--- TODO: Prove properties of matrix algebra for 'Verified' algebraic classes
+-- TODO: Prove properties of matrix algebra for 'Verified' algebraic interfaces

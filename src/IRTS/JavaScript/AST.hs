@@ -1,3 +1,10 @@
+{-|
+Module      : IRTS.JavaScript.AST
+Description : Data structures and functions used with the JavaScript codegen.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE OverloadedStrings #-}
 module IRTS.JavaScript.AST where
@@ -92,7 +99,7 @@ ffi code args = let parsed = ffiParse code in
   where
     ffiParse :: String -> [FFI]
     ffiParse ""           = []
-    ffiParse ['%']        = [FFIError $ "FFI - Invalid positional argument"]
+    ffiParse ['%']        = [FFIError "FFI - Invalid positional argument"]
     ffiParse ('%':'%':ss) = FFICode '%' : ffiParse ss
     ffiParse ('%':s:ss)
       | isDigit s =

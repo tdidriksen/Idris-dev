@@ -1,4 +1,12 @@
-{-# LANGUAGE CPP, GeneralizedNewtypeDeriving, ConstraintKinds, PatternGuards, StandaloneDeriving #-}
+{-|
+Module      : Idris.Parser.Helpers
+Description : Utilities for Idris' parser.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
+{-# LANGUAGE CPP, GeneralizedNewtypeDeriving, ConstraintKinds #-}
+{-# LANGUAGE PatternGuards, StandaloneDeriving                 #-}
 #if !(MIN_VERSION_base(4,8,0))
 {-# LANGUAGE OverlappingInstances #-}
 #endif
@@ -49,6 +57,21 @@ newtype IdrisInnerParser a = IdrisInnerParser { runInnerParser :: Parser a }
   deriving (Monad, Functor, MonadPlus, Applicative, Alternative, CharParsing, LookAheadParsing, DeltaParsing, MarkParsing Delta, Monoid, TokenParsing)
 
 deriving instance Parsing IdrisInnerParser
+
+#if MIN_VERSION_base(4,9,0)
+instance {-# OVERLAPPING #-} DeltaParsing IdrisParser where
+  line = lift line
+  {-# INLINE line #-}
+  position = lift position
+  {-# INLINE position #-}
+  slicedWith f (StateT m) = StateT $ \s -> slicedWith (\(a,s') b -> (f a b, s')) $ m s
+  {-# INLINE slicedWith #-}
+  rend = lift rend
+  {-# INLINE rend #-}
+  restOfLine = lift restOfLine
+  {-# INLINE restOfLine #-}
+
+#endif
 
 #if MIN_VERSION_base(4,8,0)
 instance {-# OVERLAPPING #-} TokenParsing IdrisParser where
@@ -653,7 +676,7 @@ addAcc n a = do i <- get
                 put (i { hide_list = addDef n a (hide_list i) })
 
 {- | Add accessbility option for data declarations
- (works for classes too - 'abstract' means the data/class is visible but members not) -}
+ (works for interfaces too - 'abstract' means the data/interface is visible but members not) -}
 accData :: Accessibility -> Name -> [Name] -> IdrisParser ()
 accData Frozen n ns = do addAcc n Public -- so that it can be used in public definitions
                          mapM_ (\n -> addAcc n Private) ns -- so that they are invisible
@@ -698,10 +721,10 @@ collect (PParams f ns ps : ds) = PParams f ns (collect ps) : collect ds
 collect (POpenInterfaces f ns ps : ds) = POpenInterfaces f ns (collect ps) : collect ds
 collect (PMutual f ms : ds) = PMutual f (collect ms) : collect ds
 collect (PNamespace ns fc ps : ds) = PNamespace ns fc (collect ps) : collect ds
-collect (PClass doc f s cs n nfc ps pdocs fds ds cn cd : ds')
-    = PClass doc f s cs n nfc ps pdocs fds (collect ds) cn cd : collect ds'
-collect (PInstance doc argDocs f s cs pnames acc opts n nfc ps pextra t en ds : ds')
-    = PInstance doc argDocs f s cs pnames acc opts n nfc ps pextra t en (collect ds) : collect ds'
+collect (PInterface doc f s cs n nfc ps pdocs fds ds cn cd : ds')
+    = PInterface doc f s cs n nfc ps pdocs fds (collect ds) cn cd : collect ds'
+collect (PImplementation doc argDocs f s cs pnames acc opts n nfc ps pextra t en ds : ds')
+    = PImplementation doc argDocs f s cs pnames acc opts n nfc ps pextra t en (collect ds) : collect ds'
 collect (PCopatterns fc syn cs : ds) = PCopatterns fc syn (collect cs) : collect ds
 collect (d : ds) = d : collect ds
 collect [] = []

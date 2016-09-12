@@ -247,10 +247,11 @@ words s = map pack $ words' $ unpack s
 ||| lines' (unpack "\rA BC\nD\r\nE\n")
 ||| ```
 lines' : List Char -> List (List Char)
-lines' s = case dropWhile isNL s of
-            [] => []
-            s' => let (w, s'') = break isNL s'
-                  in w :: lines' (assert_smaller s s'')
+lines' [] = []
+lines' s  = case break isNL s of
+              (l, s') => l :: case s' of
+                                []       => []
+                                _ :: s'' => lines' (assert_smaller s s'')
 
 ||| Splits a string into a list of newline separated strings.
 |||
@@ -286,9 +287,7 @@ unwords = pack . unwords' . map unpack
 ||| ```
 unlines' : List (List Char) -> List Char
 unlines' [] = []
-unlines' ls = assert_total (foldr1 addLine ls) where
-  addLine : List Char -> List Char -> List Char
-  addLine l s = l ++ ('\n' :: s)
+unlines' (l::ls) = l ++ '\n' :: unlines' ls
 
 ||| Joins the strings by newlines into a single string.
 |||
@@ -359,10 +358,10 @@ isInfixOf a b = isInfixOf (unpack a) (unpack b)
 partial
 nullPtr : Ptr -> IO Bool
 nullPtr p = do ok <- foreign FFI_C "isNull" (Ptr -> IO Int) p
-               return (ok /= 0)
+               pure (ok /= 0)
 
 ||| Check if a supposed string was actually a null pointer
 partial
 nullStr : String -> IO Bool
 nullStr p = do ok <- foreign FFI_C "isNull" (String -> IO Int) p
-               return (ok /= 0)
+               pure (ok /= 0)

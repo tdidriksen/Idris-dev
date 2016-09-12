@@ -87,12 +87,12 @@ mutual
     showPrec d (WhereN i n1 n2) = showCon d "WhereN" $ showArg i ++
                             showArg n1 ++ showArg n2
     showPrec d (WithN i n) = showCon d "WithN" $ showArg i ++ showArg n
-    showPrec d (InstanceN i ss) = showCon d "InstanceN" $ showArg i ++ showArg ss
+    showPrec d (ImplementationN i ss) = showCon d "ImplementationN" $ showArg i ++ showArg ss
     showPrec d (ParentN n s) = showCon d "ParentN" $ showArg n ++ showArg s
     showPrec d (MethodN n) = showCon d "MethodN" $ showArg n
     showPrec d (CaseN fc n) = showCon d "CaseN" $ showArg fc ++ showArg n
     showPrec d (ElimN n) = showCon d "ElimN" $ showArg n
-    showPrec d (InstanceCtorN n) = showCon d "InstanceCtorN" $ showArg n
+    showPrec d (ImplementationCtorN n) = showCon d "ImplementationCtorN" $ showArg n
     showPrec d (MetaN parent meta) = showCon d "MetaN" $ showArg parent ++ showArg meta
 
   implementation Show TTName where
@@ -110,25 +110,25 @@ mutual
     x          == y             = False
 
   implementation Eq SpecialName where
-    (WhereN i n1 n2)    == (WhereN i' n1' n2')   = i == i' && n1 == n1' && n2 == n2'
-    (WithN i n)         == (WithN i' n')         = i == i' && n == n'
-    (InstanceN i ss)    == (InstanceN i' ss')    = i == i' && ss == ss'
-    (ParentN n s)       == (ParentN n' s')       = n == n' && s == s'
-    (MethodN n)         == (MethodN n')          = n == n'
-    (CaseN fc n)        == (CaseN fc' n')        = fc == fc' && n == n'
-    (ElimN n)           == (ElimN n')            = n == n'
-    (InstanceCtorN n)   == (InstanceCtorN n')    = n == n'
-    (MetaN parent meta) == (MetaN parent' meta') = parent == parent' && meta == meta'
-    _                   == _                     = False
+    (WhereN i n1 n2)        == (WhereN i' n1' n2')      = i == i' && n1 == n1' && n2 == n2'
+    (WithN i n)             == (WithN i' n')            = i == i' && n == n'
+    (ImplementationN i ss)  == (ImplementationN i' ss') = i == i' && ss == ss'
+    (ParentN n s)           == (ParentN n' s')          = n == n' && s == s'
+    (MethodN n)             == (MethodN n')             = n == n'
+    (CaseN fc n)            == (CaseN fc' n')           = fc == fc' && n == n'
+    (ElimN n)               == (ElimN n')               = n == n'
+    (ImplementationCtorN n) == (ImplementationCtorN n') = n == n'
+    (MetaN parent meta)     == (MetaN parent' meta')    = parent == parent' && meta == meta'
+    _                       == _                        = False
 
 implementation Show TTUExp where
-  showPrec d (UVar i) = showCon d "UVar" $ showArg i
+  showPrec d (UVar ns i) = showCon d "UVar" $ showArg ns ++ showArg i
   showPrec d (UVal i) = showCon d "UVal" $ showArg i
 
 implementation Eq TTUExp where
-  (UVar i) == (UVar j) = i == j
-  (UVal i) == (UVal j) = i == j
-  x        == y        = False
+  (UVar nsi i) == (UVar nsj j) = nsi == nsj && i == j
+  (UVal i)     == (UVal j)     = i == j
+  x            == y            = False
 
 implementation Show NativeTy where
   show IT8  = "IT8"
@@ -235,32 +235,34 @@ implementation (Eq a) => Eq (Binder a) where
 
 implementation Show TT where
   showPrec = my_show
-    where %assert_total my_show : Prec -> TT -> String
-          my_show d (P nt n t) = showCon d "P" $ showArg nt ++ showArg n ++ showArg t
-          my_show d (V i) = showCon d "V" $ showArg i
-          my_show d (Bind n b t) = showCon d "Bind" $ showArg n ++ showArg b ++ showArg t
-          my_show d (App t1 t2) = showCon d "App" $ showArg t1 ++ showArg t2
-          my_show d (TConst c) = showCon d "TConst" $ showArg c
+    where my_show : Prec -> TT -> String
+          my_show d (P nt n t) = assert_total $ showCon d "P" $ showArg nt ++ showArg n ++ showArg t
+          my_show d (V i) = assert_total $ showCon d "V" $ showArg i
+          my_show d (Bind n b t) = assert_total $ showCon d "Bind" $ showArg n ++ showArg b ++ showArg t
+          my_show d (App t1 t2) = assert_total $ showCon d "App" $ showArg t1 ++ showArg t2
+          my_show d (TConst c) = assert_total $ showCon d "TConst" $ showArg c
           my_show d Erased = "Erased"
-          my_show d (TType u) = showCon d "TType" $ showArg u
-
-implementation Eq TT where
-  a == b = equalp a b
-    where %assert_total equalp : TT -> TT -> Bool
-          equalp (P nt n t)   (P nt' n' t')    = nt == nt' && n == n' && t == t'
-          equalp (V i)        (V i')           = i == i'
-          equalp (Bind n b t) (Bind n' b' t')  = n == n' && b == b' && t == t'
-          equalp (App t1 t2)  (App t1' t2')    = t1 == t1' && t2 == t2'
-          equalp (TConst c)   (TConst c')      = c == c'
-          equalp Erased       Erased           = True
-          equalp (TType u)    (TType u')       = u == u'
-          equalp x            y                = False
+          my_show d (TType u) = assert_total $ showCon d "TType" $ showArg u
+          my_show d (UType u) = "UType"
 
 implementation Eq Universe where
   Reflection.NullType   == Reflection.NullType   = True
   Reflection.UniqueType == Reflection.UniqueType = True
   Reflection.AllTypes   == Reflection.AllTypes   = True
   _                     == _                     = False
+
+implementation Eq TT where
+  a == b = equalp a b
+    where equalp : TT -> TT -> Bool
+          equalp (P nt n t)   (P nt' n' t')    = assert_total $ nt == nt' && n == n' && t == t'
+          equalp (V i)        (V i')           = assert_total $ i == i'
+          equalp (Bind n b t) (Bind n' b' t')  = assert_total $ n == n' && b == b' && t == t'
+          equalp (App t1 t2)  (App t1' t2')    = assert_total $ t1 == t1' && t2 == t2'
+          equalp (TConst c)   (TConst c')      = c == c'
+          equalp Erased       Erased           = True
+          equalp (TType u)    (TType u')       = u == u'
+          equalp (UType u)    (UType u')       = u == u'
+          equalp x            y                = False
 
 total
 forget : TT -> Maybe Raw
@@ -288,12 +290,13 @@ forget tm = fe [] tm
 
 implementation Show Raw where
   showPrec = my_show
-    where %assert_total my_show : Prec -> Raw -> String
-          my_show d (Var n) = showCon d "Var" $ showArg n
-          my_show d (RBind n b tm) = showCon d "RBind" $ showArg n ++ showArg b ++ " " ++ my_show App tm
-          my_show d (RApp tm tm') = showCon d "RApp" $ " " ++ my_show App tm ++ " " ++ my_show App tm'
+    where my_show : Prec -> Raw -> String
+          my_show d (Var n) = assert_total $ showCon d "Var" $ showArg n
+          my_show d (RBind n b tm) = assert_total $ showCon d "RBind" $ showArg n ++ showArg b ++ " " ++ my_show App tm
+          my_show d (RApp tm tm') = assert_total $ showCon d "RApp" $ " " ++ my_show App tm ++ " " ++ my_show App tm'
           my_show d RType = "RType"
-          my_show d (RConstant c) = showCon d "RConstant" $ showArg c
+          my_show d (RConstant c) = assert_total $ showCon d "RConstant" $ showArg c
+          my_show d (RUType u) = "RUType" 
 
 
 implementation Show Err where
@@ -329,7 +332,7 @@ implementation Show Err where
   showPrec d (NonCollapsiblePostulate n) = showCon d "NonCollapsiblePostulate" $ showArg n
   showPrec d (AlreadyDefined n) = showCon d "AlreadyDefined" $ showArg n
   showPrec d (ProofSearchFail err) = showCon d "ProofSearchFail" $ showArg err
-  showPrec d (NoRewriting tm) = showCon d "NoRewriting" $ showArg tm
+  showPrec d (NoRewriting ltm rtm typ) = showCon d "NoRewriting" $ showArg ltm ++ showArg rtm ++ showArg typ
   showPrec d (ProviderError x) = showCon d "ProviderError" $ showArg x
   showPrec d (LoadingFailed x err) = showCon d "LoadingFailed" $ showArg x ++ showArg err
 
@@ -344,7 +347,7 @@ pure : Raw -> Raw
 pure = id
 
 --------------------------------------
--- Instances for definition reflection
+-- Implementations for definition reflection
 --------------------------------------
 implementation Show Erasure where
   show Erased    = "Erased"

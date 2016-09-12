@@ -50,7 +50,7 @@ decAsBool (No _)  = False
 ---- Functor implementations
 
 Functor PrimIO where
-    map f io = prim_io_bind io (prim_io_return . f)
+    map f io = prim_io_bind io (prim_io_pure . f)
 
 Functor Maybe where
     map f (Just x) = Just (f x)
@@ -63,9 +63,9 @@ Functor (Either e) where
 ---- Applicative implementations
 
 Applicative PrimIO where
-    pure = prim_io_return
+    pure = prim_io_pure
 
-    am <*> bm = prim_io_bind am (\f => prim_io_bind bm (prim_io_return . f))
+    am <*> bm = prim_io_bind am (\f => prim_io_bind bm (prim_io_pure . f))
 
 Applicative Maybe where
     pure = Just
@@ -130,6 +130,13 @@ pow : (Num a) => a -> Nat -> a
 pow x Z = 1
 pow x (S n) = x * (pow x n)
 
+-- XXX these should probably also go somewhere else (in an interface somewhere?)
+shiftR : Int -> Int -> Int
+shiftR = prim__ashrInt
+
+shiftL : Int -> Int -> Int
+shiftL = prim__shlInt
+
 ---- Ranges
 
 natRange : Nat -> List Nat
@@ -139,12 +146,18 @@ natRange n = List.reverse (go n)
 
 -- predefine Nat versions of Enum, so we can use them in the default impls
 total natEnumFromThen : Nat -> Nat -> Stream Nat
-natEnumFromThen n inc = n :: natEnumFromThen (inc + n) inc
+natEnumFromThen n next = n :: natEnumFromThen next (minus next n)
 total natEnumFromTo : Nat -> Nat -> List Nat
-natEnumFromTo n m = map (plus n) (natRange (minus (S m) n))
+natEnumFromTo n m = if n <= m
+                    then go n m
+                    else List.reverse $ go m n
+  where go : Nat -> Nat -> List Nat
+        go n m = map (plus n) (natRange (minus (S m) n))
+total natEnumFromThenTo' : Nat -> Nat -> Nat -> List Nat
+natEnumFromThenTo' _ Z       _ = []
+natEnumFromThenTo' n (S inc) m = map (plus n . (* (S inc))) (natRange (S (divNatNZ (minus m n) (S inc) SIsNotZ)))
 total natEnumFromThenTo : Nat -> Nat -> Nat -> List Nat
-natEnumFromThenTo _ Z       _ = []
-natEnumFromThenTo n (S inc) m = map (plus n . (* (S inc))) (natRange (S (divNatNZ (minus m n) (S inc) SIsNotZ)))
+natEnumFromThenTo n next m = natEnumFromThenTo' n (minus next n) m
 
 interface Enum a where
   total pred : a -> a
@@ -177,36 +190,38 @@ Enum Integer where
   fromNat n = cast n
   enumFromThen n inc = n :: enumFromThen (inc + n) inc
   enumFromTo n m = if n <= m
-                   then go (natRange (S (cast {to = Nat} (m - n))))
-                   else []
-    where go : List Nat -> List Integer
-          go [] = []
-          go (x :: xs) = n + cast x :: go xs
+                   then go n m
+                   else List.reverse $ go m n
+    where go' : Integer -> List Nat -> List Integer
+          go' _ [] = []
+          go' n (x :: xs) = n + cast x :: go' n xs
+          go : Integer -> Integer -> List Integer
+          go n m = go' n (natRange (S (cast {to = Nat} (m - n))))
   enumFromThenTo _ 0   _ = []
-  enumFromThenTo n inc m = go (natRange (S (divNatNZ (fromInteger (abs (m - n))) (S (fromInteger ((abs inc) - 1))) SIsNotZ)))
+  enumFromThenTo n next m = go (natRange (S (divNatNZ (fromInteger (abs (m - n))) (S (fromInteger ((abs (next - n)) - 1))) SIsNotZ)))
     where go : List Nat -> List Integer
           go [] = []
-          go (x :: xs) = n + (cast x * inc) :: go xs
+          go (x :: xs) = n + (cast x * (next - n)) :: go xs
 
 Enum Int where
   pred n = n - 1
   succ n = n + 1
   toNat n = cast n
   fromNat n = cast n
-  enumFromTo n m =
-    if n <= m
-       then go [] (cast {to = Nat} (m - n)) m
-       else []
-       where
-         go : List Int -> Nat -> Int -> List Int
-         go acc Z     m = m :: acc
-         go acc (S k) m = go (m :: acc) k (m - 1)
+  enumFromTo n m = if n <= m
+                   then go n m
+                   else List.reverse $ go m n
+    where go' : List Int -> Nat -> Int -> List Int
+          go' acc Z     m = m :: acc
+          go' acc (S k) m = go' (m :: acc) k (m - 1)
+          go : Int -> Int -> List Int
+          go n m = go' [] (cast {to = Nat} (m - n)) m
   enumFromThen n inc = n :: enumFromThen (inc + n) inc
   enumFromThenTo _ 0   _ = []
-  enumFromThenTo n inc m = go (natRange (S (divNatNZ (cast {to=Nat} (abs (m - n))) (S (cast {to=Nat} ((abs inc) - 1))) SIsNotZ)))
+  enumFromThenTo n next m = go (natRange (S (divNatNZ (cast {to=Nat} (abs (m - n))) (S (cast {to=Nat} ((abs (next - n)) - 1))) SIsNotZ)))
     where go : List Nat -> List Int
           go [] = []
-          go (x :: xs) = n + (cast x * inc) :: go xs
+          go (x :: xs) = n + (cast x * (next - n)) :: go xs
 
 Enum Char where
   toNat c   = toNat (ord c)
@@ -217,12 +232,12 @@ Enum Char where
 syntax "[" [start] ".." [end] "]"
      = enumFromTo start end
 syntax "[" [start] "," [next] ".." [end] "]"
-     = enumFromThenTo start (next - start) end
+     = enumFromThenTo start next end
 
 syntax "[" [start] ".." "]"
      = enumFrom start
 syntax "[" [start] "," [next] ".." "]"
-     = enumFromThen start (next - start)
+     = enumFromThen start next
 
 ---- More utilities
 
@@ -237,19 +252,19 @@ namespace JSNull
   partial
   nullPtr : Ptr -> JS_IO Bool
   nullPtr p = do ok <- foreign FFI_JS "isNull" (Ptr -> JS_IO Int) p
-                 return (ok /= 0)
+                 pure (ok /= 0)
 
   ||| Check if a supposed string was actually a null pointer
   partial
   nullStr : String -> JS_IO Bool
   nullStr p = do ok <- foreign FFI_JS "isNull" (String -> JS_IO Int) p
-                 return (ok /= 0)
+                 pure (ok /= 0)
 
 
 ||| Pointer equality
 eqPtr : Ptr -> Ptr -> IO Bool
 eqPtr x y = do eq <- foreign FFI_C "idris_eqPtr" (Ptr -> Ptr -> IO Int) x y
-               return (eq /= 0)
+               pure (eq /= 0)
 
 ||| Loop while some test is true
 |||
@@ -260,7 +275,7 @@ while : (test : IO' l Bool) -> (body : IO' l ()) -> IO' l ()
 while t b = do v <- t
                if v then do b
                             while t b
-                    else return ()
+                    else pure ()
 
 ------- Some error rewriting
 

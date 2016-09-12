@@ -1,8 +1,15 @@
+{-|
+Module      : Idris.Core.Evaluate
+Description : Evaluate Idris expressions.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, BangPatterns,
-             PatternGuards #-}
+             PatternGuards, DeriveGeneric #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 
-module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC, 
+module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC,
                 normaliseAll, normaliseBlocking, toValue, quoteTerm,
                 rt_simplify, simplify, specialise, hnf, convEq, convEq',
                 Def(..), CaseInfo(..), CaseDefs(..),
@@ -12,9 +19,10 @@ module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC,
                 addDatatype, addCasedef, simplifyCasedef, addOperator,
                 lookupNames, lookupTyName, lookupTyNameExact, lookupTy, lookupTyExact,
                 lookupP, lookupP_all, lookupDef, lookupNameDef, lookupDefExact, lookupDefAcc, lookupDefAccExact, lookupVal,
-                mapDefCtxt, 
+                mapDefCtxt,
                 lookupTotal, lookupTotalExact, lookupInjectiveExact,
-                lookupNameTotal, lookupMetaInformation, lookupTyEnv, isTCDict, isDConName, canBeDConName, isTConName, isConName, isFnName,
+                lookupNameTotal, lookupMetaInformation, lookupTyEnv, isTCDict, 
+                isCanonical, isDConName, canBeDConName, isTConName, isConName, isFnName,
                 Value(..), Quote(..), initEval, uniqueNameCtxt, uniqueBindersCtxt, definitions,
                 isUniverse) where
 
@@ -24,6 +32,7 @@ import Control.Monad.State -- not Strict!
 import qualified Data.Binary as B
 import Data.Binary hiding (get, put)
 import Data.Maybe (listToMaybe)
+import GHC.Generics (Generic)
 
 import Idris.Core.TT
 import Idris.Core.CaseTree
@@ -103,7 +112,7 @@ normaliseTrace tr ctxt env t
                    quote 0 val) initEval
 
 toValue :: Context -> Env -> TT Name -> Value
-toValue ctxt env t 
+toValue ctxt env t
   = evalState (eval False ctxt [] (map finalEntry env) t []) initEval
 
 quoteTerm :: Value -> TT Name
@@ -175,24 +184,25 @@ bindEnv ((n, b):bs)       tm = Bind n b (bindEnv bs tm)
 unbindEnv :: EnvTT n -> TT n -> TT n
 unbindEnv [] tm = tm
 unbindEnv (_:bs) (Bind n b sc) = unbindEnv bs sc
-unbindEnv env tm = error $ "Impossible case occurred: couldn't unbind env."
+unbindEnv env tm = error "Impossible case occurred: couldn't unbind env."
 
 usable :: Bool -- specialising
+          -> Int -- Reduction depth limit (when simplifying/at REPL)
           -> Name -> [(Name, Int)] -> Eval (Bool, [(Name, Int)])
 -- usable _ _ ns@((MN 0 "STOP", _) : _) = return (False, ns)
-usable False n [] = return (True, [])
-usable True n ns
+usable False depthlimit n [] = return (True, [])
+usable True depthlimit n ns
   = do ES ls num b <- get
        if b then return (False, ns)
             else case lookup n ls of
                     Just 0 -> return (False, ns)
                     Just i -> return (True, ns)
                     _ -> return (False, ns)
-usable False n ns
+usable False depthlimit n ns
   = case lookup n ns of
          Just 0 -> return (False, ns)
          Just i -> return $ (True, (n, abs (i-1)) : filter (\ (n', _) -> n/=n') ns)
-         _ -> return $ (True, (n, 100) : filter (\ (n', _) -> n/=n') ns)
+         _ -> return $ (True, (n, depthlimit) : filter (\ (n', _) -> n/=n') ns)
 
 
 fnCount :: Int -> Name -> Eval ()
@@ -246,7 +256,8 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
     ev ntimes_in stk top env (P Ref n ty)
       | not top && hnf = liftM (VP Ref n) (ev ntimes stk top env ty)
       | otherwise
-         = do (u, ntimes) <- usable spec n ntimes_in
+         = do let limit = if simpl then 100 else 10000
+              (u, ntimes) <- usable spec limit n ntimes_in
               let red = u && (tcReducible n ctxt || spec || atRepl || runtime
                                 || sUN "assert_total" `elem` stk)
               if red then
@@ -304,7 +315,7 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
     -- block reduction immediately under codata (and not forced)
     ev ntimes stk top env
               (App _ (App _ (App _ d@(P _ (UN dly) _) l@(P _ (UN lco) _)) t) arg)
-       | dly == txt "Delay" && lco == txt "LazyCodata" && not (simpl || atRepl)
+       | dly == txt "Delay" && lco == txt "Infinite" && not simpl
             = do let (f, _) = unApply arg
                  let ntimes' = case f of
                                     P _ fn _ -> (fn, 0) : ntimes
@@ -370,7 +381,8 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
                             [] -> return f
                             _ -> return $ unload env f args
       | otherwise
-         = do (u, ntimes) <- usable spec n ntimes_in
+         = do let limit = if simpl then 100 else 10000
+              (u, ntimes) <- usable spec limit n ntimes_in
               let red = u && (tcReducible n ctxt || spec || atRepl || runtime
                                 || sUN "assert_total" `elem` stk)
               if red then
@@ -548,8 +560,8 @@ class Quote a where
     quote :: Int -> a -> Eval (TT Name)
 
 instance Quote Value where
-    quote i (VP nt n v)    = liftM (P nt n) (quote i v)
-    quote i (VV x)         = return $ V x
+    quote i (VP nt n v)      = liftM (P nt n) (quote i v)
+    quote i (VV x)           = return $ V x
     quote i (VBind _ n b sc) = do sc' <- sc (VTmp i)
                                   b' <- quoteB b
                                   liftM (Bind n b') (quote (i+1) sc')
@@ -561,10 +573,10 @@ instance Quote Value where
                                 let sc'' = pToV (sMN vd "vlet") (addBinder sc')
                                 return (Bind n (Let t' v') sc'')
     quote i (VApp f a)     = liftM2 (App MaybeHoles) (quote i f) (quote i a)
-    quote i (VType u)       = return $ TType u
-    quote i (VUType u)      = return $ UType u
-    quote i VErased        = return $ Erased
-    quote i VImpossible    = return $ Impossible
+    quote i (VType u)      = return (TType u)
+    quote i (VUType u)     = return (UType u)
+    quote i VErased        = return Erased
+    quote i VImpossible    = return Impossible
     quote i (VProj v j)    = do v' <- quote i v
                                 return (Proj v' j)
     quote i (VConstant c)  = return $ Constant c
@@ -596,9 +608,9 @@ convEq ctxt holes topx topy = ceq [] topx topy where
         | x `elem` holes || y `elem` holes = return True
         | x == y || (x, y) `elem` ps || (y,x) `elem` ps = return True
         | otherwise = sameDefs ps x y
-    ceq ps x (Bind n (Lam t) (App _ y (V 0))) 
+    ceq ps x (Bind n (Lam t) (App _ y (V 0)))
           = ceq ps x (substV (P Bound n t) y)
-    ceq ps (Bind n (Lam t) (App _ x (V 0))) y 
+    ceq ps (Bind n (Lam t) (App _ x (V 0))) y
           = ceq ps (substV (P Bound n t) x) y
     ceq ps x (Bind n (Lam t) (App _ y (P Bound n' _)))
         | n == n' = ceq ps x y
@@ -624,11 +636,22 @@ convEq ctxt holes topx topy = ceq [] topx topy where
             ceqB ps (Guess v t) (Guess v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps (Pi i v t) (Pi i' v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps b b' = ceq ps (binderTy b) (binderTy b')
+    -- Special case for 'case' blocks - size of scope causes complications,
+    -- we only want to check the blocks themselves are valid and identical
+    -- in the current scope. So, just check the bodies, and the additional
+    -- arguments the case blocks are applied to.
+    ceq ps x@(App _ _ _) y@(App _ _ _)
+        | (P _ cx _, xargs) <- unApply x,
+          (P _ cy _, yargs) <- unApply y,
+          caseName cx && caseName cy = sameCase ps cx cy xargs yargs
+
     ceq ps (App _ fx ax) (App _ fy ay) = liftM2 (&&) (ceq ps fx fy) (ceq ps ax ay)
     ceq ps (Constant x) (Constant y) = return (x == y)
-    ceq ps (TType x) (TType y)           = do (v, cs) <- get
-                                              put (v, ULE x y : cs)
-                                              return True
+    ceq ps (TType x) (TType y) | x == y = return True
+    ceq ps (TType (UVal 0)) (TType y) = return True
+    ceq ps (TType x) (TType y) = do (v, cs) <- get
+                                    put (v, ULE x y : cs)
+                                    return True
     ceq ps (UType AllTypes) x = return (isUsableUniverse x)
     ceq ps x (UType AllTypes) = return (isUsableUniverse x)
     ceq ps (UType u) (UType v) = return (u == v)
@@ -664,6 +687,24 @@ convEq ctxt holes topx topy = ceq [] topx topy where
                                        caseeq ((x,y):ps) xdef ydef
                         _ -> return False
 
+    sameCase :: [(Name, Name)] -> Name -> Name -> [Term] -> [Term] -> 
+                StateT UCs TC Bool
+    sameCase ps x y xargs yargs
+          = case (lookupDef x ctxt, lookupDef y ctxt) of
+                 ([Function _ xdef], [Function _ ydef])
+                       -> ceq ((x,y):ps) xdef ydef
+                 ([CaseOp _ _ _ _ _ xd],
+                  [CaseOp _ _ _ _ _ yd])
+                       -> let (xin, xdef) = cases_compiletime xd
+                              (yin, ydef) = cases_compiletime yd in
+                            do liftM2 (&&) 
+                                  (do ok <- zipWithM (ceq ps)
+                                              (drop (length xin) xargs)
+                                              (drop (length yin) yargs)
+                                      return (and ok))
+                                  (caseeq ((x,y):ps) xdef ydef)
+                 _ -> return False
+
 -- SPECIALISATION -----------------------------------------------------------
 -- We need too much control to be able to do this by tweaking the main
 -- evaluator
@@ -684,10 +725,11 @@ data Def = Function !Type !Term
          | Operator Type Int ([Value] -> Maybe Value)
          | CaseOp CaseInfo
                   !Type
-                  ![Type] -- argument types
+                  ![(Type, Bool)] -- argument types, whether canonical
                   ![Either Term (Term, Term)] -- original definition
                   ![([Name], Term, Term)] -- simplified for totality check definition
                   !CaseDefs
+  deriving Generic
 --                   [Name] SC -- Compile time case definition
 --                   [Name] SC -- Run time cae definitions
 
@@ -697,12 +739,14 @@ data CaseDefs = CaseDefs {
                   cases_inlined :: !([Name], SC),
                   cases_runtime :: !([Name], SC)
                 }
+  deriving Generic
 
 data CaseInfo = CaseInfo {
                   case_inlinable :: Bool, -- decided by machine
                   case_alwaysinline :: Bool, -- decided by %inline flag
                   tc_dictionary :: Bool
                 }
+  deriving Generic
 
 {-!
 deriving instance Binary Def
@@ -712,15 +756,6 @@ deriving instance Binary CaseInfo
 !-}
 {-!
 deriving instance Binary CaseDefs
-!-}
-{-!
-deriving instance NFData Def
-!-}
-{-!
-deriving instance NFData CaseInfo
-!-}
-{-!
-deriving instance NFData CaseDefs
 !-}
 
 instance Show Def where
@@ -746,13 +781,10 @@ instance Show Def where
 -- Hidden => Programs can't access the name at all
 -- Public => Programs can access the name and use at will
 -- Frozen => Programs can access the name, which doesn't reduce
--- Private => Programs can't access the name, doesn't reduce internally 
+-- Private => Programs can't access the name, doesn't reduce internally
 
-data Accessibility = Hidden | Public | Frozen | Private 
-    deriving (Eq, Ord)
-{-!
-deriving instance NFData Accessibility
-!-}
+data Accessibility = Hidden | Public | Frozen | Private
+    deriving (Eq, Ord, Generic)
 
 instance Show Accessibility where
   show Public = "public export"
@@ -768,18 +800,12 @@ data Totality = Total [Int] -- ^ well-founded arguments
               | Partial PReason
               | Unchecked
               | Generated
-    deriving Eq
-{-!
-deriving instance NFData Totality
-!-}
+    deriving (Eq, Generic)
 
 -- | Reasons why a function may not be total
 data PReason = Other [Name] | Itself | NotCovering | NotPositive | UseUndef Name
              | ExternalIO | BelieveMe | Mutual [Name] | NotProductive
-    deriving (Show, Eq)
-{-!
-deriving instance NFData PReason
-!-}
+    deriving (Show, Eq, Generic)
 
 instance Show Totality where
     show (Total args)= "Total" -- ++ show args ++ " decreasing arguments"
@@ -813,14 +839,14 @@ deriving instance Binary PReason
 data MetaInformation =
       EmptyMI -- ^ No meta-information
     | DataMI [Int] -- ^ Meta information for a data declaration with position of parameters
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
 
 -- | Contexts used for global definitions and for proof state. They contain
 -- universe constraints and existing definitions.
 data Context = MkContext {
                   next_tvar       :: Int,
                   definitions     :: Ctxt (Def, Injectivity, Accessibility, Totality, MetaInformation)
-                } deriving Show
+                } deriving (Show, Generic)
 
 
 -- | The initial empty context
@@ -899,7 +925,7 @@ addDatatype (Data n tag ty unique cons) uctxt
 addCasedef :: Name -> ErasureInfo -> CaseInfo ->
               Bool -> SC -> -- default case
               Bool -> Bool ->
-              [Type] -> -- argument types
+              [(Type, Bool)] -> -- argument types, whether canonical
               [Int] ->  -- inaccessible arguments
               [Either Term (Term, Term)] ->
               [([Name], Term, Term)] -> -- totality
@@ -993,7 +1019,7 @@ lookupTyName n ctxt = do
 
 -- | Get the pair of a fully-qualified name and its type, if there is a unique one matching the name used as a key.
 lookupTyNameExact :: Name -> Context -> Maybe (Name, Type)
-lookupTyNameExact n ctxt = listToMaybe [ (nm, v) | (nm, v) <- lookupTyName n ctxt, nm == n ] 
+lookupTyNameExact n ctxt = listToMaybe [ (nm, v) | (nm, v) <- lookupTyName n ctxt, nm == n ]
 
 -- | Get the types that match some name
 lookupTy :: Name -> Context -> [Type]
@@ -1002,6 +1028,15 @@ lookupTy n ctxt = map snd (lookupTyName n ctxt)
 -- | Get the single type that matches some name precisely
 lookupTyExact :: Name -> Context -> Maybe Type
 lookupTyExact n ctxt = fmap snd (lookupTyNameExact n ctxt)
+
+-- | Return true if the given type is a concrete type familyor primitive
+-- False it it's a function to compute a type or a variable
+isCanonical :: Type -> Context -> Bool
+isCanonical t ctxt
+     = case unApply t of
+            (P _ n _, _) -> isConName n ctxt
+            (Constant _, _) -> True
+            _ -> False
 
 isConName :: Name -> Context -> Bool
 isConName n ctxt = isTConName n ctxt || isDConName n ctxt
@@ -1048,7 +1083,7 @@ lookupP = lookupP_all False False
 
 lookupP_all :: Bool -> Bool -> Name -> Context -> [Term]
 lookupP_all all exact n ctxt
-   = do (n', def) <- names 
+   = do (n', def) <- names
         p <- case def of
           (Function ty tm, inj, a, _, _)      -> return (P Ref n' ty, a)
           (TyDecl nt ty, _, a, _, _)        -> return (P nt n' ty, a)
@@ -1060,7 +1095,7 @@ lookupP_all all exact n ctxt
           _      -> return (fst p)
   where
     names = let ns = lookupCtxtName n (definitions ctxt) in
-                if exact 
+                if exact
                    then filter (\ (n', d) -> n' == n) ns
                    else ns
 
@@ -1080,7 +1115,7 @@ lookupDefAcc :: Name -> Bool -> Context ->
 lookupDefAcc n mkpublic ctxt
     = map mkp $ lookupCtxt n (definitions ctxt)
   -- io_bind a special case for REPL prettiness
-  where mkp (d, inj, a, _, _) = if mkpublic && (not (n == sUN "io_bind" || n == sUN "io_return"))
+  where mkp (d, inj, a, _, _) = if mkpublic && (not (n == sUN "io_bind" || n == sUN "io_pure"))
                                    then (d, Public) else (d, a)
 
 lookupDefAccExact :: Name -> Bool -> Context ->
@@ -1088,7 +1123,7 @@ lookupDefAccExact :: Name -> Bool -> Context ->
 lookupDefAccExact n mkpublic ctxt
     = fmap mkp $ lookupCtxtExact n (definitions ctxt)
   -- io_bind a special case for REPL prettiness
-  where mkp (d, inj, a, _, _) = if mkpublic && (not (n == sUN "io_bind" || n == sUN "io_return"))
+  where mkp (d, inj, a, _, _) = if mkpublic && (not (n == sUN "io_bind" || n == sUN "io_pure"))
                                    then (d, Public) else (d, a)
 
 lookupTotal :: Name -> Context -> [Totality]

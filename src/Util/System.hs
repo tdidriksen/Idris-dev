@@ -1,8 +1,22 @@
+{-|
+Module      : Util.System
+Description : Utilities for interacting with the system.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
-module Util.System(tempfile,withTempdir,rmFile,catchIO, isWindows,
-                   writeSource, writeSourceText, readSource,
-                   setupBundledCC, isATTY) where
--- System helper functions.
+module Util.System( tempfile
+                  , withTempdir
+                  , rmFile
+                  , catchIO
+                  , isWindows
+                  , writeSource
+                  , writeSourceText
+                  , readSource
+                  , setupBundledCC
+                  , isATTY
+                  ) where
 
 import Control.Exception as CE
 import Control.Monad (when)
@@ -23,7 +37,8 @@ import System.IO.Error
 
 #ifdef FREESTANDING
 import Tools_idris
-import System.FilePath (isAbsolute, dropFileName)
+import Data.List (intercalate)
+import System.FilePath (isAbsolute, dropFileName, searchPathSeparator)
 import System.Directory (doesDirectoryExist)
 import System.Environment (getEnv, setEnv, getExecutablePath)
 #endif
@@ -95,11 +110,10 @@ setupBundledCC = when hasBundledToolchain
                                     if absolute
                                        then tcDir
                                        else dropFileName exePath ++ tcDir
-                        let pathSep = if isWindows then ";" else ":"
                         present <- doesDirectoryExist target
-                        when present
-                            $ do newPath <- return $ target ++ pathSep ++ path
-                                 setEnv "PATH" newPath
+                        when present $ do
+                          newPath <- return $ intercalate [searchPathSeparator] [target, path]
+                          setEnv "PATH" newPath
 #else
 setupBundledCC = return ()
 #endif

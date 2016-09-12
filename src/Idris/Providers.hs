@@ -1,5 +1,16 @@
+{-|
+Module      : Idris.Providers
+Description : Idris' 'Type Provider' implementation.
+Copyright   :
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE PatternGuards, DeriveFunctor #-}
-module Idris.Providers (providerTy, getProvided, Provided(..)) where
+module Idris.Providers (
+    providerTy
+  , getProvided
+  , Provided(..)
+  ) where
 
 import Idris.Core.TT
 import Idris.Core.Evaluate
@@ -13,7 +24,7 @@ providerTy fc tm
   = PApp fc (PRef fc [] $ sNS (sUN "Provider" ) ["Providers", "Prelude"]) [PExp 0 [] (sMN 0 "pvarg") tm]
 
 ioret :: Name
-ioret = sUN "prim_io_return"
+ioret = sUN "prim_io_pure"
 
 ermod :: Name
 ermod = sNS (sUN "Error") ["Providers", "Prelude"]
@@ -37,6 +48,5 @@ getProvided fc tm | (P _ pioret _, [tp, result]) <- unApply tm
                   , pioret == ioret && nm == prmod
                       = return . Provide $ res
                   | otherwise = ifail $ "Internal type provider error: result was not " ++
-                                        "IO (Provider a), or perhaps missing normalisation." ++
+                                        "IO (Provider a), or perhaps missing normalisation.\n" ++
                                         "Term: " ++ take 1000 (show tm)
-

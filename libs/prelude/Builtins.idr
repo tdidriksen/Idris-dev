@@ -12,7 +12,7 @@
 namespace Builtins
   ||| The non-dependent pair type, also known as conjunction.
   ||| @A the type of the left elements in the pair
-  ||| @B the type of the left elements in the pair
+  ||| @B the type of the right elements in the pair
   %elim data Pair : (A : Type) -> (B : Type) -> Type where
      ||| A pair of elements
      ||| @a the left element of the pair
@@ -26,7 +26,7 @@ namespace Builtins
   ||| The non-dependent pair type, also known as conjunction, usable with
   ||| UniqueTypes.
   ||| @A the type of the left elements in the pair
-  ||| @B the type of the left elements in the pair
+  ||| @B the type of the right elements in the pair
   data UPair : (A : AnyType) -> (B : AnyType) -> AnyType where
      ||| A pair of elements
      ||| @a the left element of the pair
@@ -73,7 +73,6 @@ void : Void -> a
 
 ||| For 'symbol syntax. 'foo becomes Symbol_ "foo"
 data Symbol_ : String -> Type where
-
 
 infix 5 ~=~
 
@@ -132,6 +131,7 @@ Force (Delay x) = x
 ||| Lazily evaluated values. 
 ||| At run time, the delayed value will only be computed when required by
 ||| a case split.
+%error_reverse
 Lazy : Type -> Type
 Lazy t = Delayed LazyValue t
 
@@ -139,6 +139,7 @@ Lazy t = Delayed LazyValue t
 ||| A value which may be infinite is accepted by the totality checker if
 ||| it appears under a data constructor. At run time, the delayed value will
 ||| only be computed when required by a case split.
+%error_reverse
 Inf : Type -> Type
 Inf t = Delayed Infinite t
 
@@ -170,17 +171,22 @@ assert_smaller x y = y
 assert_total : a -> a
 assert_total x = x
 
+||| Assert to the totality checker that the case using this expression
+||| is unreachable
+assert_unreachable : a
+-- compiled as primitive
+
 ||| Subvert the type checker. This function is abstract, so it will not reduce in
 ||| the type checker. Use it with care - it can result in segfaults or worse!
-export %assert_total -- need to pretend
+export 
 believe_me : a -> b
-believe_me x = prim__believe_me _ _ x
+believe_me x = assert_total (prim__believe_me _ _ x)
 
 ||| Subvert the type checker. This function *will*  reduce in the type checker.
 ||| Use it with extreme care - it can result in segfaults or worse!
-public export %assert_total
+public export 
 really_believe_me : a -> b
-really_believe_me x = prim__believe_me _ _ x
+really_believe_me x = assert_total (prim__believe_me _ _ x)
 
 ||| Deprecated alias for `Double`, for the purpose of backwards
 ||| compatibility. Idris does not support 32 bit floats at present.
@@ -198,7 +204,7 @@ export data CData : Type
 %extern prim__readFile : prim__WorldType -> Ptr -> String
 %extern prim__writeFile : prim__WorldType -> Ptr -> String -> Int
 
-%extern prim__vm : Ptr
+%extern prim__vm : prim__WorldType -> Ptr
 %extern prim__stdin : Ptr
 %extern prim__stdout : Ptr
 %extern prim__stderr : Ptr

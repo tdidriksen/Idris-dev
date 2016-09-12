@@ -1,21 +1,38 @@
+{-|
+Module      : Idris.CmdOptions
+Description : A parser for the CmdOptions for the Idris executable.
+License     : BSD3
+Maintainer  : The Idris Community.
+-}
 {-# LANGUAGE Arrows #-}
-module Idris.CmdOptions where
+module Idris.CmdOptions
+  (
+    module Idris.CmdOptions
+  , opt
+  , getClient, getPkg, getPkgCheck, getPkgClean, getPkgMkDoc
+  , getPkgREPL, getPkgTest, getPort, getIBCSubDir
+  ) where
 
 import Idris.AbsSyntaxTree
-import Idris.REPL
+import Idris.AbsSyntax (opt, getClient, getPkg, getPkgCheck, getPkgClean, getPkgMkDoc
+  , getPkgREPL, getPkgTest, getPort, getIBCSubDir)
+-- import Idris.REPL
+import Idris.Info (getIdrisVersion)
 
 import IRTS.CodegenCommon
 
 import Options.Applicative
 import Options.Applicative.Arrows
+import Options.Applicative.Types (ReadM(..))
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Reader (ask)
+import Control.Monad.Trans.Except (throwE)
 import Data.Char
 import Data.Maybe
 
 import Text.ParserCombinators.ReadP hiding (many, option)
 
 import Safe (lastMay)
-
-
 
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
@@ -26,9 +43,9 @@ runArgParser = do opts <- execParser $ info parser
                            <> progDescDoc (Just idrisProgDesc)
                            <> footerDoc   (Just idrisFooter)
                           )
-                  return $ preProcOpts opts []
+                  return $ preProcOpts opts
                where
-                 idrisHeader = PP.hsep [PP.text "Idris version", PP.text ver, PP.text ", (C) The Idris Community 2016"]
+                 idrisHeader = PP.hsep [PP.text "Idris version", PP.text getIdrisVersion, PP.text ", (C) The Idris Community 2016"]
                  idrisProgDesc = PP.vsep [PP.empty,
                                           PP.text "Idris is a general purpose pure functional programming language with dependent",
                                           PP.text "types. Dependent types allow types to be predicated on values, meaning that",
@@ -36,7 +53,7 @@ runArgParser = do opts <- execParser $ info parser
                                           PP.text "It is compiled, with eager evaluation. Its features are influenced by Haskell",
                                           PP.text "and ML.",
                                           PP.empty,
-                                          PP.vsep $ map (\x -> PP.indent 4 (PP.text x)) [
+                                          PP.vsep $ map (PP.indent 4 . PP.text) [
                                               "+ Full dependent types with dependent pattern matching",
                                               "+ Simple case expressions, where-clauses, with-rule",
                                               "+ Pattern matching let- and lambda-bindings",
@@ -59,12 +76,9 @@ runArgParser = do opts <- execParser $ info parser
                                         PP.empty,
                                         PP.indent 4 (PP.text "http://www.idris-lang.org/")]
 
-
-
-
 pureArgParser :: [String] -> [Opt]
 pureArgParser args = case getParseResult $ execParserPure (prefs idm) (info parser idm) args of
-  Just opts -> preProcOpts opts []
+  Just opts -> preProcOpts opts
   Nothing -> []
 
 parser :: Parser [Opt]
@@ -72,7 +86,6 @@ parser = runA $ proc () -> do
   flags <- asA parseFlags -< ()
   files <- asA (many $ argument (fmap Filename str) (metavar "FILES")) -< ()
   A parseVersion >>> A helper -< (flags ++ files)
-
 
 parseFlags :: Parser [Opt]
 parseFlags = many $
@@ -112,6 +125,7 @@ parseFlags = many $
   <|> flag' ErrContext     (long "errorcontext")
 
   -- Show things
+  <|> flag' ShowAll         (long "info"        <> help "Display information about installation.")
   <|> flag' ShowLoggingCats (long "listlogcats" <> help "Display logging categories")
   <|> flag' ShowLibs        (long "link"        <> help "Display link flags")
   <|> flag' ShowPkgs        (long "listlibs"    <> help "Display installed libraries")
@@ -122,11 +136,12 @@ parseFlags = many $
 
   <|> (IBCSubDir <$> strOption (long "ibcsubdir" <> metavar "FILE" <> help "Write IBC files into sub directory"))
   <|> (ImportDir <$> strOption (short 'i' <> long "idrispath" <> help "Add directory to the list of import paths"))
+  <|> (SourceDir <$> strOption (long "sourcepath" <> help "Add directory to the list of source search paths"))
 
   <|> flag' WarnOnly (long "warn")
 
   <|> (Pkg  <$> strOption (short 'p' <> long "package" <> help "Add package as a dependency"))
-  <|> (Port <$> strOption (long "port" <> metavar "PORT" <> help "REPL TCP port"))
+  <|> (Port <$> option portReader (long "port" <> metavar "PORT" <> help "REPL TCP port - pass \"none\" to not bind any port"))
 
   -- Package commands
   <|> (PkgBuild   <$> strOption (long "build"    <> metavar "IPKG" <> help "Build package"))
@@ -146,14 +161,13 @@ parseFlags = many $
   <|> (DumpDefun <$> strOption (long "dumpdefuns"))
   <|> (DumpCases <$> strOption (long "dumpcases"))
 
-  <|> ((\s -> UseCodegen $ parseCodegen s) <$> strOption (long "codegen"
-                                                       <> metavar "TARGET"
-                                                       <> help "Select code generator: C, Javascript, Node and bytecode are bundled with Idris"))
+  <|> (UseCodegen . parseCodegen) <$> strOption (long "codegen"
+                                              <> metavar "TARGET"
+                                              <> help "Select code generator: C, Javascript, Node and bytecode are bundled with Idris")
 
-
-  <|> ((\s -> UseCodegen $ Via JSONFormat s) <$> strOption (long "portable-codegen"
-                                                         <> metavar "TARGET"
-                                                         <> help "Pass the name of the code generator. This option is for codegens that take JSON formatted IR."))
+  <|> ((UseCodegen . Via JSONFormat) <$> strOption (long "portable-codegen"
+                                                 <> metavar "TARGET"
+                                                 <> help "Pass the name of the code generator. This option is for codegens that take JSON formatted IR."))
 
   <|> (CodegenArgs <$> strOption (long "cg-opt"
                                <> metavar "ARG"
@@ -164,10 +178,10 @@ parseFlags = many $
   <|> flag' (InterpretScript "Main.main") (long "execute" <> help "Execute as idris")
   <|> (InterpretScript <$> strOption      (long "exec" <> metavar "EXPR" <> help "Execute as idris"))
 
-  <|> ((\s -> Extension $ getExt s) <$> strOption (long "extension"
-                                                <> short 'X'
-                                                <> metavar "EXT"
-                                                <> help "Turn on language extension (TypeProviders or ErrorReflection)"))
+  <|> ((Extension . getExt) <$> strOption (long "extension"
+                                        <> short 'X'
+                                        <> metavar "EXT"
+                                        <> help "Turn on language extension (TypeProviders or ErrorReflection)"))
 
   -- Optimisation Levels
   <|> flag' (OptLevel 3) (long "O3")
@@ -194,32 +208,39 @@ parseFlags = many $
   <|> flag' NoElimDeprecationWarnings      (long "no-elim-deprecation-warnings"   <> help "Disable deprecation warnings for %elim")
   <|> flag' NoOldTacticDeprecationWarnings (long "no-tactic-deprecation-warnings" <> help "Disable deprecation warnings for the old tactic sublanguage")
 
-  where
-    getExt s = case maybeRead s of
-      Just ext -> ext
-      Nothing -> error ("Unknown extension " ++ s)
-    maybeRead = fmap fst . listToMaybe . reads
+    where
+      getExt :: String -> LanguageExt
+      getExt s = fromMaybe (error ("Unknown extension " ++ s)) (maybeRead s)
+      maybeRead :: String -> Maybe LanguageExt
+      maybeRead = fmap fst . listToMaybe . reads
+      portReader :: ReadM REPLPort
+      portReader =
+        ((ListenPort . fromIntegral) <$> auto) <|>
+        (ReadM $ do opt <- ask
+                    if map toLower opt == "none"
+                      then return $ DontListen
+                      else lift $ throwE $ ErrorMsg $
+                           "got " <> opt <> " expected port number or \"none\"")
 
 parseVersion :: Parser (a -> a)
-parseVersion = infoOption ver (short 'v' <> long "version" <> help "Print version information")
+parseVersion = infoOption getIdrisVersion (short 'v' <> long "version" <> help "Print version information")
 
-preProcOpts :: [Opt] -> [Opt] -> [Opt]
-preProcOpts []              ys = ys
-preProcOpts (NoBuiltins:xs) ys = NoBuiltins : NoPrelude : preProcOpts xs ys
-preProcOpts (Output s:xs)   ys = Output s : NoREPL : preProcOpts xs ys
-preProcOpts (BCAsm s:xs)    ys = BCAsm s : NoREPL : preProcOpts xs ys
-preProcOpts (x:xs)          ys = preProcOpts xs (x:ys)
+preProcOpts :: [Opt] -> [Opt]
+preProcOpts (NoBuiltins : xs) = NoBuiltins : NoPrelude : preProcOpts xs
+preProcOpts (Output s : xs)   = Output s : NoREPL : preProcOpts xs
+preProcOpts (BCAsm s : xs)    = BCAsm s : NoREPL : preProcOpts xs
+preProcOpts (x:xs)            = x : preProcOpts xs
+preProcOpts []                = []
 
 parseCodegen :: String -> Codegen
 parseCodegen "bytecode" = Bytecode
 parseCodegen cg         = Via IBCFormat (map toLower cg)
 
-
 parseLogCats :: Monad m => String -> m [LogCat]
 parseLogCats s =
-    case lastMay (readP_to_S (doParse) s) of
+    case lastMay (readP_to_S doParse s) of
       Just (xs, _) -> return xs
-      _            -> fail $ "Incorrect categories specified"
+      _            -> fail "Incorrect categories specified"
   where
     doParse :: ReadP [LogCat]
     doParse = do
@@ -245,11 +266,9 @@ parseConsoleWidth :: Monad m => String -> m ConsoleWidth
 parseConsoleWidth "auto"     = return AutomaticWidth
 parseConsoleWidth "infinite" = return InfinitelyWide
 parseConsoleWidth  s =
-  case lastMay (readP_to_S (integerReader) s) of
+  case lastMay (readP_to_S integerReader s) of
      Just (r, _) -> return $ ColsWide r
      _           -> fail $ "Cannot parse: " ++ s
-
-
 
 integerReader :: ReadP Int
 integerReader = do
