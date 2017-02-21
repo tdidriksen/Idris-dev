@@ -315,7 +315,7 @@ elabDecl' what info (PCopatterns fc syn clauses)
                            PTy _ _ _ _ _ _ _ _ -> True
                            _ -> False) ds
          mapM_ (elabDecl ETypes info) tydecls
-         mapM_ (elabCoClauses what info) cs
+         mapM_ (elabCoClausesDecl what info) cs
       where
         
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]

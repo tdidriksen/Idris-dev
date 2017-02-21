@@ -311,7 +311,7 @@ data IState = IState {
   , idris_ttstats                :: M.Map Term (Int, Term)
   , idris_fragile                :: Ctxt String               -- ^ Fragile names and explanation.
   , idris_interactiveOpts        :: InteractiveOpts
-  , idris_copatterns             :: M.Map Name (RecordInfo, [(Name, Name)])
+  , idris_copatterns             :: M.Map Name [Name] --(RecordInfo, [(Name, Name)])
   , idris_proj_type              :: M.Map Name PTerm -- TODO: should be part of record info
   }
   deriving Generic

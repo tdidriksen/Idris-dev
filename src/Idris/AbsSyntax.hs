@@ -1362,6 +1362,8 @@ expandParamsD rhsonly ist dec ps ns (PClauses fc opts n cs)
     = let n' = if n `elem` ns then dec n else n in
           PClauses fc opts n' (map expandParamsC cs)
   where
+    expandParamsC (PCoClause fc n lhs rhs wheres path) =
+      expandParamsC (PClause fc n lhs [] rhs wheres)
     expandParamsC (PClause fc n lhs ws rhs ds)
         = let -- ps' = updateps True (namesIn ist rhs) (zip ps [0..])
               ps'' = updateps False (namesIn [] ist lhs) (zip ps [0..])
