@@ -1,6 +1,6 @@
-***********************
-Compilation and Logging
-***********************
+************************************
+Compilation, Logging, and Reporting
+************************************
 
 This section provides information about the Idris compilation process, and
 provides details over how you can follow the process through logging.
@@ -41,11 +41,27 @@ With Idris you can ask it to terminate the compilation process after type checki
 
 Use of this option will still result in the generation of the Idris binary ``.ibc`` files, and is suitable if you do not wish to generate code from one of the supported backends.
 
-Logging Output
-==============
+Reporting Compilation Process
+=============================
 
-The internal operation of Idris is captured using a category based logger.
-Currently, the logging infrastructure has support for the following categories:
+During compilation the reporting of Idris' progress can be controlled
+by setting a verbosity level.
+
++ ``-V``, or alternatively ``--verbose`` and ``--V0``, will report which file Idris is currently type checking.
++ ``--V1`` will additionally report: Parsing, IBC Generation, and Code
+  Generation.
++ ``--V2`` will additionally report: Totality Checking, Universe
+  Checking, and the individual steps prior to code generation.
+
+
+By default Idris' progress reporting is set to quiet-``-q``, or ``--quiet``.
+
+Logging Internal Operation
+===========================
+
+For those that develop on the Idris compiler, the internal operation
+of Idris is captured using a category based logger. Currently, the
+logging infrastructure has support for the following categories:
 
 + Parser
 + Elaborator
@@ -86,22 +102,30 @@ overridden through environment variables.  The provided variables are:
 
 * `IDRIS_CC` Change the `C` compiler used by the `C` backend.
 * `IDRIS_CFLAGS` Change the `C` flags passed to the `C` compiler.
-* `TARGET`   Change the target directory to generate files.
-* `IDRIS_LIBRARY_PATH` Change the location of where installed packages are found.
+* `TARGET`   Change the target directory i.e. `data dir` where Idris installs files when installing using Cabal/Stack.
+* `IDRIS_LIBRARY_PATH` Change the location of where installed packages are found/installed.
+* `IDRIS_DOC_PATH`  Change the location of where generated idrisdoc for packages are installed.
 
-Alternativly, and perhaps a cleaner approach is to configure these
-options using the CLI options.  Idris also supports options to augment
-the paths used, and pass options to the code generator backend.
+.. note::
 
-The option `--cg-opt <ARG>` can be used to pass options to the code
-generator. The format of `<ARG>` is dependent on the selected backend.
+   In versions of Idris prior to 0.12.3 the environment variables
+   `IDRIS_LIBRARY_PATH` and `TARGET` were both used to affect the
+   installation of single packages and direct where Idris installed
+   its data. The meaning of these variables has changed, and command
+   line options are preferred when changing where individual packages
+   are installed.
 
-Further, Idris does support multiple include paths.  The CLI option
-`-i <dir>` allows you to add a directory to the library search path; this
-option can be used multiple times. This is a cleaner option when you
-wish to add single directories to the `IDRIS_LIBRARY_PATH` than
-ammending `IDRIS_LIBRARY_PATH` directly.
-To add directories to the source search path, use the `--sourcepath <dir>` option.
+The CLI option `--ibcsubdir` can be used to direct where generated IBC
+files are placed.  However, this means Idris will install files in a
+non-standard location separate from the rest of the installed
+packages. The CLI option `--idrispath <dir>` allows you to add a
+directory to the library search path; this option can be used multiple
+times and can be shortened to `-i <dir>`. Similary, the `--sourcepath
+<dir>` option can be used to add directories to the source search
+path. There is no shortened version for this option as `-s` is a
+reserved flag.
 
-Moreover, rather than using `TARGET` the CLI option `--ibcsubdir` can
-be used to direct where built IBC files are placed.
+Further, Idris also supports options to augment the paths used, and
+pass options to the code generator backend.  The option `--cg-opt
+<ARG>` can be used to pass options to the code generator. The format
+of `<ARG>` is dependent on the selected backend.

@@ -1,11 +1,58 @@
-# New in 0.13:
+# New in 0.99.1:
+
+## Language updates
+
+* Language pragmas now required for the less stable existing features, in
+  addition to the existing `TypeProviders` and `ErrorReflection`:
+  + `ElabReflection`, which must be enabled to use `%runElab`
+  + `UniquenessTypes`, which must be enabled to use `UniqueType`
+  + `DSLNotation`, which must be enabled to define a `dsl` block
+  + `FirstClassReflection`, which must be enabled to define a `%reflection`
+    function
+
+* New language extension `LinearTypes`:
+  + This allows adding a /multiplicity/ to a binder which says how often it
+    is allowed to be used; either 0 or 1 (if unstated, multiplicity is "many")
+  + The typing rules follow Conor McBride's paper "I Got Plenty o' Nuttin'"
+  + This is highly experimental, unfinished, not at all polished. and there
+    are still lots of details to sort out. Some features don't quite work
+    properly yet. But it is there to play with for the brave!
+
+## Tool Updates
+
++ Idris' output has been updated to more accurately reflect its
+  progress through the compiler i.e. Type Checking; Totality Checking;
+  IBC Generation; Compiling; and Code Generation. To control the
+  loudness of the reporting three verbosity levels are introduced:
+  `--V0`, `--V1`, and `--V2`. The old aliases of `-V` and `--verbose`
+  persist.
+
++ New REPL command `:!` that runs an external shell command.
+
++ The REPL now colourises output on MinTTY consoles (e.g., Cygwin and MSYS)
+  on Windows, which previously did not occur due to a bug.
+
++ Idris now runs in a UTF-8-compatible codepage on Windows. This fixes many
+  Unicode-rendering issues on Windows (e.g., error messages stating
+  `commitBuffer: invalid argument (invalid character)`).
+
+## Library Updates
+
++ Terminating programs has been improved with more appropriate
+  functions (`exitWith`, `exitFailure`, and `exitSuccess`) and a data
+  structure (`ExitCode`) to capture a program's return code.
++ Casting a `String` to an `Int`, `Integer` or a `Double` now ignores leading
+  and trailing whitespace. Previously only leading whitespace was ignored.
++ RTS functions `openFile`, `do_popen`, and `ARGV` are now properly encoded using UTF-8 on Windows.
+
+# New in 0.99:
 
 ## Language updates
 
 * `record` syntax now allows updating fields, including nested fields,
   by applying a function using the `$=` operator.  For example:
 
-  ```
+  ```idris
   record Score where
          constructor MkScore
          correct : Nat
@@ -20,6 +67,16 @@
   correct st = record { score->correct $= (+1),
                         score->attempted $= (+1) } st
   ```
+
+* Implicit parameter to interfaces are now allowed. For example:
+
+  ```idris
+  interface Shows (ts : Vect k Type) where
+    shows : HVect ts -> Vect k String
+  ```
+  In this interface, `k` is an implicit parameter, but previously needed to
+  be explicit
+
 
 ## Library updates
 
@@ -40,18 +97,25 @@
 
 * Idris' documentation system now displays the documentation for auto
   implicits in the output of `:doc`. This is tested for in `docs005`.
-
 * New command line flag `--info` that displays information about the installation.
-
 * New command line flag `--sourcepath <dir>` that allows adding directories to the source search path.
+* Allow 'installation' of a package's IdrisDoc documentation into a central location. The default location is the subdirectory `docs` of Idris' data directory.
+  * New flag `--installdoc <ipkg>` provided to install documentation
+  * New flag `--docdir` provided to show default documentation installation location.
+  * New environment variable `IDRIS_DOC_PATH` to allow specification of an alternative installation path for documentation.
+* Semantic meaning behind several environment variables has been clarified in documentation and code. See compilation section of the reference manual for more details.
+* Interface parameter constraints are now printed in the output of `:doc`. This
+  is tested for in `docs006`.
+
 ## Miscellaneous updates
 
+* New, faster, better, implementation of the coverage checker
 * The test suite now uses [tasty-golden](https://hackage.haskell.org/package/tasty-golden). New tests must be registered in `test/TestData.hs`, as explained in the relevant `README.md`.
 * Added OSX and Windows continous integration with Travis and Appveyor.
 
 ## UI Changes
 
-* The :e command can now handle an $EDITOR with arguments in it, like "emacs -nw" 
+* The :e command can now handle an $EDITOR with arguments in it, like "emacs -nw"
 
 
 # New in 0.12:

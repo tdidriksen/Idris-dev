@@ -5,40 +5,36 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE PatternGuards, ViewPatterns #-}
+{-# LANGUAGE PatternGuards #-}
 module Idris.Elab.Record(elabRecord) where
 
 import Idris.AbsSyntax
-import Idris.Docstrings
-import Idris.Error
-import Idris.Delaborate
-import Idris.Imports
-import Idris.Elab.Term
+import Idris.Core.Evaluate
+import Idris.Core.TT
 import Idris.Coverage
 import Idris.DataOpts
-import Idris.Providers
-import Idris.Primitives
-import Idris.Inliner
-import Idris.PartialEval
 import Idris.DeepSeq
-import Idris.Output (iputStrLn, pshow, iWarn, sendHighlighting)
+import Idris.Delaborate
+import Idris.Docstrings
+import Idris.Elab.Data
+import Idris.Elab.Data
+import Idris.Elab.Term
+import Idris.Elab.Type
+import Idris.Elab.Utils
+import Idris.Error
+import Idris.Imports
+import Idris.Inliner
+import Idris.Output (iWarn, iputStrLn, pshow, sendHighlighting)
+import Idris.Parser.Expr (tryFullExpr)
+import Idris.PartialEval
+import Idris.Primitives
+import Idris.Providers
 import IRTS.Lang
 
-import Idris.Parser.Expr (tryFullExpr)
-
-import Idris.Elab.Type
-import Idris.Elab.Data
-import Idris.Elab.Utils
-
-import Idris.Core.TT
-import Idris.Core.Evaluate
-
-import Idris.Elab.Data
-
-import Data.Maybe
-import Data.List
 import Control.Monad
 import qualified Data.Map as Map
+import Data.List
+import Data.Maybe
 
 -- | Elaborate a record declaration
 elabRecord :: ElabInfo
@@ -272,7 +268,7 @@ elabRecordFunctions info rsyn fc tyn params fields dconName target
 
     -- | Elaborate the projection functions.
     elabProj :: Name -> [Name] -> [(Name, Name, Plicity, PTerm, Docstring (Either Err PTerm), Int)] -> Idris ()
-    elabProj cn paramnames fs 
+    elabProj cn paramnames fs
                    = let phArgs = map (uncurry placeholderArg) [(p, n) | (n, _, p, _, _, _) <- fs]
                          elab = \(n, n', p, t, doc, i) ->
                               -- Use projections in types
@@ -284,7 +280,7 @@ elabRecordFunctions info rsyn fc tyn params fields dconName target
 
     -- | Elaborate the update functions.
     elabUp :: Name -> [Name] -> [(Name, Name, Plicity, PTerm, Docstring (Either Err PTerm), Int)] -> Idris ()
-    elabUp cn paramnames fs 
+    elabUp cn paramnames fs
                  = let args = map (uncurry asPRefArg) [(p, n) | (n, _, p, _, _, _) <- fs]
                        elab = \(n, n', p, t, doc, i) -> elabUpdate info n paramnames n' p t doc rsyn fc target cn args fieldNames i (optionalSetter n)
                    in mapM_ elab fs
@@ -468,10 +464,10 @@ in_name n = n
 
 -- | Creates a PArg with a given plicity, name, and term.
 asArg :: Plicity -> Name -> PTerm -> PArg
-asArg (Imp os _ _ _ _) n t = PImp 0 False os n t
-asArg (Exp os _ _) n t = PExp 0 os n t
-asArg (Constraint os _) n t = PConstraint 0 os n t
-asArg (TacImp os _ s) n t = PTacImplicit 0 os n s t
+asArg (Imp os _ _ _ _ _) n t = PImp 0 False os n t
+asArg (Exp os _ _ _) n t = PExp 0 os n t
+asArg (Constraint os _ _) n t = PConstraint 0 os n t
+asArg (TacImp os _ s _) n t = PTacImplicit 0 os n s t
 
 -- | Machine name "rec".
 recName :: Name

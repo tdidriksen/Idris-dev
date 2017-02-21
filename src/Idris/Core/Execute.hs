@@ -6,47 +6,42 @@ License     : BSD3
 Maintainer  : The Idris Community.
 -}
 
-{-# LANGUAGE PatternGuards, ExistentialQuantification, CPP #-}
+{-# LANGUAGE CPP, ExistentialQuantification, PatternGuards #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 module Idris.Core.Execute (execute) where
 
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
-import IRTS.Lang(FDesc(..), FType(..))
-
-import Idris.Primitives(Prim(..), primitives)
-
-import Idris.Core.TT
-import Idris.Core.Evaluate
 import Idris.Core.CaseTree
-
+import Idris.Core.Evaluate
+import Idris.Core.TT
 import Idris.Error
-
-import Debug.Trace
+import Idris.Primitives (Prim(..), primitives)
+import IRTS.Lang (FDesc(..), FType(..))
 
 import Util.DynamicLinker
 import Util.System
 
 import Control.Applicative hiding (Const)
 import Control.Exception
-import Control.Monad.Trans
-import Control.Monad.Trans.State.Strict
-import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Control.Monad hiding (forM)
-import Data.Maybe
+import Control.Monad.Trans
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import Control.Monad.Trans.State.Strict
 import Data.Bits
-import Data.Traversable (forM)
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Map as M
+import Data.Maybe
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Traversable (forM)
+import Debug.Trace
+import System.IO
 
 #ifdef IDRIS_FFI
-import Foreign.LibFFI
 import Foreign.C.String
+import Foreign.LibFFI
 import Foreign.Marshal.Alloc (free)
 import Foreign.Ptr
 #endif
-
-import System.IO
 
 #ifndef IDRIS_FFI
 execute :: Term -> Idris Term
@@ -96,14 +91,14 @@ toTT (EBind n b body) = do n' <- newN n
                            body' <- body $ EP Bound n' EErased
                            b' <- fixBinder b
                            Bind n' b' <$> toTT body'
-    where fixBinder (Lam t)       = Lam     <$> toTT t
-          fixBinder (Pi i t k)    = Pi i    <$> toTT t <*> toTT k
+    where fixBinder (Lam rig t)    = Lam rig  <$> toTT t
+          fixBinder (Pi rig i t k) = Pi rig i <$> toTT t <*> toTT k
           fixBinder (Let t1 t2)   = Let     <$> toTT t1 <*> toTT t2
           fixBinder (NLet t1 t2)  = NLet    <$> toTT t1 <*> toTT t2
           fixBinder (Hole t)      = Hole    <$> toTT t
           fixBinder (GHole i ns t) = GHole i ns <$> toTT t
           fixBinder (Guess t1 t2) = Guess   <$> toTT t1 <*> toTT t2
-          fixBinder (PVar t)      = PVar    <$> toTT t
+          fixBinder (PVar rig t)  = PVar rig <$> toTT t
           fixBinder (PVTy t)      = PVTy    <$> toTT t
           newN n = do (ExecState hs ns) <- lift get
                       let n' = uniqueName n ns
@@ -119,7 +114,7 @@ toTT (EConstant c) = return (Constant c)
 toTT (EThunk ctxt env tm) = do env' <- mapM toBinder env
                                return $ normalise ctxt env' tm
   where toBinder (n, v) = do v' <- toTT v
-                             return (n, Let Erased v')
+                             return (n, RigW, Let Erased v')
 toTT (EHandle _) = execFail $ Msg "Can't convert handles back to TT after execution."
 toTT (EPtr ptr) = execFail $ Msg "Can't convert pointers back to TT after execution."
 
@@ -180,9 +175,9 @@ doExec env ctxt p@(P Ref n ty) =
          [Function _ tm] -> doExec env ctxt tm
          [TyDecl _ _] -> return (EP Ref n EErased) -- abstract def
          [Operator tp arity op] -> return (EP Ref n EErased) -- will be special-cased later
-         [CaseOp _ _ _ _ _ (CaseDefs _ ([], STerm tm) _ _)] -> -- nullary fun
+         [CaseOp _ _ _ _ _ (CaseDefs ([], STerm tm) _)] -> -- nullary fun
              doExec env ctxt tm
-         [CaseOp _ _ _ _ _ (CaseDefs _ (ns, sc) _ _)] -> return (EP Ref n EErased)
+         [CaseOp _ _ _ _ _ (CaseDefs (ns, sc) _)] -> return (EP Ref n EErased)
          [] -> execFail . Msg $ "Could not find " ++ show n ++ " in definitions."
          other | length other > 1 -> execFail . Msg $ "Multiple definitions found for " ++ show n
                | otherwise        -> execFail . Msg . take 500 $ "got to " ++ show other ++ " lookup up " ++ show n
@@ -217,6 +212,7 @@ doExec env ctxt (Proj tm i) = let (x, xs) = unApply tm in
                               doExec env ctxt ((x:xs) !! i)
 doExec env ctxt Erased = return EErased
 doExec env ctxt Impossible = fail "Tried to execute an impossible case"
+doExec env ctxt (Inferred t) = doExec env ctxt t
 doExec env ctxt (TType u) = return (EType u)
 doExec env ctxt (UType u) = return (EUType u)
 
@@ -275,10 +271,10 @@ execApp env ctxt f@(EP _ n _) args =
                                            execApp env ctxt r (drop arity args)
                       _ -> return (mkEApp f args)
                else return (mkEApp f args)
-         [CaseOp _ _ _ _ _ (CaseDefs _ ([], STerm tm) _ _)] -> -- nullary fun
+         [CaseOp _ _ _ _ _ (CaseDefs ([], STerm tm) _)] -> -- nullary fun
              do rhs <- doExec env ctxt tm
                 execApp env ctxt rhs args
-         [CaseOp _ _ _ _ _ (CaseDefs _ (ns, sc) _ _)] ->
+         [CaseOp _ _ _ _ _ (CaseDefs (ns, sc) _)] ->
              do res <- execCase env ctxt ns sc args
                 return $ fromMaybe (mkEApp f args) res
          thing -> return $ mkEApp f args
@@ -402,6 +398,12 @@ execForeign env ctxt arity ty fn xs onfail
                       "The argument to isNull should be a pointer or file handle or string, but it was " ++
                       show ptr ++
                       ". Are all cases covered?"
+
+    | Just (FFun "idris_disableBuffering" _ _) <- foreignFromTT arity ty fn xs
+       = do execIO $ hSetBuffering stdin NoBuffering
+            execIO $ hSetBuffering stdout NoBuffering
+            execApp env ctxt ioUnit (drop arity xs)
+
 
 -- Right now, there's no way to send command-line arguments to the executor,
 -- so just return 0.

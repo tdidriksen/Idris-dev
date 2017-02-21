@@ -8,12 +8,12 @@ Maintainer  : The Idris Community.
 module Idris.Apropos (apropos, aproposModules) where
 
 import Idris.AbsSyntax
-import Idris.Core.Evaluate (ctxtAlist, Def(..))
-import Idris.Core.TT (Name(..), Type, TT(..), NameType(..), Binder(..), Const(..),
-                      lookupCtxtExact, toAlist)
-import Idris.Docstrings (Docstring, DocTerm, containsText)
+import Idris.Core.Evaluate (Def(..), ctxtAlist)
+import Idris.Core.TT (Binder(..), Const(..), Name(..), NameType(..), TT(..),
+                      Type, lookupCtxtExact, toAlist)
+import Idris.Docstrings (DocTerm, Docstring, containsText)
 
-import Data.List (nub, nubBy, intersperse)
+import Data.List (intersperse, nub, nubBy)
 import qualified Data.Text as T
 
 -- | Find definitions that are relevant to all space-delimited components of
@@ -72,8 +72,8 @@ instance Apropos Def where
   isApropos str (CaseOp _ ty ty' _ _ _) = isApropos str ty
 
 instance Apropos (Binder (TT Name)) where
-  isApropos str (Lam ty)      = str == T.pack "\\" || isApropos str ty
-  isApropos str (Pi _ ty _)   = str == T.pack "->" || isApropos str ty
+  isApropos str (Lam _ ty)    = str == T.pack "\\" || isApropos str ty
+  isApropos str (Pi _ _ ty _) = str == T.pack "->" || isApropos str ty
   isApropos str (Let ty val)  = str == T.pack "let" || isApropos str ty || isApropos str val
   isApropos str (NLet ty val) = str == T.pack "let" || isApropos str ty || isApropos str val
   isApropos str _             = False -- these shouldn't occur in defined libraries

@@ -37,6 +37,8 @@ import public Language.Reflection.Errors
 %access public export
 %default total
 
+%language ElabReflection
+
 -- Things that can't be elsewhere for import cycle reasons
 -- See comment after declaration of void in Builtins.idr
 -- for explanation of this definition's location
@@ -144,9 +146,14 @@ natRange n = List.reverse (go n)
   where go Z = []
         go (S n) = n :: go n
 
+
 -- predefine Nat versions of Enum, so we can use them in the default impls
+countFrom : Num n => n -> n -> Stream n
+countFrom start diff = start :: countFrom (start + diff) diff
+
 total natEnumFromThen : Nat -> Nat -> Stream Nat
-natEnumFromThen n next = n :: natEnumFromThen next (minus next n)
+natEnumFromThen n next = countFrom n (minus next n)
+
 total natEnumFromTo : Nat -> Nat -> List Nat
 natEnumFromTo n m = if n <= m
                     then go n m
@@ -156,8 +163,15 @@ natEnumFromTo n m = if n <= m
 total natEnumFromThenTo' : Nat -> Nat -> Nat -> List Nat
 natEnumFromThenTo' _ Z       _ = []
 natEnumFromThenTo' n (S inc) m = map (plus n . (* (S inc))) (natRange (S (divNatNZ (minus m n) (S inc) SIsNotZ)))
+
 total natEnumFromThenTo : Nat -> Nat -> Nat -> List Nat
-natEnumFromThenTo n next m = natEnumFromThenTo' n (minus next n) m
+natEnumFromThenTo n next m = if n == m then [n]
+                             else if n < m then natEnumFromThenTo' n (minus next n) m
+                             else case minus n next of
+                                  Z => []
+                                  S step => List.reverse . map (+ (modNatNZ (minus n m) (S step) SIsNotZ)) $ natEnumFromThenTo' m (minus n next) n
+    where modNatNZ : Nat -> (m : Nat) -> Not (m = 0) -> Nat
+          modNatNZ n m nz = minus n $ mult m $ divNatNZ n m nz
 
 interface Enum a where
   total pred : a -> a
@@ -188,7 +202,7 @@ Enum Integer where
   succ n = n + 1
   toNat n = cast n
   fromNat n = cast n
-  enumFromThen n inc = n :: enumFromThen (inc + n) inc
+  enumFromThen n inc = countFrom n (inc - n)
   enumFromTo n m = if n <= m
                    then go n m
                    else List.reverse $ go m n
@@ -197,8 +211,9 @@ Enum Integer where
           go' n (x :: xs) = n + cast x :: go' n xs
           go : Integer -> Integer -> List Integer
           go n m = go' n (natRange (S (cast {to = Nat} (m - n))))
-  enumFromThenTo _ 0   _ = []
-  enumFromThenTo n next m = go (natRange (S (divNatNZ (fromInteger (abs (m - n))) (S (fromInteger ((abs (next - n)) - 1))) SIsNotZ)))
+  enumFromThenTo n next m = if n == m then [n]
+                            else if next - n == 0 || next - n < 0 /= m - n < 0 then []
+                            else go (natRange (S (divNatNZ (fromInteger (abs (m - n))) (S (fromInteger ((abs (next - n)) - 1))) SIsNotZ)))
     where go : List Nat -> List Integer
           go [] = []
           go (x :: xs) = n + (cast x * (next - n)) :: go xs
@@ -216,9 +231,11 @@ Enum Int where
           go' acc (S k) m = go' (m :: acc) k (m - 1)
           go : Int -> Int -> List Int
           go n m = go' [] (cast {to = Nat} (m - n)) m
-  enumFromThen n inc = n :: enumFromThen (inc + n) inc
-  enumFromThenTo _ 0   _ = []
-  enumFromThenTo n next m = go (natRange (S (divNatNZ (cast {to=Nat} (abs (m - n))) (S (cast {to=Nat} ((abs (next - n)) - 1))) SIsNotZ)))
+  enumFromThen n inc = countFrom n (inc - n)
+
+  enumFromThenTo n next m = if n == m then [n]
+                            else if next - n == 0 || next - n < 0 /= m - n < 0 then []
+                            else go (natRange (S (divNatNZ (cast {to=Nat} (abs (m - n))) (S (cast {to=Nat} ((abs (next - n)) - 1))) SIsNotZ)))
     where go : List Nat -> List Int
           go [] = []
           go (x :: xs) = n + (cast x * (next - n)) :: go xs

@@ -13,54 +13,51 @@ module Idris.Main
   ) where
 
 import Idris.AbsSyntax
-import Idris.ModeCommon
-import Idris.REPL.Parser
+import Idris.Core.Execute (execute)
+import Idris.Core.TT
+import Idris.Elab.Term
+import Idris.Elab.Value
+import Idris.ElabDecls
 import Idris.Error
 import Idris.IBC
-import Idris.Parser hiding (indent)
-import Idris.Output
-
-import Idris.REPL.Commands
-import Idris.REPL
-
-import Idris.ElabDecls
-import Idris.Elab.Value
-import Idris.Elab.Term
 import Idris.Info
+import Idris.ModeCommon
+import Idris.Output
+import Idris.Parser hiding (indent)
+import Idris.REPL
+import Idris.REPL.Commands
+import Idris.REPL.Parser
+import IRTS.CodegenCommon
 
 import Util.System
 
-import Idris.Core.Execute (execute)
-import Idris.Core.TT
-
-import IRTS.CodegenCommon
-
 import Control.Category
-import Prelude hiding ((<$>), (.), id)
-
-import Text.Trifecta.Result(Result(..), ErrInfo(..))
-
-import System.Console.Haskeline as H
-import System.FilePath
-import System.Exit
-import System.Directory
-import System.IO
+import Control.DeepSeq
 import Control.Monad
+import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State.Strict (execStateT)
-import Control.Monad.Trans ( lift )
 import Data.Maybe
-import Control.DeepSeq
-
-
+import Prelude hiding (id, (.), (<$>))
+import System.Console.Haskeline as H
+import System.Directory
+import System.Exit
+import System.FilePath
+import System.IO
+import System.IO.CodePage (withCP65001)
+import Text.Trifecta.Result (ErrInfo(..), Result(..))
 
 -- | How to run Idris programs.
 runMain :: Idris () -> IO ()
-runMain prog = do res <- runExceptT $ execStateT prog idrisInit
-                  case res of
-                       Left err -> putStrLn $ "Uncaught error: " ++ show err
-                       Right _ -> return ()
-
+runMain prog = withCP65001 $ do
+               -- Run in codepage 65001 on Windows so that UTF-8 characters can
+               -- be displayed properly. See #3000.
+  res <- runExceptT $ execStateT prog idrisInit
+  case res of
+       Left err -> do
+         putStrLn $ "Uncaught error: " ++ show err
+         exitFailure
+       Right _ -> return ()
 
 -- | The main function of Idris that when given a set of Options will
 -- launch Idris into the desired interaction mode either: REPL;
@@ -73,7 +70,6 @@ idrisMain opts =
        let nobanner = NoBanner `elem` opts
        let idesl = Idemode `elem` opts || IdemodeSocket `elem` opts
        let runrepl = not (NoREPL `elem` opts)
-       let verbose = runrepl || Verbose `elem` opts
        let output = opt getOutput opts
        let ibcsubdir = opt getIBCSubDir opts
        let importdirs = opt getImportDir opts
@@ -121,13 +117,16 @@ idrisMain opts =
        mapM_ addLangExt (opt getLanguageExt opts)
        setREPL runrepl
        setQuiet (quiet || isJust script || not (null immediate))
-       setVerbose verbose
+
        setCmdLine opts
        setOutputTy outty
        setNoBanner nobanner
        setCodegen cgn
        mapM_ (addFlag cgn) cgFlags
        mapM_ makeOption opts
+       vlevel <- verbose
+       when (runrepl && vlevel == 0) $ setVerbose 1
+
        -- if we have the --bytecode flag, drop into the bytecode assembler
        case bcs of
          [] -> return ()
@@ -218,13 +217,16 @@ idrisMain opts =
        ok <- noErrors
        when (not ok) $ runIO (exitWith (ExitFailure 1))
   where
-    makeOption (OLogging i)  = setLogLevel i
-    makeOption (OLogCats cs) = setLogCats cs
-    makeOption TypeCase      = setTypeCase True
-    makeOption TypeInType    = setTypeInType True
-    makeOption NoCoverage    = setCoverage False
-    makeOption ErrContext    = setErrContext True
-    makeOption _             = return ()
+    makeOption (OLogging i)     = setLogLevel i
+    makeOption (OLogCats cs)    = setLogCats cs
+    makeOption (Verbose v)      = setVerbose v
+    makeOption TypeCase         = setTypeCase True
+    makeOption TypeInType       = setTypeInType True
+    makeOption NoCoverage       = setCoverage False
+    makeOption ErrContext       = setErrContext True
+    makeOption (IndentWith n)   = setIndentWith n
+    makeOption (IndentClause n) = setIndentClause n
+    makeOption _                = return ()
 
     processOptimisation :: (Bool,Optimisation) -> Idris ()
     processOptimisation (True,  p) = addOptimise p

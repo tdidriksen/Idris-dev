@@ -14,23 +14,24 @@ module Idris.PartialEval(
   ) where
 
 import Idris.AbsSyntax
-import Idris.Delaborate
-
-import Idris.Core.TT
 import Idris.Core.CaseTree
 import Idris.Core.Evaluate
+import Idris.Core.TT
+import Idris.Delaborate
 
-import Control.Monad.State
 import Control.Applicative
+import Control.Monad.State
 import Data.Maybe
 import Debug.Trace
 
 -- | Data type representing binding-time annotations for partial evaluation of arguments
-data PEArgType = ImplicitS -- ^ Implicit static argument
-               | ImplicitD -- ^ Implicit dynamic argument
-               | ExplicitS -- ^ Explicit static argument
-               | ExplicitD -- ^ Explicit dynamic argument
-               | UnifiedD  -- ^ Erasable dynamic argument (found under unification)
+data PEArgType = ImplicitS Name -- ^ Implicit static argument
+               | ImplicitD Name -- ^ Implicit dynamic argument
+               | ConstraintS    -- ^ Implementation constraint
+               | ConstraintD    -- ^ Implementation constraint
+               | ExplicitS      -- ^ Explicit static argument
+               | ExplicitD      -- ^ Explicit dynamic argument
+               | UnifiedD       -- ^ Erasable dynamic argument (found under unification)
   deriving (Eq, Show)
 
 -- | A partially evaluated function. pe_app captures the lhs of the
@@ -96,35 +97,37 @@ specType args ty = let (t, args') = runState (unifyEq args ty) [] in
   where
     -- Specialise static argument in type by let-binding provided value instead
     -- of expecting it as a function argument
-    st ((ExplicitS, v) : xs) (Bind n (Pi _ t _) sc)
+    st ((ExplicitS, v) : xs) (Bind n (Pi _ _ t _) sc)
          = Bind n (Let t v) (st xs sc)
-    st ((ImplicitS, v) : xs) (Bind n (Pi _ t _) sc)
+    st ((ImplicitS _, v) : xs) (Bind n (Pi _ _ t _) sc)
+         = Bind n (Let t v) (st xs sc)
+    st ((ConstraintS, v) : xs) (Bind n (Pi _ _ t _) sc)
          = Bind n (Let t v) (st xs sc)
     -- Erase argument from function type
-    st ((UnifiedD, _) : xs) (Bind n (Pi _ t _) sc)
+    st ((UnifiedD, _) : xs) (Bind n (Pi _ _ t _) sc)
          = st xs sc
     -- Keep types as is
-    st (_ : xs) (Bind n (Pi i t k) sc)
-         = Bind n (Pi i t k) (st xs sc)
+    st (_ : xs) (Bind n (Pi rig i t k) sc)
+         = Bind n (Pi rig i t k) (st xs sc)
     st _ t = t
 
     -- Erase implicit dynamic argument if existing argument shares it value,
     -- by substituting the value of previous argument
-    unifyEq (imp@(ImplicitD, v) : xs) (Bind n (Pi i t k) sc)
+    unifyEq (imp@(ImplicitD _, v) : xs) (Bind n (Pi rig i t k) sc)
          = do amap <- get
               case lookup imp amap of
                    Just n' ->
                         do put (amap ++ [((UnifiedD, Erased), n)])
                            sc' <- unifyEq xs (subst n (P Bound n' Erased) sc)
-                           return (Bind n (Pi i t k) sc') -- erase later
+                           return (Bind n (Pi rig i t k) sc') -- erase later
                    _ -> do put (amap ++ [(imp, n)])
                            sc' <- unifyEq xs sc
-                           return (Bind n (Pi i t k) sc')
-    unifyEq (x : xs) (Bind n (Pi i t k) sc)
+                           return (Bind n (Pi rig i t k) sc')
+    unifyEq (x : xs) (Bind n (Pi rig i t k) sc)
          = do args <- get
               put (args ++ [(x, n)])
               sc' <- unifyEq xs sc
-              return (Bind n (Pi i t k) sc')
+              return (Bind n (Pi rig i t k) sc')
     unifyEq xs t = do args <- get
                       put (args ++ (zip xs (repeat (sUN "_"))))
                       return t
@@ -138,13 +141,14 @@ specType args ty = let (t, args') = runState (unifyEq args ty) [] in
 mkPE_TyDecl :: IState -> [(PEArgType, Term)] -> Type -> PTerm
 mkPE_TyDecl ist args ty = mkty args ty
   where
-    mkty ((ExplicitD, v) : xs) (Bind n (Pi _ t k) sc)
+    mkty ((ExplicitD, v) : xs) (Bind n (Pi rig _ t k) sc)
        = PPi expl n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
-    mkty ((ImplicitD, v) : xs) (Bind n (Pi _ t k) sc)
+    mkty ((ConstraintD, v) : xs) (Bind n (Pi rig _ t k) sc)
          | concreteInterface ist t = mkty xs sc
          | interfaceConstraint ist t
              = PPi constraint n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
-         | otherwise = PPi impl n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
+    mkty ((ImplicitD _, v) : xs) (Bind n (Pi rig _ t k) sc)
+         = PPi impl n NoFC (delab ist (generaliseIn t)) (mkty xs sc)
 
     mkty (_ : xs) t
        = mkty xs t
@@ -201,7 +205,8 @@ mkNewPats ist d ns newname sname lhs rhs | all dynVar (map fst d)
                          (_, args) -> dynArgs ns args
         dynArgs _ [] = True -- can definitely reduce from here
         -- if Static, doesn't matter what the argument is
-        dynArgs ((ImplicitS, _) : ns) (a : as) = dynArgs ns as
+        dynArgs ((ImplicitS _, _) : ns) (a : as) = dynArgs ns as
+        dynArgs ((ConstraintS, _) : ns) (a : as) = dynArgs ns as
         dynArgs ((ExplicitS, _) : ns) (a : as) = dynArgs ns as
         -- if Dynamic, it had better be a variable or we'll need to
         -- do some more work
@@ -210,7 +215,7 @@ mkNewPats ist d ns newname sname lhs rhs | all dynVar (map fst d)
         dynArgs _ _ = False -- and now we'll get stuck
 
 mkNewPats ist d ns newname sname lhs rhs =
-    PEDecl lhs rhs (map mkClause d) False
+           PEDecl lhs rhs (map mkClause d) False
   where
     mkClause :: (Term, Term) -> (PTerm, PTerm)
     mkClause (oldlhs, oldrhs)
@@ -222,25 +227,37 @@ mkNewPats ist d ns newname sname lhs rhs =
                      (lhs, rhs)
 
     mkLHSargs _ [] _ = []
-    -- dynamics don't appear if they're implicit
+    -- dynamics don't appear on the LHS if they're implicit
     mkLHSargs sub ((ExplicitD, t) : ns) (a : as)
          = pexp (delab ist (substNames sub a)) : mkLHSargs sub ns as
-    mkLHSargs sub ((ImplicitD, _) : ns) (a : as)
-         = mkLHSargs sub ns as
+    mkLHSargs sub ((ImplicitD n, t) : ns) (a : as)
+         = pimp n (delab ist (substNames sub a)) True : mkLHSargs sub ns as
+    mkLHSargs sub ((ConstraintD, t) : ns) (a : as)
+         = pconst (delab ist (substNames sub a)) : mkLHSargs sub ns as
     mkLHSargs sub ((UnifiedD, _) : ns) (a : as)
          = mkLHSargs sub ns as
     -- statics get dropped in any case
-    mkLHSargs sub ((ImplicitS, t) : ns) (a : as)
+    mkLHSargs sub ((ImplicitS _, t) : ns) (a : as)
          = mkLHSargs (extend a t sub) ns as
     mkLHSargs sub ((ExplicitS, t) : ns) (a : as)
+         = mkLHSargs (extend a t sub) ns as
+    mkLHSargs sub ((ConstraintS, t) : ns) (a : as)
          = mkLHSargs (extend a t sub) ns as
     mkLHSargs sub _ [] = [] -- no more LHS
 
     extend (P _ n _) t sub = (n, t) : sub
     extend _ _ sub = sub
 
+    --- 'as' are the LHS arguments
     mkRHSargs ((ExplicitS, t) : ns) as = pexp (delab ist t) : mkRHSargs ns as
     mkRHSargs ((ExplicitD, t) : ns) (a : as) = a : mkRHSargs ns as
+    -- Keep the implicits on the RHS, in case they got matched on
+    mkRHSargs ((ImplicitD n, t) : ns) (a : as) = a : mkRHSargs ns as
+    mkRHSargs ((ImplicitS n, t) : ns) as -- Dropped from LHS
+          = pimp n (delab ist t) True : mkRHSargs ns as
+    mkRHSargs ((ConstraintD, t) : ns) (a : as) = a : mkRHSargs ns as
+    mkRHSargs ((ConstraintS, t) : ns) as -- Dropped from LHS
+          = pconst (delab ist t) : mkRHSargs ns as
     mkRHSargs (_ : ns) as = mkRHSargs ns as
     mkRHSargs _ _ = []
 
@@ -255,12 +272,26 @@ mkNewPats ist d ns newname sname lhs rhs =
 mkPE_TermDecl :: IState
               -> Name
               -> Name
+              -> PTerm -- ^ Type of specialised function
               -> [(PEArgType, Term)]
               -> PEDecl
-mkPE_TermDecl ist newname sname ns
-    = let lhs = PApp emptyFC (PRef emptyFC [] newname) (map pexp (mkp ns))
-          rhs = eraseImps $ delab ist (mkApp (P Ref sname Erased) (map snd ns))
-          patdef = lookupCtxtExact sname (idris_patdefs ist)
+mkPE_TermDecl ist newname sname specty ns
+      {- We need to erase the *dynamic* arguments
+         where their *name* appears in the *type* of a later argument
+         in specty.
+         i.e. if a later dynamic argument depends on an earlier dynamic
+         argument, we should infer the earlier one.
+         Then we need to erase names from the LHS which no longer appear
+         on the RHS.
+         -}
+    = let deps = getDepNames (eraseRet specty)
+          lhs = eraseDeps deps $
+                  PApp emptyFC (PRef emptyFC [] newname) (mkp ns)
+          rhs = eraseDeps deps $
+                  delab ist (mkApp (P Ref sname Erased) (map snd ns))
+          patdef = -- trace (showTmImpls specty ++ "\n" ++ showTmImpls lhs ++ "\n"
+                   --      ++ showTmImpls rhs) $
+                   lookupCtxtExact sname (idris_patdefs ist)
           newpats = case patdef of
                          Nothing -> PEDecl lhs rhs [(lhs, rhs)] True
                          Just d -> mkNewPats ist (getPats d) ns
@@ -269,17 +300,28 @@ mkPE_TermDecl ist newname sname ns
 
   getPats (ps, _) = map (\(_, lhs, rhs) -> (lhs, rhs)) ps
 
+  eraseRet (PPi p n fc ty sc) = PPi p n fc ty (eraseRet sc)
+  eraseRet _ = Placeholder
+
+  -- Get names used in later arguments; assume we've called eraseRet so there's
+  -- no names going to appear in return type
+  getDepNames (PPi _ n _ _ sc)
+        | n `elem` allNamesIn sc = n : getDepNames sc
+        | otherwise = getDepNames sc
+  getDepNames tm = []
+
   mkp [] = []
-  mkp ((ExplicitD, tm) : tms) = delab ist tm : mkp tms
+  mkp ((ExplicitD, tm) : tms) = pexp (delab ist tm) : mkp tms
+  mkp ((ImplicitD n, tm) : tms) = pimp n (delab ist tm) True : mkp tms
   mkp (_ : tms) = mkp tms
 
-  eraseImps tm = mapPT deImp tm
+  eraseDeps ns tm = mapPT (deImp ns) tm
 
-  deImp (PApp fc t as) = PApp fc t (map deImpArg as)
-  deImp t = t
+  deImp ns (PApp fc t as) = PApp fc t (map (deImpArg ns) as)
+  deImp ns t = t
 
-  deImpArg a@(PImp _ _ _ _ _) = a { getTm = Placeholder }
-  deImpArg a = a
+  deImpArg ns a | pname a `elem` ns = a { getTm = Placeholder }
+                | otherwise = a
 
 -- | Get specialised applications for a given function
 getSpecApps :: IState
@@ -291,14 +333,22 @@ getSpecApps ist env tm = ga env (explicitNames tm) where
 --     staticArg env True _ tm@(P _ n _) _ | n `elem` env = Just (True, tm)
 --     staticArg env True _ tm@(App f a) _ | (P _ n _, args) <- unApply tm,
 --                                            n `elem` env = Just (True, tm)
-    staticArg env x imp tm n
-         | x && imparg imp = (ImplicitS, tm)
-         | x = (ExplicitS, tm)
-         | imparg imp = (ImplicitD, tm)
+    staticArg env True imp tm n
+         | Just n <- imparg imp = (ImplicitS n, tm)
+         | constrarg imp = (ConstraintS, tm)
+         | otherwise = (ExplicitS, tm)
+
+    staticArg env False imp tm n
+         | Just nm <- imparg imp = (ImplicitD nm, (P Ref (sUN (show n ++ "arg")) Erased))
+         | constrarg imp = (ConstraintD, tm)
          | otherwise = (ExplicitD, (P Ref (sUN (show n ++ "arg")) Erased))
 
-    imparg (PExp _ _ _ _) = False
-    imparg _ = True
+    imparg (PExp _ _ _ _) = Nothing
+    imparg (PConstraint _ _ _ _) = Nothing
+    imparg arg = Just (pname arg)
+
+    constrarg (PConstraint _ _ _ _) = True
+    constrarg arg = False
 
     buildApp env [] [] _ _ = []
     buildApp env (s:ss) (i:is) (a:as) (n:ns)

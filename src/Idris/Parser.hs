@@ -5,7 +5,7 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds, PatternGuards #-}
+{-# LANGUAGE ConstraintKinds, GeneralizedNewtypeDeriving, PatternGuards #-}
 {-# OPTIONS_GHC -O0 #-}
 module Idris.Parser(module Idris.Parser,
                     module Idris.Parser.Expr,
@@ -13,74 +13,67 @@ module Idris.Parser(module Idris.Parser,
                     module Idris.Parser.Helpers,
                     module Idris.Parser.Ops) where
 
-import Prelude hiding (pi)
-
-import qualified System.Directory as Dir (makeAbsolute)
-
-import Text.Trifecta.Delta
-import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace, Err)
-import Text.Parser.LookAhead
-import Text.Parser.Expression
-import qualified Text.Parser.Token as Tok
-import qualified Text.Parser.Char as Chr
-import qualified Text.Parser.Token.Highlight as Hi
-
-import Text.PrettyPrint.ANSI.Leijen (Doc, plain)
-import qualified Text.PrettyPrint.ANSI.Leijen as ANSI
-
 import Idris.AbsSyntax hiding (namespace, params)
-import Idris.DSL
-import Idris.Imports
-import Idris.Delaborate
-import Idris.Error
-import Idris.Elab.Value
-import Idris.Elab.Term
-import Idris.ElabDecls
+import Idris.Core.Evaluate
+import Idris.Core.TT
 import Idris.Coverage
+import Idris.Delaborate
+import Idris.Docstrings hiding (Unchecked)
+import Idris.DSL
+import Idris.Elab.Term
+import Idris.Elab.Value
+import Idris.ElabDecls
+import Idris.Error
 import Idris.IBC
-import Idris.Unlit
-import Idris.Providers
+import Idris.Imports
 import Idris.Output
-
+import Idris.Parser.Data
+import Idris.Parser.Expr
 import Idris.Parser.Helpers
 import Idris.Parser.Ops
-import Idris.Parser.Expr
-import Idris.Parser.Data
+import Idris.Providers
+import Idris.Termination
+import Idris.Unlit
 
-import Idris.Docstrings hiding (Unchecked)
+import Util.DynamicLinker
+import qualified Util.Pretty as P
+import Util.System (readSource, writeSource)
 
 import Paths_idris
 
-import Util.DynamicLinker
-import Util.System (readSource, writeSource)
-import qualified Util.Pretty as P
-
-import Idris.Core.TT
-import Idris.Core.Evaluate
+import Prelude hiding (pi)
 
 import Control.Applicative hiding (Const)
 import Control.Monad
 import Control.Monad.State.Strict
-
-import Data.Function
-import Data.Maybe
-import qualified Data.List.Split as Spl
-import Data.List
-import Data.Monoid
-import Data.Char
-import Data.Ord
-import Data.Foldable (asum)
-import Data.Generics.Uniplate.Data (descendM)
-import qualified Data.Map as M
-import qualified Data.HashSet as HS
-import qualified Data.Text as T
 import qualified Data.ByteString.UTF8 as UTF8
+import Data.Char
+import Data.Foldable (asum)
+import Data.Function
+import Data.Generics.Uniplate.Data (descendM)
+import qualified Data.HashSet as HS
+import Data.List
+import qualified Data.List.Split as Spl
+import qualified Data.Map as M
+import Data.Maybe
+import Data.Monoid
+import Data.Ord
 import qualified Data.Set as S
-
+import qualified Data.Text as T
 import Debug.Trace
-
+import qualified System.Directory as Dir (makeAbsolute)
 import System.FilePath
 import System.IO
+import qualified Text.Parser.Char as Chr
+import Text.Parser.Expression
+import Text.Parser.LookAhead
+import qualified Text.Parser.Token as Tok
+import qualified Text.Parser.Token.Highlight as Hi
+import Text.PrettyPrint.ANSI.Leijen (Doc, plain)
+import qualified Text.PrettyPrint.ANSI.Leijen as ANSI
+import Text.Trifecta hiding (Err, char, charLiteral, natural, span, string,
+                      stringLiteral, symbol, whiteSpace)
+import Text.Trifecta.Delta
 
 {-
 @
@@ -696,10 +689,14 @@ fnOpt = do reservedHL "total"; return TotalFn
                     return ErrorHandler
         <|> do try (lchar '%' *> reserved "error_reverse");
                     return ErrorReverse
+        <|> do try (lchar '%' *> reserved "error_reduce");
+                    return ErrorReduce
         <|> do try (lchar '%' *> reserved "reflection");
                     return Reflection
         <|> do try (lchar '%' *> reserved "hint");
                     return AutoHint
+        <|> do try (lchar '%' *> reserved "overlapping");
+                    return OverlappingDictionary
         <|> do lchar '%'; reserved "specialise";
                lchar '['; ns <- sepBy nameTimes (lchar ','); lchar ']';
                return $ Specialise ns
@@ -769,7 +766,7 @@ Params ::=
 params :: SyntaxInfo -> IdrisParser [PDecl]
 params syn =
     do reservedHL "parameters"; lchar '('; ns <- typeDeclList syn; lchar ')'
-       let ns' = [(n, ty) | (n, _, ty) <- ns]
+       let ns' = [(n, ty) | (_, n, _, ty) <- ns]
        openBlock
        let pvars = syn_params syn
        ds <- many (decl syn { syn_params = pvars ++ ns' })
@@ -930,7 +927,7 @@ interface_ syn = do (doc, argDocs, acc)
                                  return (doc, argDocs, acc))
                     fc <- getFC
                     cons <- constraintList syn
-                    let cons' = [(c, ty) | (c, _, ty) <- cons]
+                    let cons' = [(c, ty) | (_, c, _, ty) <- cons]
                     (n_in, nfc) <- fnName
                     let n = expandNS syn n_in
                     cs <- many carg
@@ -980,11 +977,11 @@ implementation kwopt syn
                         fc <- getFC
                         en <- optional implementationName
                         cs <- constraintList syn
-                        let cs' = [(c, ty) | (c, _, ty) <- cs]
+                        let cs' = [(c, ty) | (_, c, _, ty) <- cs]
                         (cn, cnfc) <- fnName
                         args <- many (simpleExpr syn)
                         let sc = PApp fc (PRef cnfc [cnfc] cn) (map pexp args)
-                        let t = bindList (PPi constraint) cs sc
+                        let t = bindList (\r -> PPi constraint { pcount = r }) cs sc
                         pnames <- implementationUsing
                         ds <- implementationBlock syn
                         return [PImplementation doc argDocs syn fc cs' pnames acc opts cn cnfc args [] t en ds]
@@ -1479,6 +1476,11 @@ directive syn = do try (lchar '%' *> reserved "lib")
 pLangExt :: IdrisParser LanguageExt
 pLangExt = (reserved "TypeProviders" >> return TypeProviders)
        <|> (reserved "ErrorReflection" >> return ErrorReflection)
+       <|> (reserved "UniquenessTypes" >> return UniquenessTypes)
+       <|> (reserved "LinearTypes" >> return LinearTypes)
+       <|> (reserved "DSLNotation" >> return DSLNotation)
+       <|> (reserved "ElabReflection" >> return ElabReflection)
+       <|> (reserved "FirstClassReflection" >> return FCReflection)
 
 {-| Parses a totality
 
@@ -1746,6 +1748,7 @@ loadSource' lidr r maxline
 loadSource :: Bool -> FilePath -> Maybe Int -> Idris ()
 loadSource lidr f toline
              = do logParser 1 ("Reading " ++ f)
+                  iReport   2 ("Reading " ++ f)
                   i <- getIState
                   let def_total = default_total i
                   file_in <- runIO $ readSource f
@@ -1833,8 +1836,7 @@ loadSource lidr f toline
                   logLvl 10 (show (toAlist (idris_implicits i)))
                   logLvl 3 (show (idris_infixes i))
                   -- Now add all the declarations to the context
-                  v <- verbose
-                  when v $ iputStrLn $ "Type checking " ++ f
+                  iReport 1 $ "Type checking " ++ f
                   -- we totality check after every Mutual block, so if
                   -- anything is a single definition, wrap it in a
                   -- mutual block on its own
@@ -1849,7 +1851,8 @@ loadSource lidr f toline
                                   setContext ctxt')
                            (map snd (idris_totcheck i))
                   -- build size change graph from simplified definitions
-                  logLvl 1 "Totality checking"
+                  iReport 3 $ "Totality checking " ++ f
+                  logLvl 1 $ "Totality checking " ++ f
                   i <- getIState
                   mapM_ buildSCG (idris_totcheck i)
                   mapM_ checkDeclTotality (idris_totcheck i)
@@ -1872,7 +1875,8 @@ loadSource lidr f toline
 
                   logLvl 1 ("Finished " ++ f)
                   ibcsd <- valIBCSubDir i
-                  logLvl 1 "Universe checking"
+                  logLvl  1 $ "Universe checking " ++ f
+                  iReport 3 $ "Universe checking " ++ f
                   iucheck
                   let ibc = ibcPathNoFallback ibcsd f
                   i <- getIState

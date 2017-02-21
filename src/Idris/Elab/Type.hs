@@ -13,53 +13,49 @@ module Idris.Elab.Type (
 
 import Idris.AbsSyntax
 import Idris.ASTUtils
-import Idris.DSL
-import Idris.Error
-import Idris.Delaborate
-import Idris.Imports
-import Idris.Elab.Term
-import Idris.Coverage
-import Idris.DataOpts
-import Idris.Providers
-import Idris.Primitives
-import Idris.Inliner
-import Idris.PartialEval
-import Idris.DeepSeq
-import Idris.Output (iputStrLn, pshow, iWarn, sendHighlighting)
-import IRTS.Lang
-
-import Idris.Elab.Utils
-import Idris.Elab.Value
-
-import Idris.Core.TT
+import Idris.Core.CaseTree
 import Idris.Core.Elaborate hiding (Tactic(..))
 import Idris.Core.Evaluate
 import Idris.Core.Execute
+import Idris.Core.TT
 import Idris.Core.Typecheck
-import Idris.Core.CaseTree
-
+import Idris.Core.WHNF
+import Idris.Coverage
+import Idris.DataOpts
+import Idris.DeepSeq
+import Idris.Delaborate
 import Idris.Docstrings (Docstring)
+import Idris.DSL
+import Idris.Elab.Term
+import Idris.Elab.Utils
+import Idris.Elab.Value
+import Idris.Error
+import Idris.Imports
+import Idris.Inliner
+import Idris.Output (iWarn, iputStrLn, pshow, sendHighlighting)
+import Idris.PartialEval
+import Idris.Primitives
+import Idris.Providers
+import IRTS.Lang
+
+import Util.Pretty (pretty, text)
 
 import Prelude hiding (id, (.))
-import Control.Category
 
 import Control.Applicative hiding (Const)
+import Control.Category
 import Control.DeepSeq
 import Control.Monad
 import Control.Monad.State.Strict as State
+import Data.Char (isLetter, toLower)
 import Data.List
-import Data.Maybe
-import Debug.Trace
-
-import qualified Data.Traversable as Traversable
-
+import Data.List.Split (splitOn)
 import qualified Data.Map as Map
+import Data.Maybe
 import qualified Data.Set as S
 import qualified Data.Text as T
-import Data.Char(isLetter, toLower)
-import Data.List.Split (splitOn)
-
-import Util.Pretty(pretty, text)
+import qualified Data.Traversable as Traversable
+import Debug.Trace
 
 buildType :: ElabInfo
           -> SyntaxInfo
@@ -138,13 +134,17 @@ buildType info syn fc opts n ty' = do
              setFnInfo n fninfo
              addIBC (IBCFnInfo n fninfo)
 
+         -- If we use any types with linear constructor arguments, we'd better
+         -- make sure they are use-once
+         tcliftAt fc $ linearCheck ctxt (whnfArgs ctxt [] cty)
+
          return (cty, ckind, ty, inacc)
   where
-    patToImp (Bind n (PVar t) sc) = Bind n (Pi Nothing t (TType (UVar [] 0))) (patToImp sc)
+    patToImp (Bind n (PVar rig t) sc) = Bind n (Pi rig Nothing t (TType (UVar [] 0))) (patToImp sc)
     patToImp (Bind n b sc) = Bind n b (patToImp sc)
     patToImp t = t
 
-    param_pos i ns (Bind n (Pi _ t _) sc)
+    param_pos i ns (Bind n (Pi _ _ t _) sc)
         | n `elem` ns = i : param_pos (i + 1) ns sc
         | otherwise = param_pos (i + 1) ns sc
     param_pos i ns t = []
@@ -197,7 +197,7 @@ elabType' norm info syn doc argDocs fc opts n nfc ty' = {- let ty' = piBind (par
          let (fam, _) = unApply (getRetTy nty')
          let corec = case fam of
                         P _ rcty _ -> case lookupCtxt rcty (idris_datatypes i) of
-                                        [TI _ True _ _ _] -> True
+                                        [TI _ True _ _ _ _] -> True
                                         _ -> False
                         _ -> False
          -- Productivity checking now via checking for guarded 'Delay'
@@ -215,7 +215,7 @@ elabType' norm info syn doc argDocs fc opts n nfc ty' = {- let ty' = piBind (par
                                          return (n, d')) argDocs
          addDocStr n doc' argDocs'
          addIBC (IBCDoc n)
-         addIBC (IBCFlags n opts')
+         addIBC (IBCFlags n)
          fputState (opt_inaccessible . ist_optimisation n) inacc
          addIBC (IBCOpt n)
          when (Implicit `elem` opts') $ do addCoercion n
@@ -265,7 +265,7 @@ elabType' norm info syn doc argDocs fc opts n nfc ty' = {- let ty' = piBind (par
     lst = txt "List"
     errrep = txt "ErrorReportPart"
 
-    tyIsHandler (Bind _ (Pi _ (P _ (NS (UN e) ns1) _) _)
+    tyIsHandler (Bind _ (Pi _ _ (P _ (NS (UN e) ns1) _) _)
                         (App _ (P _ (NS (UN m) ns2) _)
                              (App _ (P _ (NS (UN l) ns3) _)
                                   (P _ (NS (UN r) ns4) _))))

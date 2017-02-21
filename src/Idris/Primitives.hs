@@ -5,23 +5,21 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE RankNTypes, ScopedTypeVariables, PatternGuards #-}
+{-# LANGUAGE PatternGuards, RankNTypes, ScopedTypeVariables #-}
 
 module Idris.Primitives(primitives, Prim(..)) where
 
 import Idris.AbsSyntax
-
+import Idris.Core.Evaluate
+import Idris.Core.TT
 import IRTS.Lang
 
-import Idris.Core.TT
-import Idris.Core.Evaluate
 import Data.Bits
-import Data.Word
-import Data.Int
 import Data.Char
 import Data.Function (on)
+import Data.Int
 import qualified Data.Vector.Unboxed as V
-
+import Data.Word
 import Debug.Trace
 
 data Prim = Prim { p_name  :: Name,
@@ -34,7 +32,7 @@ data Prim = Prim { p_name  :: Name,
 
 ty :: [Const] -> Const -> Type
 ty []     x = Constant x
-ty (t:ts) x = Bind (sMN 0 "T") (Pi Nothing (Constant t) (TType (UVar [] (-3)))) (ty ts x)
+ty (t:ts) x = Bind (sMN 0 "T") (Pi RigW Nothing (Constant t) (TType (UVar [] (-3)))) (ty ts x)
 
 total, partial, iopartial :: Totality
 total = Total []
@@ -457,8 +455,8 @@ getInt _ = []
 
 strToInt :: IntTy -> [Const] -> Maybe Const
 strToInt ity [Str x] = case reads x of
-                         [(n,"")] -> Just $ toInt ity (n :: Integer)
-                         _        -> Just $ I 0
+                         [(n,s)] -> Just $ if all isSpace s then toInt ity (n :: Integer) else I 0
+                         _       -> Just $ I 0
 strToInt _ _ = Nothing
 
 intToFloat :: [Const] -> Maybe Const
@@ -483,8 +481,8 @@ c_floatToStr :: [Const] -> Maybe Const
 c_floatToStr [Fl x] = Just $ Str (show x)
 c_floatToStr _ = Nothing
 c_strToFloat [Str x] = case reads x of
-                         [(n,"")] -> Just $ Fl n
-                         _ -> Just $ Fl 0
+                         [(n,s)] -> Just $ Fl (if all isSpace s then n else 0)
+                         _       -> Just $ Fl 0
 c_strToFloat _ = Nothing
 
 p_fPrim :: (Double -> Double) -> [Const] -> Maybe Const

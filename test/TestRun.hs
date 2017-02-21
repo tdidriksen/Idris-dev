@@ -1,27 +1,30 @@
+{-# LANGUAGE CPP #-}
 module Main where
+
+import TestData
 
 import Control.Monad
 import Data.Char (isLetter)
-import Data.Typeable
-import Data.Proxy
-import Data.List
 import qualified Data.IntMap as IMap
-
+import Data.List
+#if MIN_VERSION_optparse_applicative(0,13,0)
+import Data.Monoid ((<>))
+#endif
+import Data.Proxy
+import Data.Typeable
+import Options.Applicative
 import System.Directory
 import System.Environment
 import System.Exit
-import System.Process
+import System.FilePath ((</>))
 import System.Info
 import System.IO
-import System.FilePath ((</>))
-import Options.Applicative
+import System.Process
 import Test.Tasty
 import Test.Tasty.Golden
-import Test.Tasty.Runners
-import Test.Tasty.Options
 import Test.Tasty.Ingredients.Rerun
-
-import TestData
+import Test.Tasty.Options
+import Test.Tasty.Runners
 
 --------------------------------------------------------------------- [ Config ]
 
@@ -104,11 +107,17 @@ runTest path flags = do
       normalise [] = []
 
 main :: IO ()
-main =
-  defaultMainWithIngredients ingredients $
-    askOption $ \(NodeOpt node) ->
-      let (codegen, flags) = if node then (JS, ["--codegen", "node"])
-                                     else (C , [])
-       in
-        mkGoldenTests (testFamiliesForCodegen codegen)
-                    (flags ++ idrisFlags)
+main = do
+  node <- findExecutable "node"
+  case node of
+    Nothing -> do
+      putStrLn "For running the test suite against Node, node must be installed."
+      exitFailure
+    Just _  -> do
+      defaultMainWithIngredients ingredients $
+        askOption $ \(NodeOpt node) ->
+          let (codegen, flags) = if node then (JS, ["--codegen", "node"])
+                                         else (C , [])
+           in
+            mkGoldenTests (testFamiliesForCodegen codegen)
+                        (flags ++ idrisFlags)

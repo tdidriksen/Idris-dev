@@ -14,30 +14,26 @@ module Idris.Interactive(
   , makeLemma
   ) where
 
-import Idris.Core.TT
-import Idris.Core.Evaluate
-import Idris.CaseSplit
 import Idris.AbsSyntax
+import Idris.CaseSplit
+import Idris.Core.Evaluate
+import Idris.Core.TT
+import Idris.Delaborate
+import Idris.Elab.Term
+import Idris.Elab.Value
 import Idris.ElabDecls
 import Idris.Error
 import Idris.ErrReverse
-import Idris.Delaborate
-import Idris.Output
 import Idris.IdeMode hiding (IdeModeCommand(..))
-import Idris.Elab.Value
-import Idris.Elab.Term
+import Idris.Output
 
 import Util.Pretty
 import Util.System
 
-import System.FilePath
+import Data.Char
+import Data.List (isSuffixOf)
 import System.Directory
 import System.IO
-import Data.Char
-import Data.Maybe (fromMaybe)
-import Data.List (isSuffixOf)
-
-import Debug.Trace
 
 caseSplitAt :: FilePath -> Bool -> Int -> Name -> Idris ()
 caseSplitAt fn updatefile l n
@@ -61,8 +57,8 @@ addClauseFrom fn updatefile l n = do
     ist <- getIState
     cl <- getInternalApp fn l
     let fulln = getAppName cl
-
-    case lookup fulln (idris_metavars ist) of
+    let metavars = lookup fulln (idris_metavars ist)
+    case metavars of
       Nothing -> addMissing fn updatefile l n
       Just _ -> do
         src <- runIO $ readSource fn
@@ -165,22 +161,25 @@ addMissing fn updatefile l n
 
 
 makeWith :: FilePath -> Bool -> Int -> Name -> Idris ()
-makeWith fn updatefile l n
-   = do src <- runIO $ readSource fn
-        let (before, tyline : later) = splitAt (l-1) (lines src)
-        let ind = getIndent tyline
-        let with = mkWith tyline n
-        -- add clause before first blank line in 'later',
-        -- or (TODO) before first line with same indentation as tyline
-        let (nonblank, rest) = span (\x -> not (all isSpace x) &&
-                                           not (ind == getIndent x)) later
-        if updatefile then
-           do let fb = fn ++ "~"
-              runIO $ writeSource fb (unlines (before ++ nonblank)
-                                        ++ with ++ "\n" ++
-                                    unlines rest)
-              runIO $ copyFile fb fn
-           else iPrintResult (with ++ "\n")
+makeWith fn updatefile l n = do
+  src <- runIO $ readSource fn
+  i <- getIState
+  indentWith <- getIndentWith
+  let (before, tyline : later) = splitAt (l-1) (lines src)
+  let ind = getIndent tyline
+--  runIO . traceIO $ "indentWith = " ++ show indentWith
+  let with = mkWith tyline n indentWith
+  -- add clause before first blank line in 'later',
+  -- or (TODO) before first line with same indentation as tyline
+  let (nonblank, rest) = span (\x -> not (all isSpace x) &&
+                                     not (ind == getIndent x)) later
+  if updatefile
+    then do
+      let fb = fn ++ "~"
+      runIO $ writeSource fb (unlines (before ++ nonblank) ++
+                              with ++ "\n" ++ unlines rest)
+      runIO $ copyFile fb fn
+    else iPrintResult (with ++ "\n")
   where getIndent s = length (takeWhile isSpace s)
 
 -- Replace the given metavariable on the given line with a 'case'
@@ -220,9 +219,6 @@ makeCase fn updatefile l n
                 = Just (reverse acc, i, drop (length n) xs)
         findSubstr' acc i n [] = Nothing
         findSubstr' acc i n (x : xs) = findSubstr' (x : acc) (i + 1) n xs
-
-
-
 
 
 doProofSearch :: FilePath -> Bool -> Bool ->
@@ -391,10 +387,10 @@ makeLemma fn updatefile l n
   where getIndent s = length (takeWhile isSpace s)
 
         appArgs skip 0 _ = ""
-        appArgs skip i (Bind n@(UN c) (Pi _ _ _) sc)
+        appArgs skip i (Bind n@(UN c) (Pi _ _ _ _) sc)
            | (thead c /= '_' && n `notElem` skip)
                 = " " ++ show n ++ appArgs skip (i - 1) sc
-        appArgs skip i (Bind _ (Pi _ _ _) sc) = appArgs skip (i - 1) sc
+        appArgs skip i (Bind _ (Pi _ _ _ _) sc) = appArgs skip (i - 1) sc
         appArgs skip i _ = ""
 
         stripMNBind _ args t | args <= 0 = stripImp t
@@ -417,7 +413,7 @@ makeLemma fn updatefile l n
         constraints i [n] ty = showSep ", " (showConstraints i [n] ty) ++ " => "
         constraints i ns ty = "(" ++ showSep ", " (showConstraints i ns ty) ++ ") => "
 
-        showConstraints i ns (Bind n (Pi _ ty _) sc)
+        showConstraints i ns (Bind n (Pi _ _ ty _) sc)
             | n `elem` ns = show (delab i ty) :
                               showConstraints i ns (substV (P Bound n Erased) sc)
             | otherwise = showConstraints i ns (substV (P Bound n Erased) sc)
@@ -429,9 +425,9 @@ makeLemma fn updatefile l n
         -- Also, make interface implementations implicit
         guessImps :: IState -> Context -> Term -> [Name]
         -- machine names aren't lifted
-        guessImps ist ctxt (Bind n@(MN _ _) (Pi _ ty _) sc)
+        guessImps ist ctxt (Bind n@(MN _ _) (Pi _ _ ty _) sc)
            = n : guessImps ist ctxt sc
-        guessImps ist ctxt (Bind n (Pi _ ty _) sc)
+        guessImps ist ctxt (Bind n (Pi _ _ ty _) sc)
            | guarded ctxt n (substV (P Bound n Erased) sc)
                 = n : guessImps ist ctxt sc
            | isInterface ist ty
@@ -442,7 +438,7 @@ makeLemma fn updatefile l n
         guessImps ist ctxt _ = []
 
         paramty (TType _) = True
-        paramty (Bind _ (Pi _ (TType _) _) sc) = paramty sc
+        paramty (Bind _ (Pi _ _ (TType _) _) sc) = paramty sc
         paramty _ = False
 
         -- TMP HACK unusable name so don't lift
@@ -451,7 +447,7 @@ makeLemma fn updatefile l n
                             _ -> False
 
         guessInterfaces :: IState -> Context -> [Name] -> [Name] -> Term -> [Name]
-        guessInterfaces ist ctxt binders usednames (Bind n (Pi _ ty _) sc)
+        guessInterfaces ist ctxt binders usednames (Bind n (Pi _ _ ty _) sc)
            | isParamInterface ist ty && any (\x -> elem x usednames)
                                             (paramNames binders ty)
                 = n : guessInterfaces ist ctxt (n : binders) usednames sc
@@ -486,7 +482,7 @@ makeLemma fn updatefile l n
               isConName f ctxt = any (guarded ctxt n) args
 --         guarded ctxt n (Bind (UN cn) (Pi t) sc) -- ignore shadows
 --             | thead cn /= '_' = guarded ctxt n t || guarded ctxt n sc
-        guarded ctxt n (Bind _ (Pi _ t _) sc)
+        guarded ctxt n (Bind _ (Pi _ _ t _) sc)
             = guarded ctxt n t || guarded ctxt n sc
         guarded ctxt n _ = False
 

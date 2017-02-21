@@ -8,19 +8,18 @@ Maintainer  : The Idris Community.
 {-# LANGUAGE OverloadedStrings #-}
 module IRTS.Portable (writePortable) where
 
-import Data.Aeson
-import qualified Data.ByteString.Lazy as B
-import qualified Data.Text as T
-
 import Idris.Core.CaseTree
+import Idris.Core.Evaluate
 import Idris.Core.TT
-
 import IRTS.Bytecode
 import IRTS.CodegenCommon
 import IRTS.Defunctionalise
 import IRTS.Lang
 import IRTS.Simplified
 
+import Data.Aeson
+import qualified Data.ByteString.Lazy as B
+import qualified Data.Text as T
 import System.IO
 
 data CodegenFile = CGFile {
@@ -31,7 +30,7 @@ data CodegenFile = CGFile {
 
 -- Update the version when the format changes
 formatVersion :: Int
-formatVersion = 1
+formatVersion = 3
 
 writePortable :: Handle -> CodegenInfo -> IO ()
 writePortable file ci = do
@@ -55,7 +54,8 @@ instance ToJSON CodegenInfo where
                         "lift-decls" .= (liftDecls ci),
                         "defun-decls" .= (defunDecls ci),
                         "simple-decls" .= (simpleDecls ci),
-                        "bytecode" .= (map toBC (simpleDecls ci))]
+                        "bytecode" .= (map toBC (simpleDecls ci)),
+                        "tt-decls" .= (ttDecls ci)]
 
 instance ToJSON Name where
     toJSON n = toJSON $ showCG n
@@ -238,13 +238,13 @@ instance ToJSON SExp where
     toJSON (SApp tail name exps) = object ["SApp" .= (tail, name, exps)]
     toJSON (SLet lv a b) = object ["SLet" .= (lv, a, b)]
     toJSON (SUpdate lv exp) = object ["SUpdate" .= (lv, exp)]
-    toJSON (SProj lv i) = object ["DProj" .= (lv, i)]
+    toJSON (SProj lv i) = object ["SProj" .= (lv, i)]
     toJSON (SCon lv i name vars) = object ["SCon" .= (lv, i, name, vars)]
     toJSON (SCase ct lv alts) = object ["SCase" .= (ct, lv, alts)]
-    toJSON (SChkCase lv alts) = object ["DChkCase" .= (lv, alts)]
+    toJSON (SChkCase lv alts) = object ["SChkCase" .= (lv, alts)]
     toJSON (SConst c) = object ["SConst" .= c]
     toJSON (SForeign fd ret exps) = object ["SForeign" .= (fd, ret, exps)]
-    toJSON (SOp prim vars) = object ["DOp" .= (prim, vars)]
+    toJSON (SOp prim vars) = object ["SOp" .= (prim, vars)]
     toJSON SNothing = object ["SNothing" .= Null]
     toJSON (SError s) = object ["SError" .= s]
 
@@ -281,3 +281,84 @@ instance ToJSON Reg where
     toJSON (T i) = object ["T" .= i]
     toJSON (L i) = object ["L" .= i]
     toJSON Tmp = object ["Tmp" .= Null]
+
+instance ToJSON RigCount where
+    toJSON r = object ["RigCount" .= show r]
+
+instance ToJSON Totality where
+    toJSON t = object ["Totality" .= show t]
+
+instance ToJSON MetaInformation where
+    toJSON m = object ["MetaInformation" .= show m]
+
+instance ToJSON Def where
+    toJSON (Function ty tm) = object ["Function" .= (ty, tm)]
+    toJSON (TyDecl nm ty) = object ["TyDecl" .= (nm, ty)]
+    toJSON (Operator ty n f) = Null -- Operator and CaseOp omits same values as in IBC.hs
+    toJSON (CaseOp info ty argTy _ _ cdefs) = object ["CaseOp" .= (info, ty, argTy, cdefs)]
+
+instance (ToJSON t) => ToJSON (TT t) where
+    toJSON (P nt name term) = object ["P" .= (nt, name, term)]
+    toJSON (V n) = object ["V" .= n]
+    toJSON (Bind n b tt) = object ["Bind" .= (n, b, tt)]
+    toJSON (App s t1 t2) = object ["App" .= (s, t1, t2)]
+    toJSON (Constant c) = object ["Constant" .= c]
+    toJSON (Proj tt n) = object ["Proj" .= (tt, n)]
+    toJSON Erased = object ["Erased" .= Null]
+    toJSON Impossible = object ["Impossible" .= Null]
+    toJSON (Inferred tt) = object ["Inferred" .= tt]
+    toJSON (TType u) = object ["TType" .= u]
+    toJSON (UType u) = object ["UType" .= (show u)]
+
+instance ToJSON UExp where
+    toJSON (UVar src n) = object ["UVar" .= (src, n)]
+    toJSON (UVal n) = object ["UVal" .= n]
+
+
+instance (ToJSON t) => ToJSON (AppStatus t) where
+    toJSON Complete = object ["Complete" .= Null]
+    toJSON MaybeHoles = object ["MaybeHoles" .= Null]
+    toJSON (Holes ns) = object ["Holes" .= ns]
+
+instance (ToJSON t) => ToJSON (Binder t) where
+    toJSON (Lam rc bty) = object ["Lam" .= (rc, bty)]
+    toJSON (Pi c i t k) = object ["Pi" .= (c, i, t, k)]
+    toJSON (Let t v) = object ["Let" .= (t, v)]
+    toJSON (NLet t v) = object ["NLet" .= (t, v)]
+    toJSON (Hole t) = object ["Hole" .= (t)]
+    toJSON (GHole l ns t) = object ["GHole" .= (l, ns, t)]
+    toJSON (Guess t v) = object ["Guess" .= (t, v)]
+    toJSON (PVar rc t) = object ["PVar" .= (rc, t)]
+    toJSON (PVTy t) = object ["PVTy" .= (t)]
+
+instance ToJSON ImplicitInfo where
+    toJSON (Impl a b c) = object ["Impl" .= (a, b, c)]
+
+instance ToJSON NameType where
+    toJSON Bound = object ["Bound" .= Null]
+    toJSON Ref = object ["Ref" .= Null]
+    toJSON (DCon a b c) = object ["DCon" .= (a, b, c)]
+    toJSON (TCon a b) = object ["TCon" .= (a, b)]
+
+instance ToJSON CaseDefs where
+    toJSON (CaseDefs rt ct) = object ["Runtime" .= rt, "Compiletime" .= ct]
+
+instance (ToJSON t) => ToJSON (SC' t) where
+    toJSON (Case ct n alts) = object ["Case" .= (ct, n, alts)]
+    toJSON (ProjCase t alts) = object ["ProjCase" .= (t, alts)]
+    toJSON (STerm t) = object ["STerm" .= t]
+    toJSON (UnmatchedCase s) = object ["UnmatchedCase" .= s]
+    toJSON ImpossibleCase = object ["ImpossibleCase" .= Null]
+
+instance (ToJSON t) => ToJSON (CaseAlt' t) where
+    toJSON (ConCase n c ns sc) = object ["ConCase" .= (n, c, ns, sc)]
+    toJSON (FnCase n ns sc) = object ["FnCase" .= (n, ns, sc)]
+    toJSON (ConstCase c sc) = object ["ConstCase" .= (c, sc)]
+    toJSON (SucCase n sc) = object ["SucCase" .= (n, sc)]
+    toJSON (DefaultCase sc) = object ["DefaultCase" .=  sc]
+
+instance ToJSON CaseInfo where
+    toJSON (CaseInfo a b c) = object ["CaseInfo" .= (a, b, c)]
+
+instance ToJSON Accessibility where
+    toJSON a = object ["Accessibility" .= show a]

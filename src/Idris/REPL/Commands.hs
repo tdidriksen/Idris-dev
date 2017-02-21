@@ -1,8 +1,8 @@
 module Idris.REPL.Commands where
 
-import Idris.Core.TT
-import Idris.Colours
 import Idris.AbsSyntaxTree
+import Idris.Colours
+import Idris.Core.TT
 
 -- | REPL commands
 data Command = Quit
@@ -17,6 +17,7 @@ data Command = Quit
              | Reload
              | Watch
              | Load FilePath (Maybe Int) -- up to maximum line number
+             | RunShellCommand FilePath
              | ChangeDirectory FilePath
              | ModImport String
              | Edit
@@ -32,6 +33,7 @@ data Command = Quit
              | Universes
              | LogLvl Int
              | LogCategory [LogCat]
+             | Verbosity Int
              | Spec PTerm
              | WHNF PTerm
              | TestInline PTerm

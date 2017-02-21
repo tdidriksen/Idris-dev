@@ -5,44 +5,41 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards #-}
 module IRTS.CodegenJavaScript (codegenJavaScript
                              , codegenNode
                              , JSTarget(..)
                              ) where
 
-import IRTS.JavaScript.AST
-
 import Idris.AbsSyntax hiding (TypeCase)
-import IRTS.Bytecode
-import IRTS.Lang
-import IRTS.Exports
-import IRTS.Simplified
-import IRTS.Defunctionalise
-import IRTS.CodegenCommon
 import Idris.Core.TT
+import IRTS.Bytecode
+import IRTS.CodegenCommon
+import IRTS.Defunctionalise
+import IRTS.Exports
+import IRTS.JavaScript.AST
+import IRTS.Lang
+import IRTS.Simplified
 import IRTS.System
 import Util.System
 
+import Control.Applicative (pure, (<$>), (<*>))
 import Control.Arrow
 import Control.Monad (mapM)
-import Control.Applicative ((<$>), (<*>), pure)
 import Control.Monad.RWS hiding (mapM)
 import Control.Monad.State
 import Data.Char
-import Numeric
 import Data.List
-import Data.Maybe
-import Data.Word
-import Data.Traversable hiding (mapM)
-import System.IO
-import System.Directory
-import System.FilePath
-
 import qualified Data.Map.Strict as M
+import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Data.Traversable hiding (mapM)
+import Data.Word
+import Numeric
+import System.Directory
+import System.FilePath
+import System.IO
 
 
 data CompileInfo = CompileInfo { compileInfoApplyCases  :: [Int]
@@ -121,27 +118,27 @@ codegenJS_all
   -> OutputType
   -> IO ()
 codegenJS_all target definitions includes libs filename exports outputType = do
-  let bytecode = map toBC definitions
-  let info = initCompileInfo bytecode
-  let js = concatMap (translateDecl info) bytecode
-  let full = concatMap processFunction js
+  let bytecode      = map toBC definitions
+  let info          = initCompileInfo bytecode
+  let js            = concatMap (translateDecl info) bytecode
+  let full          = concatMap processFunction js
   let exportedNames = map translateName ((getExpNames exports) ++ [sUN "call__IO"])
-  let code = deadCodeElim exportedNames full
-  let ext = takeExtension filename
-  let isHtml = target == JavaScript && ext == ".html"
-  let htmlPrologue = T.pack "<!doctype html><html><head><script>\n"
-  let htmlEpilogue = T.pack "\n</script></head><body></body></html>"
-  let (cons, opt) = optimizeConstructors code
-  let (header, rt) = case target of
-                          Node -> ("#!/usr/bin/env node\n", "-node")
+  let code          = deadCodeElim exportedNames full
+  let ext           = takeExtension filename
+  let isHtml        = target == JavaScript && ext == ".html"
+  let htmlPrologue  = T.pack "<!doctype html><html><head><script>\n"
+  let htmlEpilogue  = T.pack "\n</script></head><body></body></html>"
+  let (cons, opt)   = optimizeConstructors code
+  let (header, rt)   = case target of
+                          Node       -> ("#!/usr/bin/env node\n", "-node")
                           JavaScript -> ("", "-browser")
 
   included   <- concat <$> getIncludes includes
-  path       <- (++) <$> getDataDir <*> (pure "/jsrts/")
-  idrRuntime <- readFile $ path ++ "Runtime-common.js"
-  tgtRuntime <- readFile $ concat [path, "Runtime", rt, ".js"]
+  path       <- getIdrisJSRTSDir
+  idrRuntime <- readFile $ path </> "Runtime-common.js"
+  tgtRuntime <- readFile $ path </> concat ["Runtime", rt, ".js"]
   jsbn       <- if compileInfoNeedsBigInt info
-                   then readFile $ path ++ "jsbn/jsbn.js"
+                   then readFile $ path </> "jsbn/jsbn.js"
                    else return ""
   let runtime = (  header
                 ++ includeLibs libs

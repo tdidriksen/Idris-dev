@@ -10,53 +10,49 @@ module Idris.Elab.Data(elabData) where
 
 import Idris.AbsSyntax
 import Idris.ASTUtils
-import Idris.DSL
-import Idris.Error
-import Idris.Delaborate
-import Idris.Imports
-import Idris.Elab.Term
-import Idris.Coverage
-import Idris.DataOpts
-import Idris.Providers
-import Idris.Primitives
-import Idris.Inliner
-import Idris.PartialEval
-import Idris.DeepSeq
-import Idris.Output (iputStrLn, pshow, iWarn, sendHighlighting)
-import IRTS.Lang
-
-import Idris.Elab.Type
-import Idris.Elab.Utils
-import Idris.Elab.Rewrite
-import Idris.Elab.Value
-
-import Idris.Core.TT
+import Idris.Core.CaseTree
 import Idris.Core.Elaborate hiding (Tactic(..))
 import Idris.Core.Evaluate
 import Idris.Core.Execute
+import Idris.Core.TT
 import Idris.Core.Typecheck
-import Idris.Core.CaseTree
-
+import Idris.Coverage
+import Idris.DataOpts
+import Idris.DeepSeq
+import Idris.Delaborate
 import Idris.Docstrings
+import Idris.DSL
+import Idris.Elab.Rewrite
+import Idris.Elab.Term
+import Idris.Elab.Type
+import Idris.Elab.Utils
+import Idris.Elab.Value
+import Idris.Error
+import Idris.Imports
+import Idris.Inliner
+import Idris.Output (iWarn, iputStrLn, pshow, sendHighlighting)
+import Idris.PartialEval
+import Idris.Primitives
+import Idris.Providers
+import IRTS.Lang
+
+import Util.Pretty
 
 import Prelude hiding (id, (.))
-import Control.Category
 
 import Control.Applicative hiding (Const)
+import Control.Category
 import Control.DeepSeq
 import Control.Monad
 import Control.Monad.State.Strict as State
+import Data.Char (isLetter, toLower)
 import Data.List
-import Data.Maybe
-import Debug.Trace
-
+import Data.List.Split (splitOn)
 import qualified Data.Map as Map
+import Data.Maybe
 import qualified Data.Set as S
 import qualified Data.Text as T
-import Data.Char(isLetter, toLower)
-import Data.List.Split (splitOn)
-
-import Util.Pretty
+import Debug.Trace
 
 warnLC :: FC -> Name -> Idris ()
 warnLC fc n
@@ -108,7 +104,8 @@ elabData info syn doc argDocs fc opts (PDatadecl n nfc t_in dcons)
          -- TI contains information about mutually declared types - this will
          -- be updated when the mutual block is complete
          putIState (i { idris_datatypes =
-                          addDef n (TI (map fst cons) codata opts params [n])
+                          addDef n (TI (map fst cons) codata opts params [n]
+                                             (any linearArg (map snd cons)))
                                              (idris_datatypes i) })
          addIBC (IBCDef n)
          addIBC (IBCData n)
@@ -123,6 +120,9 @@ elabData info syn doc argDocs fc opts (PDatadecl n nfc t_in dcons)
          -- TMP HACK! Make this a data option
          updateContext (addDatatype (Data n ttag cty unique cons))
          updateContext (setMetaInformation n metainf)
+         when (any linearArg (map snd cons)) $
+            updateContext (setRigCount n Rig1)
+
          mapM_ totcheck (zip (repeat fc) (map fst cons))
 --          mapM_ (checkPositive n) cons
 
@@ -193,9 +193,13 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
 
          -- Check that the constructor type is, in fact, a part of the family being defined
          tyIs n cty'
+         let force = if tn == sUN "Delayed"
+                        then [] -- TMP HACK! Totality checker needs this info
+                        else forceArgs ctxt cty'
 
          logElab 5 $ show fc ++ ":Constructor " ++ show n ++ " elaborated : " ++ show t
          logElab 5 $ "Inaccessible args: " ++ show inacc
+         logElab 5 $ "Forceable args: " ++ show force
          logElab 2 $ "---> " ++ show n ++ " : " ++ show cty
 
          -- Add to the context (this is temporary, so that later constructors
@@ -210,6 +214,7 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
          addDocStr n doc' argDocs'
          addIBC (IBCDoc n)
          fputState (opt_inaccessible . ist_optimisation n) inacc
+         fputState (opt_forceable . ist_optimisation n) force
          addIBC (IBCOpt n)
          return (n, cty)
   where
@@ -259,6 +264,47 @@ elabCon info syn tn codata expkind dkind (doc, argDocs, n, nfc, t_in, fc, forcen
         = tclift $ tfail (At fc (UniqueKindError AllTypes n))
     checkUniqueKind _ _ = return ()
 
+forceArgs :: Context -> Type -> [Int]
+forceArgs ctxt ty = forceFrom 0 ty
+  where
+    -- for each argument, substitute in MN pos "FF"
+    -- then when we look at the return type, if we see MN pos name
+    -- constructor guarded, then 'pos' is a forceable position
+    forceFrom :: Int -> Type -> [Int]
+    forceFrom i (Bind n (Pi _ _ _ _) sc)
+       = forceFrom (i + 1) (substV (P Ref (sMN i "FF") Erased) sc)
+    forceFrom i sc
+        -- Go under the top level type application
+        -- We risk affecting erasure of more complex indices, so we'll only
+        -- mark something forced if *everything* which appears in an index
+        -- is forceable
+        -- (FIXME: Actually the real risk is if we erase something a programmer
+        -- definitely wants, which is particularly the case with 'views'.
+        -- So perhaps we need a way of marking that in the source?)
+        | (P _ ty _, args) <- unApply sc
+             = if null (concatMap (findNonForcePos True) args)
+                  then nub (concatMap findForcePos args)
+                  else []
+    forceFrom i sc = []
+
+    findForcePos (P _ (MN i ff) _)
+        | ff == txt "FF" = [i]
+    -- Only look under constructors in applications
+    findForcePos ap@(App _ f a)
+        | (P _ con _, args) <- unApply ap,
+          isDConName con ctxt
+            = nub $ concatMap findForcePos args
+    findForcePos _ = []
+
+    findNonForcePos fok (P _ (MN i ff) _)
+        | ff == txt "FF" = if fok then [] else [i]
+    -- Look under non-constructors in applications for things which can't
+    -- be forced
+    findNonForcePos fok ap@(App _ f a)
+        | (P _ con _, args) <- unApply ap
+            = nub $ concatMap (findNonForcePos (fok && isConName con ctxt)) args
+    findNonForcePos _ _ = []
+
 addParamConstraints :: FC -> [Int] -> Type -> [(Name, Type)] -> Idris ()
 addParamConstraints fc ps cty cons
    = case getRetTy cty of
@@ -268,7 +314,7 @@ addParamConstraints fc ps cty cons
   where
     getParamNames (n, ty) = (ty, getPs ty)
 
-    getPs (Bind n (Pi _ _ _) sc)
+    getPs (Bind n (Pi _ _ _ _) sc)
        = getPs (substV (P Ref n Erased) sc)
     getPs t | (f, args) <- unApply t
        = paramArgs 0 args
@@ -279,7 +325,7 @@ addParamConstraints fc ps cty cons
 
     addConConstraint ps cvar (ty, pnames) = constraintTy ty
       where
-        constraintTy (Bind n (Pi _ ty _) sc)
+        constraintTy (Bind n (Pi _ _ ty _) sc)
            = case getRetTy ty of
                   TType avar -> do tit <- typeInType
                                    when (not tit) $ do
@@ -289,7 +335,7 @@ addParamConstraints fc ps cty cons
                                                     then ULE avar cvar
                                                     else ULT avar cvar
                                        addConstraints fc (tv, [con])
-                                       addIBC (IBCConstraint fc con) 
+                                       addIBC (IBCConstraint fc con)
                   _ -> return ()
         constraintTy t = return ()
 

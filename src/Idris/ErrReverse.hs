@@ -10,6 +10,7 @@ Maintainer  : The Idris Community.
 module Idris.ErrReverse(errReverse) where
 
 import Idris.AbsSyntax
+import Idris.Core.Evaluate (unfold)
 import Idris.Core.TT
 import Util.Pretty
 
@@ -17,10 +18,17 @@ import Data.List
 import Debug.Trace
 
 -- | For display purposes, apply any 'error reversal' transformations
--- so that errors will be more readable
+-- so that errors will be more readable,
+-- and any 'error reduce' transformations
 errReverse :: IState -> Term -> Term
-errReverse ist t = rewrite 5 t -- (elideLambdas t)
+errReverse ist t = rewrite 5 (do_unfold t) -- (elideLambdas t)
   where
+    do_unfold :: Term -> Term
+    do_unfold t = let ns = idris_errReduce ist in
+                      if null ns then t
+                         else unfold (tt_ctxt ist) []
+                                     (map (\x -> (x, 1000)) (idris_errReduce ist))
+                                     t
 
     rewrite 0 t = t
     rewrite n t = let t' = foldl applyRule t (reverse (idris_errRev ist)) in
@@ -33,7 +41,7 @@ errReverse ist t = rewrite 5 t -- (elideLambdas t)
     -- Assume pattern bindings match in l and r (if they don't just treat
     -- the rule as invalid and return t)
 
-    applyNames ns t (Bind n (PVar ty) scl) (Bind n' (PVar ty') scr)
+    applyNames ns t (Bind n (PVar _ ty) scl) (Bind n' (PVar _ ty') scr)
        | n == n' = applyNames (n : ns) t (instantiate (P Ref n ty) scl)
                                          (instantiate (P Ref n' ty') scr)
        | otherwise = t
@@ -70,7 +78,7 @@ errReverse ist t = rewrite 5 t -- (elideLambdas t)
     -- it as it won't be very enlightening.
 
     elideLambdas (App s f a) = App s (elideLambdas f) (elideLambdas a)
-    elideLambdas (Bind n (Lam t) sc)
+    elideLambdas (Bind n (Lam _ t) sc)
        | size sc > 200 = P Ref (sUN "...") Erased
     elideLambdas (Bind n b sc)
        = Bind n (fmap elideLambdas b) (elideLambdas sc)

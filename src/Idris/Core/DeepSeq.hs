@@ -10,9 +10,9 @@ Maintainer  : The Idris Community.
 
 module Idris.Core.DeepSeq where
 
-import Idris.Core.TT
 import Idris.Core.CaseTree
 import Idris.Core.Evaluate
+import Idris.Core.TT
 
 import Control.DeepSeq
 
@@ -40,6 +40,7 @@ instance NFData ConstraintFC
 instance NFData Err
 instance NFData ErrorReportPart
 instance NFData ImplicitInfo
+instance NFData RigCount
 instance (NFData b) => NFData (Binder b)
 instance NFData UExp
 instance NFData NameType

@@ -5,42 +5,39 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds #-}
-{-# LANGUAGE PatternGuards, TupleSections                #-}
+{-# LANGUAGE ConstraintKinds, GeneralizedNewtypeDeriving, PatternGuards,
+             TupleSections #-}
 module Idris.Parser.Expr where
 
-import Prelude hiding (pi)
-
-import Text.Trifecta.Delta
-import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace, Err)
-import Text.Parser.LookAhead
-import Text.Parser.Expression
-import qualified Text.Parser.Token as Tok
-import qualified Text.Parser.Char as Chr
-import qualified Text.Parser.Token.Highlight as Hi
-
 import Idris.AbsSyntax
+import Idris.Core.TT
+import Idris.DSL
 import Idris.Parser.Helpers
 import Idris.Parser.Ops
-import Idris.DSL
 
-import Idris.Core.TT
+import Prelude hiding (pi)
 
 import Control.Applicative
 import Control.Monad
 import Control.Monad.State.Strict
-
-import Data.Function (on)
-import Data.Maybe
-import qualified Data.List.Split as Spl
-import Data.List
-import Data.Monoid
-import Data.Char
-import qualified Data.HashSet as HS
-import qualified Data.Text as T
 import qualified Data.ByteString.UTF8 as UTF8
-
+import Data.Char
+import Data.Function (on)
+import qualified Data.HashSet as HS
+import Data.List
+import qualified Data.List.Split as Spl
+import Data.Maybe
+import Data.Monoid
+import qualified Data.Text as T
 import Debug.Trace
+import qualified Text.Parser.Char as Chr
+import Text.Parser.Expression
+import Text.Parser.LookAhead
+import qualified Text.Parser.Token as Tok
+import qualified Text.Parser.Token.Highlight as Hi
+import Text.Trifecta hiding (Err, char, charLiteral, natural, span, string,
+                      stringLiteral, symbol, whiteSpace)
+import Text.Trifecta.Delta
 
 -- | Allow implicit type declarations
 allowImp :: SyntaxInfo -> SyntaxInfo
@@ -265,8 +262,8 @@ updateSynMatch = update
     updTactic ns (TDocStr (Left n)) = TDocStr . Left . fst $ updateB ns (n, NoFC)
     updTactic ns t = fmap (update ns) t
 
-    updTacImp ns (TacImp o st scr)  = TacImp o st (update ns scr)
-    updTacImp _  x                  = x
+    updTacImp ns (TacImp o st scr r) = TacImp o st (update ns scr) r
+    updTacImp _  x                   = x
 
     dropn :: Name -> [(Name, a)] -> [(Name, a)]
     dropn n [] = []
@@ -682,16 +679,16 @@ app syn = do f <- simpleExpr syn
                                f
                                (PMatchApp fc ff)
                                (PRef fc [] (sMN 0 "match")))
-              <?> "matching application expression") <|> (do
-             fc <- getFC
-             i <- get
-             args <- many (do notEndApp; arg syn)
-             wargs <- if withAppAllowed syn && not (inPattern syn)
-                         then many (do notEndApp; reservedOp "|"; expr' syn)
-                         else return []
-             case args of
-               [] -> return f
-               _  -> return (withApp fc (flattenFromInt fc f args) wargs))
+                   <?> "matching application expression") <|>
+               (do fc <- getFC
+                   i <- get
+                   args <- many (do notEndApp; arg syn)
+                   wargs <- if withAppAllowed syn && not (inPattern syn)
+                              then many (do notEndApp; reservedOp "|"; expr' syn)
+                              else return []
+                   case args of
+                     [] -> return f
+                     _  -> return (withApp fc (flattenFromInt fc f args) wargs))
        <?> "function application"
    where
     -- bit of a hack to deal with the situation where we're applying a
@@ -918,7 +915,7 @@ TypeExpr ::= ConstraintList? Expr;
 typeExpr :: SyntaxInfo -> IdrisParser PTerm
 typeExpr syn = do cs <- if implicitAllowed syn then constraintList syn else return []
                   sc <- expr (allowConstr syn)
-                  return (bindList (PPi constraint) cs sc)
+                  return (bindList (\r -> PPi (constraint { pcount = r })) cs sc)
                <?> "type signature"
 
 {- | Parses a lambda expression
@@ -945,7 +942,7 @@ lambda syn = do lchar '\\' <?> "lambda expression"
                 ((do xt <- try $ tyOptDeclList (disallowImp syn)
                      fc <- getFC
                      sc <- lambdaTail
-                     return (bindList (PLam fc) xt sc))
+                     return (bindList (\r -> PLam fc) xt sc))
                  <|>
                  (do ps <- sepBy (do fc <- getFC
                                      e <- simpleExpr (disallowImp (syn { inPattern = True }))
@@ -1076,13 +1073,13 @@ Pi' ::=
 
 bindsymbol opts st syn
      = do symbol "->"
-          return (Exp opts st False)
+          return (Exp opts st False RigW)
 
 explicitPi opts st syn
    = do xt <- try (lchar '(' *> typeDeclList syn <* lchar ')')
         binder <- bindsymbol opts st syn
         sc <- expr (allowConstr syn)
-        return (bindList (PPi binder) xt sc)
+        return (bindList (\r -> PPi (binder { pcount = r })) xt sc)
 
 autoImplicit opts st syn
    = do kw <- reservedFC "auto"
@@ -1092,8 +1089,8 @@ autoImplicit opts st syn
         symbol "->"
         sc <- expr (allowConstr syn)
         highlightP kw AnnKeyword
-        return (bindList (PPi
-          (TacImp [] Dynamic (PTactics [ProofSearch True True 100 Nothing [] []]))) xt sc)
+        return (bindList (\r -> PPi
+          (TacImp [] Dynamic (PTactics [ProofSearch True True 100 Nothing [] []]) r)) xt sc)
 
 defaultImplicit opts st syn = do
    kw <- reservedFC "default"
@@ -1106,7 +1103,7 @@ defaultImplicit opts st syn = do
    symbol "->"
    sc <- expr (allowConstr syn)
    highlightP kw AnnKeyword
-   return (bindList (PPi (TacImp [] Dynamic script)) xt sc)
+   return (bindList (\r -> PPi (TacImp [] Dynamic script r)) xt sc)
 
 normalImplicit opts st syn = do
    xt <- typeDeclList syn <* lchar '}'
@@ -1115,19 +1112,19 @@ normalImplicit opts st syn = do
    sc <- expr syn
    let (im,cl)
           = if implicitAllowed syn
-               then (Imp opts st False (Just (Impl False True False)) True,
+               then (Imp opts st False (Just (Impl False True False)) True RigW,
                       constraint)
-               else (Imp opts st False (Just (Impl False False False)) True,
-                     Imp opts st False (Just (Impl True False False)) True)
-   return (bindList (PPi im) xt
-           (bindList (PPi cl) cs sc))
+               else (Imp opts st False (Just (Impl False False False)) True RigW,
+                     Imp opts st False (Just (Impl True False False)) True RigW)
+   return (bindList (\r -> PPi (im { pcount = r })) xt
+           (bindList (\r -> PPi (cl { pcount = r })) cs sc))
 
 constraintPi opts st syn =
    do cs <- constraintList1 syn
       sc <- expr syn
       if implicitAllowed syn
-         then return (bindList (PPi constraint) cs sc)
-         else return (bindList (PPi (Imp opts st False (Just (Impl True False False)) True))
+         then return (bindList (\r -> PPi constraint { pcount = r }) cs sc)
+         else return (bindList (\r -> PPi (Imp opts st False (Just (Impl True False False)) True r))
                                cs sc)
 
 implicitPi opts st syn =
@@ -1185,11 +1182,11 @@ ConstraintList ::=
   ;
 @
 -}
-constraintList :: SyntaxInfo -> IdrisParser [(Name, FC, PTerm)]
+constraintList :: SyntaxInfo -> IdrisParser [(RigCount, Name, FC, PTerm)]
 constraintList syn = try (constraintList1 syn)
                      <|> return []
 
-constraintList1 :: SyntaxInfo -> IdrisParser [(Name, FC, PTerm)]
+constraintList1 :: SyntaxInfo -> IdrisParser [(RigCount, Name, FC, PTerm)]
 constraintList1 syn = try (do lchar '('
                               tys <- sepBy1 nexpr (lchar ',')
                               lchar ')'
@@ -1197,13 +1194,13 @@ constraintList1 syn = try (do lchar '('
                               return tys)
                   <|> try (do t <- opExpr (disallowImp syn)
                               reservedOp "=>"
-                              return [(defname, NoFC, t)])
+                              return [(RigW, defname, NoFC, t)])
                   <?> "type constraint list"
   where nexpr = try (do (n, fc) <- name; lchar ':'
                         e <- expr (disallowImp syn)
-                        return (n, fc, e))
+                        return (RigW, n, fc, e))
                 <|> do e <- expr (disallowImp syn)
-                       return (defname, NoFC, e)
+                       return (RigW, defname, NoFC, e)
         defname = sMN 0 "constraint"
 
 {- | Parses a type declaration list
@@ -1221,17 +1218,21 @@ FunctionSignatureList ::=
   ;
 @
 -}
-typeDeclList :: SyntaxInfo -> IdrisParser [(Name, FC, PTerm)]
-typeDeclList syn = try (sepBy1 (do (x, xfc) <- fnName
+typeDeclList :: SyntaxInfo -> IdrisParser [(RigCount, Name, FC, PTerm)]
+typeDeclList syn = try (sepBy1 (do rig <- option RigW rigCount
+                                   (x, xfc) <- fnName
                                    lchar ':'
                                    t <- typeExpr (disallowImp syn)
-                                   return (x, xfc, t))
+                                   return (rig, x, xfc, t))
                            (lchar ','))
                    <|> do ns <- sepBy1 name (lchar ',')
                           lchar ':'
                           t <- typeExpr (disallowImp syn)
-                          return (map (\(x, xfc) -> (x, xfc, t)) ns)
+                          return (map (\(x, xfc) -> (RigW, x, xfc, t)) ns)
                    <?> "type declaration list"
+  where
+    rigCount = do lchar '1'; return Rig1
+           <|> do lchar '0'; return Rig0
 
 {- | Parses a type declaration list with optional parameters
 @
@@ -1245,11 +1246,11 @@ TypeOptDeclList ::=
 NameOrPlaceHolder ::= Name | '_';
 @
 -}
-tyOptDeclList :: SyntaxInfo -> IdrisParser [(Name, FC, PTerm)]
+tyOptDeclList :: SyntaxInfo -> IdrisParser [(RigCount, Name, FC, PTerm)]
 tyOptDeclList syn = sepBy1 (do (x, fc) <- nameOrPlaceholder
                                t <- option Placeholder (do lchar ':'
                                                            expr syn)
-                               return (x, fc, t))
+                               return (RigW, x, fc, t))
                            (lchar ',')
                     <?> "type declaration list"
     where  nameOrPlaceholder :: IdrisParser (Name, FC)

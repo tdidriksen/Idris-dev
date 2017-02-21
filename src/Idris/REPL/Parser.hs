@@ -11,30 +11,26 @@ module Idris.REPL.Parser (
   , setOptions
   ) where
 
-import System.FilePath ((</>))
-import System.Console.ANSI (Color(..))
-
-import Idris.Colours
 import Idris.AbsSyntax
+import Idris.Colours
 import Idris.Core.TT
 import Idris.Help
 import qualified Idris.Parser as P
-
 import Idris.REPL.Commands
 
 import Control.Applicative
 import Control.Monad.State.Strict
-
-import Text.Parser.Combinators
-import Text.Parser.Char(anyChar,oneOf)
-import Text.Trifecta(Result, parseString)
-import Text.Trifecta.Delta
-
-import Debug.Trace
-import Data.List
-import Data.List.Split(splitOn)
-import Data.Char(isSpace, toLower)
 import qualified Data.ByteString.UTF8 as UTF8
+import Data.Char (isSpace, toLower)
+import Data.List
+import Data.List.Split (splitOn)
+import Debug.Trace
+import System.Console.ANSI (Color(..))
+import System.FilePath ((</>))
+import Text.Parser.Char (anyChar, oneOf)
+import Text.Parser.Combinators
+import Text.Trifecta (Result, parseString)
+import Text.Trifecta.Delta
 
 parseCmd :: IState -> String -> String -> Result (Either String Command)
 parseCmd i inputname = P.runparser pCmd i inputname . trim
@@ -82,6 +78,7 @@ parserCommandsForHelp =
   , noArgCmd ["w", "watch"] Watch "Watch the current file for changes"
   , (["l", "load"], FileArg, "Load a new file"
     , strArg (\f -> Load f Nothing))
+  , (["!"], ShellCommandArg, "Run a shell command", strArg RunShellCommand)
   , (["cd"], FileArg, "Change working directory"
     , strArg ChangeDirectory)
   , (["module"], ModuleArg, "Import an extra module", moduleArg ModImport) -- NOTE: dragons
@@ -122,9 +119,12 @@ parserCommandsForHelp =
   , (["pp", "pprint"], (SeqArgs OptionArg (SeqArgs NumberArg NameArg))
     , "Pretty prints an Idris function in either LaTeX or HTML and for a specified width."
     , cmd_pprint)
+  , (["verbosity"], NumberArg, "Set verbosity level", cmd_verb)
   ]
   where optionsList = intercalate ", " $ map fst setOptions
 
+
+parserCommands :: CommandTable
 parserCommands =
   [ noArgCmd ["u", "universes"] Universes "Display universe constraints"
   , noArgCmd ["errorhandlers"] ListErrorHandlers "List registered error handlers"
@@ -150,7 +150,7 @@ parserCommands =
   , proofArgCmd ["mc", "makecase"] MakeCase
       ":mc <line> <name> adds a case block for the definition of the metavariable on the line"
   , proofArgCmd ["ml", "makelemma"] MakeLemma "?"
-  , (["log"], NumberArg, "Set logging verbosity level", cmd_log)
+  , (["log"], NumberArg, "Set logging level", cmd_log)
   , ( ["logcats"]
     , ManyArgs NameArg
     , "Set logging categories"
@@ -214,8 +214,8 @@ cmd xs = try $ do
 noArgs :: Command -> String -> P.IdrisParser (Either String Command)
 noArgs cmd name = do
     let emptyArgs = do
-        eof
-        return (Right cmd)
+          eof
+          return (Right cmd)
 
     let failure = return (Left $ ":" ++ name ++ " takes no arguments")
 
@@ -229,20 +229,18 @@ eval = do
 exprArg :: (PTerm -> Command) -> String -> P.IdrisParser (Either String Command)
 exprArg cmd name = do
     let noArg = do
-        eof
-        return $ Left ("Usage is :" ++ name ++ " <expression>")
+          eof
+          return $ Left ("Usage is :" ++ name ++ " <expression>")
 
     let justOperator = do
-        (op, fc) <- P.operatorFC
-        eof
-        return $ Right $ cmd (PRef fc [] (sUN op))
+          (op, fc) <- P.operatorFC
+          eof
+          return $ Right $ cmd (PRef fc [] (sUN op))
 
     let properArg = do
-        t <- P.fullExpr defaultSyntax
-        return $ Right (cmd t)
+          t <- P.fullExpr defaultSyntax
+          return $ Right (cmd t)
     try noArg <|> try justOperator <|> properArg
-
-
 
 genArg :: String -> P.IdrisParser a -> (a -> Command)
            -> String -> P.IdrisParser (Either String Command)
@@ -279,10 +277,10 @@ optArg cmd name = do
             return $ Left ("Usage is :" ++ name ++ " <option>")
 
     let oneArg = do
-        o <- pOption
-        P.whiteSpace
-        eof
-        return (Right (cmd o))
+          o <- pOption
+          P.whiteSpace
+          eof
+          return (Right (cmd o))
 
     let failure = return $ Left "Unrecognized setting"
 
@@ -304,14 +302,14 @@ proofArg cmd name = do
 cmd_doc :: String -> P.IdrisParser (Either String Command)
 cmd_doc name = do
     let constant = do
-        c <- fmap fst P.constant
-        eof
-        return $ Right (DocStr (Right c) FullDocs)
+          c <- fmap fst P.constant
+          eof
+          return $ Right (DocStr (Right c) FullDocs)
 
     let pType = do
-        P.reserved "Type"
-        eof
-        return $ Right (DocStr (Left $ P.mkName ("Type", "")) FullDocs)
+          P.reserved "Type"
+          eof
+          return $ Right (DocStr (Left $ P.mkName ("Type", "")) FullDocs)
 
     let fnName = fnNameArg (\n -> DocStr (Left n) FullDocs) name
 
@@ -340,16 +338,13 @@ cmd_execute name = do
   where
     maintm = PRef (fileFC "(repl)") [] (sNS (sUN "main") ["Main"])
 
-
 cmd_dynamic :: String -> P.IdrisParser (Either String Command)
 cmd_dynamic name = do
     let optArg = do l <- many anyChar
                     if (l /= "")
                         then return $ Right (DynamicLink l)
                         else return $ Right ListDynamic
-
     let failure = return $ Left $ "Usage is :" ++ name ++ " [<library>]"
-
     try optArg <|> failure
 
 cmd_pprint :: String -> P.IdrisParser (Either String Command)
@@ -366,8 +361,6 @@ cmd_pprint name = do
         ppFormat = (discard (P.symbol "html") >> return HTMLOutput)
                <|> (discard (P.symbol "latex") >> return LaTeXOutput)
 
-
-
 cmd_compile :: String -> P.IdrisParser (Either String Command)
 cmd_compile name = do
     let defaultCodegen = Via IBCFormat "c"
@@ -380,17 +373,17 @@ cmd_compile name = do
             bytecodeCodegen <|> viaCodegen
 
     let hasOneArg = do
-        i <- get
-        f <- fst <$> P.identifier
-        eof
-        return $ Right (Compile defaultCodegen f)
+          i <- get
+          f <- fst <$> P.identifier
+          eof
+          return $ Right (Compile defaultCodegen f)
 
     let hasTwoArgs = do
-        i <- get
-        codegen <- codegenOption
-        f <- fst <$> P.identifier
-        eof
-        return $ Right (Compile codegen f)
+          i <- get
+          codegen <- codegenOption
+          f <- fst <$> P.identifier
+          eof
+          return $ Right (Compile codegen f)
 
     let failure = return $ Left $ "Usage is :" ++ name ++ " [<codegen>] <filename>"
     try hasTwoArgs <|> try hasOneArg <|> failure
@@ -408,6 +401,12 @@ cmd_log name = do
     i <- fmap (fromIntegral . fst) P.natural
     eof
     return (Right (LogLvl i))
+
+cmd_verb :: String -> P.IdrisParser (Either String Command)
+cmd_verb name = do
+    i <- fmap (fromIntegral . fst) P.natural
+    eof
+    return (Right (Verbosity i))
 
 cmd_cats :: String -> P.IdrisParser (Either String Command)
 cmd_cats name = do

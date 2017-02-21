@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-|
 Module      : Idris.ASTUtils
 Description : This implements just a few basic lens-like concepts to ease state updates. Similar to fclabels in approach, just without the extra dependency.
@@ -41,18 +42,19 @@ module Idris.ASTUtils(
     Field(), cg_usedpos, ctxt_lookup, fgetState, fmodifyState
   , fputState, idris_fixities, ist_callgraph, ist_optimisation
   , known_interfaces, known_terms, opt_detaggable, opt_inaccessible
-  , opts_idrisCmdline, repl_definitions
+  , opt_forceable, opts_idrisCmdline, repl_definitions
   ) where
 
-import Control.Category
-import Control.Applicative
-import Control.Monad.State.Class
-import Data.Maybe
+import Idris.AbsSyntaxTree
+import Idris.Core.Evaluate
+import Idris.Core.TT
+
 import Prelude hiding (id, (.))
 
-import Idris.Core.TT
-import Idris.Core.Evaluate
-import Idris.AbsSyntaxTree
+import Control.Applicative
+import Control.Category
+import Control.Monad.State.Class
+import Data.Maybe
 
 data Field rec fld = Field
     { fget :: rec -> fld
@@ -110,6 +112,7 @@ ist_optimisation n =
       maybe_default Optimise
         { inaccessible = []
         , detaggable = False
+        , forceable = []
         }
     . ctxt_lookup n
     . Field idris_optimisation (\v ist -> ist{ idris_optimisation = v })
@@ -121,12 +124,14 @@ opt_inaccessible = Field inaccessible (\v opt -> opt{ inaccessible = v })
 opt_detaggable :: Field OptInfo Bool
 opt_detaggable = Field detaggable (\v opt -> opt{ detaggable = v })
 
+opt_forceable :: Field OptInfo [Int]
+opt_forceable = Field forceable (\v opt -> opt{ forceable = v })
 
 -- | callgraph record for the given (exact) name
 ist_callgraph :: Name -> Field IState CGInfo
 ist_callgraph n =
       maybe_default CGInfo
-        { calls = [], scg = [], usedpos = []
+        { calls = [], allCalls = Nothing, scg = [], usedpos = []
         }
     . ctxt_lookup n
     . Field idris_callgraph (\v ist -> ist{ idris_callgraph = v })
@@ -144,7 +149,7 @@ opts_idrisCmdline =
 --
 -- This has a terrible name, but I'm not sure of a better one that
 -- isn't confusingly close to tt_ctxt
-known_terms :: Field IState (Ctxt (Def, Injectivity, Accessibility, Totality, MetaInformation))
+known_terms :: Field IState (Ctxt (Def, RigCount, Injectivity, Accessibility, Totality, MetaInformation))
 known_terms = Field (definitions . tt_ctxt)
                     (\v state -> state {tt_ctxt = (tt_ctxt state) {definitions = v}})
 

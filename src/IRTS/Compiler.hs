@@ -5,60 +5,57 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE PatternGuards, TypeSynonymInstances, CPP #-}
+{-# LANGUAGE CPP, PatternGuards, TypeSynonymInstances #-}
 
 module IRTS.Compiler(compile, generate) where
-
-import IRTS.Lang
-import IRTS.LangOpts
-import IRTS.Defunctionalise
-import IRTS.Simplified
-import IRTS.CodegenCommon
-import IRTS.CodegenC
-import IRTS.DumpBC
-import IRTS.CodegenJavaScript
-import IRTS.Inliner
-import IRTS.Exports
-import IRTS.Portable
 
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
 import Idris.ASTUtils
+import Idris.Core.CaseTree
+import Idris.Core.Evaluate
+import Idris.Core.TT
 import Idris.Erasure
 import Idris.Error
 import Idris.Output
+import IRTS.CodegenC
+import IRTS.CodegenCommon
+import IRTS.CodegenJavaScript
+import IRTS.Defunctionalise
+import IRTS.DumpBC
+import IRTS.Exports
+import IRTS.Inliner
+import IRTS.Lang
+import IRTS.LangOpts
+import IRTS.Portable
+import IRTS.Simplified
 
-import Debug.Trace
-
-import Idris.Core.TT
-import Idris.Core.Evaluate
-import Idris.Core.CaseTree
-
-import Control.Category
 import Prelude hiding (id, (.))
 
 import Control.Applicative
+import Control.Category
 import Control.Monad.State
-
-import           Data.Maybe
-import           Data.List
-import           Data.Ord
-import           Data.IntSet (IntSet)
-import qualified Data.IntSet          as IS
-import qualified Data.Map             as M
-import qualified Data.Set             as S
-
-import System.Process
-import System.IO
-import System.Exit
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
+import Data.List
+import qualified Data.Map as M
+import Data.Maybe
+import Data.Ord
+import qualified Data.Set as S
+import Debug.Trace
 import System.Directory
 import System.Environment
-import System.FilePath ((</>), addTrailingPathSeparator)
+import System.Exit
+import System.FilePath (addTrailingPathSeparator, (</>))
+import System.IO
+import System.Process
 
 -- |  Compile to simplified forms and return CodegenInfo
 compile :: Codegen -> FilePath -> Maybe Term -> Idris CodegenInfo
-compile codegen f mtm
-   = do checkMVs  -- check for undefined metavariables
+compile codegen f mtm = do
+        logCodeGen 1 "Compiling Output."
+        iReport 2 "Compiling Output."
+        checkMVs  -- check for undefined metavariables
         checkTotality -- refuse to compile if there are totality problems
         exports <- findExports
         let rootNames = case mtm of
@@ -77,6 +74,7 @@ compile codegen f mtm
         flags <- getFlags codegen
         hdrs <- getHdrs codegen
         impdirs <- allImportDirs
+        ttDeclarations <- getDeclarations reachableNames
         defsIn <- mkDecls reachableNames
         -- if no 'main term' given, generate interface files
         let iface = case mtm of
@@ -94,9 +92,11 @@ compile codegen f mtm
         let ctxtIn = addAlist tagged emptyContext
 
         logCodeGen 1 "Defunctionalising"
+        iReport 3 "Defunctionalising"
         let defuns_in = defunctionalise nexttag ctxtIn
         logCodeGen 5 $ show defuns_in
         logCodeGen 1 "Inlining"
+        iReport 3 "Inlining"
         let defuns = inline defuns_in
         logCodeGen 5 $ show defuns
         logCodeGen 1 "Resolving variables for CG"
@@ -113,12 +113,14 @@ compile codegen f mtm
             Just f -> runIO $ writeFile f (dumpDefuns defuns)
         triple <- Idris.AbsSyntax.targetTriple
         cpu <- Idris.AbsSyntax.targetCPU
-        logCodeGen 1 "Building output"
+        logCodeGen 1 "Generating Code."
+        iReport 2 "Generating Code."
         case checked of
             OK c -> do return $ CodegenInfo f outty triple cpu
                                             hdrs impdirs objs libs flags
                                             NONE c (toAlist defuns)
                                             tagged iface exports
+                                            ttDeclarations
             Error e -> ierror e
   where checkMVs = do i <- getIState
                       case map fst (idris_metavars i) \\ primDefs of
@@ -163,6 +165,12 @@ mkDecls used
          let ds = filter (\(n, d) -> n `elem` used || isCon d) $ ctxtAlist (tt_ctxt i)
          decls <- mapM build ds
          return decls
+
+getDeclarations :: [Name] -> Idris ([(Name, TTDecl)])
+getDeclarations used
+    = do i <- getIState
+         let ds = filter (\(n, (d,_,_,_,_,_)) -> n `elem` used || isCon d) $ ((toAlist . definitions . tt_ctxt) i)
+         return ds
 
 showCaseTrees :: [(Name, LDecl)] -> String
 showCaseTrees = showSep "\n\n" . map showCT . sortBy (comparing defnRank)
@@ -262,6 +270,11 @@ irTerm top vs env tm@(App _ f a) = do
     (P _ (UN u) _, _)
         | u == txt "assert_unreachable"
         -> return $ LError $ "ABORT: Reached an unreachable case in " ++ show top
+
+    (P _ (UN u) _, [_, msg])
+        | u == txt "idris_crash"
+        -> do msg' <- irTerm top vs env msg
+              return $ LOp LCrash [msg']
 
     -- TMP HACK - until we get inlining.
     (P _ (UN r) _, [_, _, _, _, _, arg])
@@ -461,14 +474,14 @@ irTerm top vs env tm@(App _ f a) = do
             | otherwise = n
 
         used = maybe [] (map fst . usedpos) $ lookupCtxtExact uName (idris_callgraph ist)
-        fst4 (x,_,_,_,_) = x
+        fst4 (x,_,_,_,_,_) = x
 
 irTerm top vs env (P _ n _) = return $ LV (Glob n)
 irTerm top vs env (V i)
     | i >= 0 && i < length env = return $ LV (Glob (env!!i))
     | otherwise = ifail $ "bad de bruijn index: " ++ show i
 
-irTerm top vs env (Bind n (Lam _) sc) = LLam [n'] <$> irTerm top vs (n':env) sc
+irTerm top vs env (Bind n (Lam _ _) sc) = LLam [n'] <$> irTerm top vs (n':env) sc
   where
     n' = uniqueName n env
 

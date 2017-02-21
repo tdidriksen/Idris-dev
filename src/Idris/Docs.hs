@@ -5,29 +5,34 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE DeriveFunctor, PatternGuards, MultiWayIf #-}
+
+{-# LANGUAGE DeriveFunctor, MultiWayIf, PatternGuards #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
+
 module Idris.Docs (
     pprintDocs
   , getDocs, pprintConstDocs, pprintTypeDoc
   , FunDoc, FunDoc'(..), Docs, Docs'(..)
   ) where
 
-import Idris.AbsSyntax
-import Idris.AbsSyntaxTree
-import Idris.Delaborate
-import Idris.Core.TT
+import Idris.AbsSyntax (FixDecl(..), Fixity, HowMuchDocs(..), IState(..), Idris,
+                        InterfaceInfo(..), PArg'(..), PDecl'(..), PPOption(..),
+                        PTerm(..), Plicity(..), RecordInfo(..), basename,
+                        getIState, modDocName, ppOptionIst, pprintPTerm,
+                        prettyIst, prettyName, type1Doc, typeDescription)
 import Idris.Core.Evaluate
-import Idris.Docstrings (Docstring, emptyDocstring, noDocs, nullDocstring, renderDocstring, DocTerm, renderDocTerm, overview)
+import Idris.Core.TT
+import Idris.Delaborate
+import Idris.Docstrings (DocTerm, Docstring, emptyDocstring, noDocs,
+                         nullDocstring, overview, renderDocTerm,
+                         renderDocstring)
 
 import Util.Pretty
 
 import Prelude hiding ((<$>))
 
-import Control.Arrow (first)
-
-import Data.Maybe
 import Data.List
+import Data.Maybe
 import qualified Data.Text as T
 
 -- TODO: Only include names with public/export accessibility
@@ -48,6 +53,7 @@ data Docs' d = FunDoc (FunDoc' d)
              | InterfaceDoc Name d  -- interface docs
                             [FunDoc' d] -- method docs
                             [(Name, Maybe d)] -- parameters and their docstrings
+                            [PTerm] -- parameter constraints
                             [(Maybe Name, PTerm, (d, [(Name, d)]))] -- implementations: name for named implementations, the constraint term, the docs
                             [PTerm] -- sub interfaces
                             [PTerm] -- super interfaces
@@ -139,13 +145,18 @@ pprintDocs ist (DataDoc t args)
              if null args then text "No constructors."
              else nest 4 (text "Constructors:" <> line <>
                           vsep (map (pprintFDWithoutTotality ist False) args))
-pprintDocs ist (InterfaceDoc n doc meths params implementations sub_interfaces super_interfaces ctor)
+pprintDocs ist (InterfaceDoc n doc meths params constraints implementations sub_interfaces super_interfaces ctor)
            = nest 4 (text "Interface" <+> prettyName True (ppopt_impl ppo) [] n <>
                      if nullDocstring doc
                        then empty
                        else line <> renderDocstring (renderDocTerm (pprintDelab ist) (normaliseAll (tt_ctxt ist) [])) doc)
              <> line <$>
              nest 4 (text "Parameters:" <$> prettyParameters)
+
+             <> (if null constraints
+                 then empty
+                 else line <$> nest 4 (text "Constraints:" <$> prettyConstraints))
+
              <> line <$>
              nest 4 (text "Methods:" <$>
                       vsep (map (pprintFDWithTotality ist False) meths))
@@ -213,7 +224,7 @@ pprintDocs ist (InterfaceDoc n doc meths params implementations sub_interfaces s
     dumpImplementation :: PTerm -> Doc OutputAnnotation
     dumpImplementation = pprintPTerm ppo params' [] infixes
 
-    prettifySubInterfaces (PPi (Constraint _ _) _ _ tm _)    = prettifySubInterfaces tm
+    prettifySubInterfaces (PPi (Constraint _ _ _) _ _ tm _)  = prettifySubInterfaces tm
     prettifySubInterfaces (PPi plcity           nm fc t1 t2) = PPi plcity (safeHead nm pNames) NoFC (prettifySubInterfaces t1) (prettifySubInterfaces t2)
     prettifySubInterfaces (PApp fc ref args)                 = PApp fc ref $ updateArgs pNames args
     prettifySubInterfaces tm                                 = tm
@@ -228,9 +239,12 @@ pprintDocs ist (InterfaceDoc n doc meths params implementations sub_interfaces s
     updateRef nm (PRef fc _ _) = PRef fc [] nm
     updateRef _  pt          = pt
 
-    isSubInterface (PPi (Constraint _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args')) = nm == n && map getTm args == map getTm args'
+    isSubInterface (PPi (Constraint _ _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args')) = nm == n && map getTm args == map getTm args'
     isSubInterface (PPi _   _            _ _ pt)                                           = isSubInterface pt
     isSubInterface _                                                                       = False
+
+    prettyConstraints =
+      cat (punctuate (comma <> space) (map (pprintPTerm ppo params' [] infixes) constraints))
 
     prettyParameters =
       if any (isJust . snd) params
@@ -335,7 +349,7 @@ docInterface n ci
                      SN _ -> return Nothing
                      _    -> fmap Just $ docFun ctorN
        return $ InterfaceDoc
-                  n docstr mdocs params
+                  n docstr mdocs params (interface_constraints ci)
                   implementations' (map (\(_,tm,_) -> tm) sub_interfaces) super_interfaces
                   ctorDocs
   where
@@ -346,7 +360,7 @@ docInterface n ci
     getDImpl (PImplementation _ _ _ _ _ _ _ _ _ _ _ _ t _ _) = Just t
     getDImpl _                                         = Nothing
 
-    isSubInterface (PPi (Constraint _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args'))
+    isSubInterface (PPi (Constraint _ _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args'))
       = nm == n && map getTm args == map getTm args'
     isSubInterface (PPi _ _ _ _ pt)
       = isSubInterface pt

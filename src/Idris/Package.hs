@@ -8,41 +8,37 @@ Maintainer  : The Idris Community.
 {-# LANGUAGE CPP #-}
 module Idris.Package where
 
-import System.Process
-import System.Directory
-import System.Exit
-import System.IO
-import System.FilePath ((</>), addTrailingPathSeparator, takeFileName,
-                        takeDirectory, normalise, addExtension, hasExtension)
-import System.Directory (createDirectoryIfMissing, copyFile)
+import Idris.AbsSyntax
+import Idris.Core.TT
+import Idris.Error (ifail)
+import Idris.IBC
+import Idris.IdrisDoc
+import Idris.Imports
+import Idris.Main (idris, idrisMain)
+import Idris.Output (pshow)
+import Idris.Output
+import Idris.Package.Common
+import Idris.Package.Parser
+import Idris.Parser (loadModule)
+import Idris.REPL
+import IRTS.System
 
 import Util.System
 
 import Control.Monad
-import Control.Monad.Trans.State.Strict (execStateT)
 import Control.Monad.Trans.Except (runExceptT)
-
+import Control.Monad.Trans.State.Strict (execStateT)
+import Data.Either (partitionEithers)
 import Data.List
-import Data.List.Split(splitOn)
-import Data.Maybe(fromMaybe)
-import Data.Either(partitionEithers)
-
-import Idris.Core.TT
-import Idris.REPL
-import Idris.Parser (loadModule)
-import Idris.Output (pshow)
-import Idris.AbsSyntax
-import Idris.IdrisDoc
-import Idris.IBC
-import Idris.Output
-import Idris.Imports
-import Idris.Error (ifail)
-import Idris.Main (idrisMain, idris)
-
-import Idris.Package.Common
-import Idris.Package.Parser
-
-import IRTS.System
+import Data.List.Split (splitOn)
+import Data.Maybe (fromMaybe)
+import System.Directory
+import System.Directory (copyFile, createDirectoryIfMissing)
+import System.Exit
+import System.FilePath (addExtension, addTrailingPathSeparator, hasExtension,
+                        normalise, takeDirectory, takeFileName, (</>))
+import System.IO
+import System.Process
 
 -- To build a package:
 -- * read the package description
@@ -75,14 +71,14 @@ buildPkg copts warnonly (install, fp) = do
       make (makefile pkgdesc)
       case (execout pkgdesc) of
         Nothing -> do
-          case mergeOptions copts (idx : NoREPL : Verbose : idris_opts pkgdesc) of
+          case mergeOptions copts (idx : NoREPL : Verbose 1 : idris_opts pkgdesc) of
             Left emsg -> do
               putStrLn emsg
               exitWith (ExitFailure 1)
             Right opts -> buildMods opts (modules pkgdesc)
         Just o -> do
           let exec = dir </> o
-          case mergeOptions copts (idx : NoREPL : Verbose : Output exec : idris_opts pkgdesc) of
+          case mergeOptions copts (idx : NoREPL : Verbose 1 : Output exec : idris_opts pkgdesc) of
             Left emsg -> do
               putStrLn emsg
               exitWith (ExitFailure 1)
@@ -119,7 +115,7 @@ checkPkg copts warnonly quit fpath = do
     res <- inPkgDir pkgdesc $ do
       make (makefile pkgdesc)
 
-      case mergeOptions copts (NoREPL : Verbose : idris_opts pkgdesc) of
+      case mergeOptions copts (NoREPL : Verbose 1 : idris_opts pkgdesc) of
         Left emsg -> do
           putStrLn emsg
           exitWith (ExitFailure 1)
@@ -149,6 +145,7 @@ replPkg copts fp = do
     case mergeOptions copts (idris_opts pkgdesc) of
       Left emsg  -> ifail emsg
       Right opts -> do
+
         putIState orig
         dir <- runIO getCurrentDirectory
         runIO $ setCurrentDirectory $ dir </> sourcedir pkgdesc
@@ -190,15 +187,15 @@ cleanPkg copts fp = do
 --
 -- Issue number #1572 on the issue tracker
 --       https://github.com/idris-lang/Idris-dev/issues/1572
-documentPkg :: [Opt]    -- ^ Command line options.
-            -> FilePath -- ^ Path to ipkg file.
+documentPkg :: [Opt]           -- ^ Command line options.
+            -> (Bool,FilePath) -- ^ (Should we install?, Path to ipkg file).
             -> IO ()
-documentPkg copts fp = do
+documentPkg copts (install,fp) = do
   pkgdesc        <- parseDesc fp
   cd             <- getCurrentDirectory
   let pkgDir      = cd </> takeDirectory fp
       outputDir   = cd </> pkgname pkgdesc ++ "_doc"
-      popts       = NoREPL : Verbose : idris_opts pkgdesc
+      popts       = NoREPL : Verbose 1 : idris_opts pkgdesc
       mods        = modules pkgdesc
       fs          = map (foldl1' (</>) . splitOn "." . showCG) mods
   setCurrentDirectory $ pkgDir </> sourcedir pkgdesc
@@ -223,7 +220,13 @@ documentPkg copts fp = do
           putStrLn $ pshow idrisInit err
           exitWith (ExitFailure 1)
         Right ist -> do
-          docRes <- generateDocs ist mods outputDir
+          iDocDir   <- getIdrisDocDir
+          pkgDocDir <- makeAbsolute (iDocDir </> pkgname pkgdesc)
+          let out_dir = if install then pkgDocDir else outputDir
+          when install $ do
+              putStrLn $ unwords ["Attempting to install IdrisDocs for", pkgname pkgdesc, "in:", out_dir]
+
+          docRes <- generateDocs ist mods out_dir
           case docRes of
             Right _  -> return ()
             Left msg -> do
@@ -235,42 +238,45 @@ documentPkg copts fp = do
 -- | Build a package with a sythesized main function that runs the tests
 testPkg :: [Opt]     -- ^ Command line options.
         -> FilePath  -- ^ Path to ipkg file.
-        -> IO ()
+        -> IO ExitCode
 testPkg copts fp = do
   pkgdesc <- parseDesc fp
   ok <- mapM (testLib True (pkgname pkgdesc)) (libdeps pkgdesc)
-  when (and ok) $ do
-    m_ist <- inPkgDir pkgdesc $ do
-      make (makefile pkgdesc)
-      -- Get a temporary file to save the tests' source in
-      (tmpn, tmph) <- tempfile ".idr"
-      hPutStrLn tmph $
-          "module Test_______\n" ++
-          concat ["import " ++ show m ++ "\n" | m <- modules pkgdesc]
-              ++ "namespace Main\n"
-              ++ "  main : IO ()\n"
-              ++ "  main = do "
-              ++ concat [ show t ++ "\n            "
-                        | t <- idris_tests pkgdesc]
-      hClose tmph
-      (tmpn', tmph') <- tempfile ""
-      hClose tmph'
-      let popts = (Filename tmpn : NoREPL : Verbose : Output tmpn' : idris_opts pkgdesc)
-      case mergeOptions copts popts of
-        Left emsg -> do
-          putStrLn emsg
-          exitWith (ExitFailure 1)
-        Right opts -> do
-          m_ist <- idris opts
-          rawSystem tmpn' []
-          return m_ist
-    case m_ist of
-      Nothing  -> exitWith (ExitFailure 1)
-      Just ist -> do
-        -- Quit with error code if problem building
-        case errSpan ist of
-          Just _ -> exitWith (ExitFailure 1)
-          _      -> return ()
+  if and ok
+    then do
+      (m_ist, exitCode) <- inPkgDir pkgdesc $ do
+        make (makefile pkgdesc)
+        -- Get a temporary file to save the tests' source in
+        (tmpn, tmph) <- tempfile ".idr"
+        hPutStrLn tmph $
+            "module Test_______\n" ++
+            concat ["import " ++ show m ++ "\n" | m <- modules pkgdesc]
+                ++ "namespace Main\n"
+                ++ "  main : IO ()\n"
+                ++ "  main = do "
+                ++ concat [ show t ++ "\n            "
+                          | t <- idris_tests pkgdesc]
+        hClose tmph
+        (tmpn', tmph') <- tempfile ""
+        hClose tmph'
+        let popts = (Filename tmpn : NoREPL : Verbose 1 : Output tmpn' : idris_opts pkgdesc)
+        case mergeOptions copts popts of
+          Left emsg -> do
+            putStrLn emsg
+            exitWith (ExitFailure 1)
+          Right opts -> do
+            m_ist    <- idris opts
+            let texe = if isWindows then addExtension tmpn' ".exe" else tmpn'
+            exitCode <- rawSystem texe []
+            return (m_ist, exitCode)
+      case m_ist of
+        Nothing  -> exitWith (ExitFailure 1)
+        Just ist -> do
+          -- Quit with error code if problem building
+          case errSpan ist of
+            Just _ -> exitWith (ExitFailure 1)
+            _      -> return exitCode
+    else return (ExitFailure 1)
 
 --  ----------------------------------------------------------- [ Installation ]
 
@@ -279,7 +285,7 @@ installPkg :: [String]  -- ^ Alternate install location
            -> PkgDesc   -- ^ iPKG file.
            -> IO ()
 installPkg altdests pkgdesc = inPkgDir pkgdesc $ do
-  d <- getTargetDir
+  d <- getIdrisLibDir
   let destdir = case altdests of
                   []     -> d
                   (d':_) -> d'
@@ -302,11 +308,11 @@ buildMods opts ns = do let f = map (toPath . showCG) ns
 
 testLib :: Bool -> String -> String -> IO Bool
 testLib warn p f
-    = do d <- getDataDir
+    = do d <- getIdrisCRTSDir
          gcc <- getCC
          (tmpf, tmph) <- tempfile ""
          hClose tmph
-         let libtest = d </> "rts" </> "libtest.c"
+         let libtest = d </> "libtest.c"
          e <- rawSystem gcc [libtest, "-l" ++ f, "-o", tmpf]
          case e of
             ExitSuccess -> return True
@@ -416,14 +422,15 @@ mergeOptions copts popts =
     normaliseOpts = filter filtOpt
 
     filtOpt :: Opt -> Bool
-    filtOpt (PkgBuild   _) = False
-    filtOpt (PkgInstall _) = False
-    filtOpt (PkgClean   _) = False
-    filtOpt (PkgCheck   _) = False
-    filtOpt (PkgREPL    _) = False
-    filtOpt (PkgMkDoc   _) = False
-    filtOpt (PkgTest    _) = False
-    filtOpt _              = True
+    filtOpt (PkgBuild        _) = False
+    filtOpt (PkgInstall      _) = False
+    filtOpt (PkgClean        _) = False
+    filtOpt (PkgCheck        _) = False
+    filtOpt (PkgREPL         _) = False
+    filtOpt (PkgDocBuild     _) = False
+    filtOpt (PkgDocInstall   _) = False
+    filtOpt (PkgTest         _) = False
+    filtOpt _                   = True
 
     chkOpt :: Opt -> Either String Opt
     chkOpt o@(OLogging _)     = Right o
@@ -435,6 +442,7 @@ mergeOptions copts popts =
     chkOpt o@(IBCSubDir _)    = Right o
     chkOpt o@(ImportDir _ )   = Right o
     chkOpt o@(UseCodegen _)   = Right o
+    chkOpt o@(Verbose _)      = Right o
     chkOpt o                  = Left (unwords ["\t", show o, "\n"])
 
     genErrMsg :: [String] -> String

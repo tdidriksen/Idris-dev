@@ -4,8 +4,9 @@ Description : Entry Point for the Idris REPL and CLI.
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, DeriveFunctor,
-             PatternGuards, CPP #-}
+
+{-# LANGUAGE PatternGuards #-}
+
 module Idris.REPL
   ( idemodeStart
   , startServer
@@ -16,98 +17,80 @@ module Idris.REPL
   , proofs
   ) where
 
+import Control.Category
+import Control.Concurrent
+import Control.Concurrent.Async (race)
+import Control.DeepSeq
+import qualified Control.Exception as X
+import Control.Monad
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Except (runExceptT)
+import Control.Monad.Trans.State.Strict (evalStateT, get, put)
+import Data.Char
+import Data.Either (partitionEithers)
+import Data.List hiding (group)
+import Data.List.Split (splitOn)
+import Data.Maybe
+import qualified Data.Set as S
+import qualified Data.Text as T
+import Data.Version
 import Idris.AbsSyntax
-import Idris.ASTUtils
 import Idris.Apropos (apropos, aproposModules)
-import Idris.REPL.Parser
-import Idris.Error
-import Idris.IBC
-import Idris.ErrReverse
-import Idris.Delaborate
-import Idris.Docstrings (overview, renderDocstring, renderDocTerm)
-import Idris.Help
-import Idris.IdrisDoc
-import Idris.Prover
-import Idris.Parser hiding (indent)
-import Idris.Coverage
-import Idris.Docs hiding (Doc)
-import Idris.Completion
-import qualified Idris.IdeMode as IdeMode
+import Idris.ASTUtils
 import Idris.Colours hiding (colourise)
-import Idris.Inliner
-import Idris.Output
-import Idris.Interactive
-import Idris.WhoCalls
-import Idris.TypeSearch (searchByType)
-
-import Idris.REPL.Browse (namesInNS, namespacesInNS)
-import Idris.REPL.Commands
-
-import Idris.ElabDecls
-import Idris.Elab.Clause
-import Idris.Elab.Value
-import Idris.Elab.Term
-import Idris.ModeCommon
-import Idris.Info
-
-import Version_idris (gitHash)
-import Util.System
-import Util.DynamicLinker
-import Util.Net (listenOnLocalhost, listenOnLocalhostAnyPort)
-import Util.Pretty hiding ((</>))
-
+import Idris.Completion
+import Idris.Core.Constraints
 import Idris.Core.Evaluate
 import Idris.Core.Execute (execute)
 import Idris.Core.TT
 import Idris.Core.Unify
 import Idris.Core.WHNF
-import Idris.Core.Constraints
-
+import Idris.Coverage
+import Idris.Delaborate
+import Idris.Docs
+import Idris.Docstrings (overview, renderDocTerm, renderDocstring)
+import Idris.Elab.Clause
+import Idris.Elab.Term
+import Idris.Elab.Value
+import Idris.ElabDecls
+import Idris.Error
+import Idris.ErrReverse
+import Idris.Help
+import Idris.IBC
+import qualified Idris.IdeMode as IdeMode
+import Idris.IdrisDoc
+import Idris.Info
+import Idris.Inliner
+import Idris.Interactive
+import Idris.ModeCommon
+import Idris.Output
+import Idris.Parser hiding (indent)
+import Idris.Prover
+import Idris.REPL.Browse (namesInNS, namespacesInNS)
+import Idris.REPL.Commands
+import Idris.REPL.Parser
+import Idris.Termination
+import Idris.TypeSearch (searchByType)
+import Idris.WhoCalls
 import IRTS.Compiler
-
-import Control.Category
-import qualified Control.Exception as X
-import Prelude hiding ((<$>), (.), id)
-import Data.List.Split (splitOn)
-import qualified Data.Text as T
-
-import Text.Trifecta.Result(Result(..), ErrInfo(..))
-
-import System.Console.Haskeline as H
-import System.FilePath
-  ( (</>)
-  , (<.>)
-  , splitExtension
-  , addExtension
-  , dropExtension
-  , takeExtension
-  , takeDirectory
-  )
-import System.Exit
-import System.Environment
-import System.Process
-import System.Directory
-import System.IO
-import Control.Monad
-import Control.Monad.Trans.Except (ExceptT, runExceptT)
-import Control.Monad.Trans.State.Strict ( StateT, execStateT, evalStateT, get, put )
-import Control.Monad.Trans ( lift )
-import Control.Concurrent.MVar
 import Network
-import Control.Concurrent
-import Data.Maybe
-import Data.List hiding (group)
-import Data.Char
-import qualified Data.Set as S
-import Data.Version
-import Data.Either (partitionEithers)
-import Control.DeepSeq
-
-import Control.Concurrent.Async (race)
-import System.FSNotify (withManager, watchDir)
+import Prelude hiding (id, (.), (<$>))
+import System.Console.Haskeline as H
+import System.Directory
+import System.Environment
+import System.Exit
+import System.FilePath (addExtension, dropExtension, splitExtension,
+                        takeDirectory, takeExtension, (<.>), (</>))
+import System.FSNotify (watchDir, withManager)
 import System.FSNotify.Devel (allEvents, doAllEvents)
-
-
+import System.IO
+import System.Process
+import Text.Trifecta.Result (ErrInfo(..), Result(..))
+import Util.DynamicLinker
+import Util.Net (listenOnLocalhost, listenOnLocalhostAnyPort)
+import Util.Pretty hiding ((</>))
+import Util.System
+import Version_idris (gitHash)
 
 -- | Run the REPL
 repl :: IState -- ^ The initial state
@@ -206,7 +189,7 @@ processNetCmd orig i h fn cmd
            setErrContext True
            setOutH h
            setQuiet True
-           setVerbose False
+           setVerbose 0
            mods <- loadInputs [f] toline
            ist <- getIState
            return (ist, f)
@@ -408,10 +391,15 @@ runIdeModeCommand h id orig fn mods (IdeMode.SetOpt IdeMode.ErrContext b) =
      runIO . hPutStrLn h $ IdeMode.convSExp "return" msg id
 runIdeModeCommand h id orig fn mods (IdeMode.Metavariables cols) =
   do ist <- getIState
-     let mvs = reverse $ map fst (idris_metavars ist) \\ primDefs
+     let mvs = reverse $ [ (n, i)
+                         | (n, (_, i, _, _, _)) <- idris_metavars ist
+                         , not (n `elem` primDefs)
+                         ]
      let ppo = ppOptionIst ist
      -- splitMvs is a list of pairs of names and their split types
-     let splitMvs = mapSnd (splitPi ist) (mvTys ist mvs)
+     let splitMvs = [ (n, (premises, concl, tm))
+                    | (n, i, ty) <- mvTys ist mvs
+                    , let (premises, concl, tm) = splitPi ist i ty]
      -- mvOutput is the pretty-printed version ready for conversion to SExpr
      let mvOutput = map (\(n, (hs, c)) -> (n, hs, c)) $
                     mapPair show
@@ -425,20 +413,24 @@ runIdeModeCommand h id orig fn mods (IdeMode.Metavariables cols) =
      runIO . hPutStrLn h $
        IdeMode.convSExp "return" (IdeMode.SymbolAtom "ok", mvOutput) id
   where mapPair f g xs = zip (map (f . fst) xs) (map (g . snd) xs)
-        mapSnd f xs = zip (map fst xs) (map (f . snd) xs)
+        firstOfThree (x, y, z) = x
+        mapThird f xs = map (\(x, y, z) -> (x, y, f z)) xs
 
         -- | Split a function type into a pair of premises, conclusion.
         -- Each maintains both the original and delaborated versions.
-        splitPi :: IState -> Type -> ([(Name, Type, PTerm)], Type, PTerm)
-        splitPi ist (Bind n (Pi _ t _) rest) =
-          let (hs, c, pc) = splitPi ist rest in
+        splitPi :: IState -> Int -> Type -> ([(Name, Type, PTerm)], Type, PTerm)
+        splitPi ist i (Bind n (Pi _ _ t _) rest) | i > 0 =
+          let (hs, c, pc) = splitPi ist (i - 1) rest in
             ((n, t, delabTy' ist [] t False False True):hs,
              c, delabTy' ist [] c False False True)
-        splitPi ist tm = ([], tm, delabTy' ist [] tm False False True)
+        splitPi ist i tm = ([], tm, delabTy' ist [] tm False False True)
 
         -- | Get the types of a list of metavariable names
-        mvTys :: IState -> [Name] -> [(Name, Type)]
-        mvTys ist = mapSnd vToP . mapMaybe (flip lookupTyNameExact (tt_ctxt ist))
+        mvTys :: IState -> [(Name, Int)] -> [(Name, Int, Type)]
+        mvTys ist mvs = [ (n, i, ty)
+                        | (n, i) <- mvs
+                        , ty <- maybeToList (fmap (vToP . snd) (lookupTyNameExact n (tt_ctxt ist)))
+                        ]
 
         -- | Show a type and its corresponding PTerm in a format suitable
         -- for the IDE - that is, pretty-printed and annotated.
@@ -598,6 +590,8 @@ splitName s = case reverse $ splitOn "." s of
 idemodeProcess :: FilePath -> Command -> Idris ()
 idemodeProcess fn Warranty = process fn Warranty
 idemodeProcess fn Help = process fn Help
+idemodeProcess fn (RunShellCommand cmd) =
+  iPrintError ":! is not currently supported in IDE mode."
 idemodeProcess fn (ChangeDirectory f) =
   do process fn (ChangeDirectory f)
      dir <- runIO $ getCurrentDirectory
@@ -825,6 +819,7 @@ insertScript prf (x : xs) = x : insertScript prf xs
 process :: FilePath -> Command -> Idris ()
 process fn Help = iPrintResult displayHelp
 process fn Warranty = iPrintResult warranty
+process fn (RunShellCommand cmd) = runIO $ system cmd >> return ()
 process fn (ChangeDirectory f)
                  = do runIO $ setCurrentDirectory f
                       return ()
@@ -1227,8 +1222,10 @@ process fn (WHNF t)
                     = do (tm, ty) <- elabVal (recinfo (fileFC "toplevel")) ERHS t
                          ctxt <- getContext
                          ist <- getIState
-                         let tm' = whnf ctxt tm
-                         iPrintResult (show (delab ist tm'))
+                         let tm' = whnf ctxt [] tm
+                         let tmArgs' = whnfArgs ctxt [] tm
+                         iPrintResult $ "WHNF: " ++ (show (delab ist tm'))
+                         iPrintResult $ "WHNF args: " ++ (show (delab ist tmArgs'))
 process fn (TestInline t)
                            = do (tm, ty) <- elabVal (recinfo (fileFC "toplevel")) ERHS t
                                 ctxt <- getContext
@@ -1283,7 +1280,7 @@ process fn (Missing n)
          case lookupCtxt n (idris_patdefs i) of
            [] -> iPrintError $ "Unknown name " ++ show n
            [(_, tms)] ->
-             iRenderResult (vsep (map (pprintPTerm ppOpts {ppopt_impl = True}
+             iRenderResult (vsep (map (pprintPTerm ppOpts
                                                    []
                                                    []
                                                    (idris_infixes i))
@@ -1458,7 +1455,6 @@ process fn (PPrint fmt width t)
             ty' = normaliseC ctxt [] ty
         iPrintResult =<< renderExternal fmt width (pprintDelab ist tm)
 
-
 showTotal :: Totality -> IState -> Doc OutputAnnotation
 showTotal t@(Partial (Other ns)) i
    = text "possibly not total due to:" <$>
@@ -1527,7 +1523,7 @@ pprintDef asCore n =
         ppMissing _ = empty
 
         ppTy :: Bool -> IState -> (Name, TypeInfo) -> Doc OutputAnnotation
-        ppTy amb ist (n, TI constructors isCodata _ _ _)
+        ppTy amb ist (n, TI constructors isCodata _ _ _ _)
           = kwd key <+> prettyName True amb [] n <+> colon <+>
             align (pprintDelabTy ist n) <+> kwd "where" <$>
             indent 2 (vsep (map (ppCon False ist) constructors))
@@ -1548,4 +1544,3 @@ replSettings :: Maybe FilePath -> Settings Idris
 replSettings hFile = setComplete replCompletion $ defaultSettings {
                        historyFile = hFile
                      }
-

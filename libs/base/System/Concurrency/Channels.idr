@@ -16,10 +16,13 @@ data PID : Type where
      MkPID : (pid : Ptr) -> PID
 
 ||| Spawn a process in a new thread, returning the process ID
+||| Returns `Nothing` if there are not enough resources to create the new thread
 export
-spawn : (process : IO ()) -> IO PID
+spawn : (process : IO ()) -> IO (Maybe PID)
 spawn proc = do pid <- fork proc
-                pure (MkPID pid)
+                if !(nullPtr pid)
+                   then pure Nothing
+                   else pure (Just (MkPID pid))
 
 ||| Create a channel which connects this process to another process
 export
@@ -61,3 +64,7 @@ export
 unsafeRecv : (expected : Type) -> Channel -> IO (Maybe expected)
 unsafeRecv a (MkConc pid ch_id) = getMsgFrom {a} pid ch_id
 
+||| Exit the thread immediately
+export
+stopThread : IO a
+stopThread = Raw.stopThread 

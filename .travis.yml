@@ -8,12 +8,12 @@ env:
 
 matrix:
   include:
+    - env: CABALVER="1.24" GHCVER="8.0.1" STACKVER="7.14" STYLISH=YES
+      addons: {apt: {packages: [cabal-install-1.24,ghc-8.0.1,hscolour], sources: [hvr-ghc]}}
     - os: osx
       env: CABALVER="1.24" GHCVER="8.0.1" TESTS="test_c"
       compiler: ": #GHC 8.0.1"
     - env: CABALVER="1.20" GHCVER="7.6.3" TESTS="test_c"
-      # separate caches for different compiler versions
-      # until https://github.com/travis-ci/travis-ci/issues/4393 is resolved
       compiler: ": #GHC 7.6.3"
       addons: {apt: {packages: [cabal-install-1.20,ghc-7.6.3,cppcheck,hscolour], sources: [hvr-ghc]}}
     - env: CABALVER="1.20" GHCVER="7.8.4" TESTS="test_c"
@@ -37,11 +37,17 @@ matrix:
     - env: CABALVER="1.24" GHCVER="8.0.1" TESTS="test_c"
       compiler: ": #GHC 8.0.1"
       addons: {apt: {packages: [cabal-install-1.24,ghc-8.0.1,cppcheck,hscolour], sources: [hvr-ghc]}}
+  allow_failures:
+    - os: osx
+      env: CABALVER="1.24" GHCVER="8.0.1" TESTS="test_c"
+      compiler: ": #GHC 8.0.1"
+  fast-finish: true
 
 cache:
   directories:
     - $HOME/.cabsnap
     - $HOME/.cabal/packages
+    - $HOME/.stack
 
 before_cache:
   - rm -fv $HOME/.cabal/packages/hackage.haskell.org/build-reports.log
@@ -58,16 +64,18 @@ before_install:
   - env
   - if [[ $TRAVIS_OS_NAME == 'osx' ]];
     then
-        brew update; brew install ghc; brew install cabal-install;
-        brew install libffi; brew install pkg-config; brew install cppcheck;
-        brew install gnu-sed;
+        brew outdated pkgconfig || brew install pkgconfig;
+        brew install ghc cabal-install libffi cppcheck gnu-sed;
         export PATH=$HOME/.cabal/bin:$PATH;
         export SED=gsed;
         export ZCAT=gzcat;
         export PKG_CONFIG_PATH=/usr/local/opt/libffi/lib/pkgconfig:$PKG_CONFIG_PATH;
     fi
+  - if [ -n "$STYLISH" ]; then ./stylize.sh; exit $?; fi
 
 install:
+  - which cabal
+  - which ghc
   - cabal --version
   - echo "$(ghc --version) [$(ghc --print-project-git-commit-id 2> /dev/null || echo '?')]"
   - if [ -f $HOME/.cabal/packages/hackage.haskell.org/00-index.tar.gz ];

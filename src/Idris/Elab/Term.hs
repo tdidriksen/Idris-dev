@@ -11,26 +11,27 @@ module Idris.Elab.Term where
 
 import Idris.AbsSyntax
 import Idris.AbsSyntaxTree
-import Idris.DSL
-import Idris.Delaborate
-import Idris.Error
-import Idris.ProofSearch
-import Idris.Output (pshow)
-
 import Idris.Core.CaseTree (SC, SC'(STerm), findCalls, findUsedArgs)
 import Idris.Core.Elaborate hiding (Tactic(..))
-import Idris.Core.TT
 import Idris.Core.Evaluate
-import Idris.Core.Unify
 import Idris.Core.ProofTerm (getProofTerm)
-import Idris.Core.Typecheck (check, recheck, converts, isType)
-import Idris.Core.WHNF (whnf)
-import Idris.Coverage (buildSCG, checkDeclTotality, checkPositive, genClauses, recoverableCoverage, validCoverageCase)
-import Idris.ErrReverse (errReverse)
+import Idris.Core.TT
+import Idris.Core.Typecheck (check, converts, isType, recheck)
+import Idris.Core.Unify
+import Idris.Core.WHNF (whnf, whnfArgs)
+import Idris.Coverage (genClauses, recoverableCoverage, validCoverageCase)
+import Idris.Delaborate
+import Idris.DSL
 import Idris.Elab.Quasiquote (extractUnquotes)
-import Idris.Elab.Utils
 import Idris.Elab.Rewrite
+import Idris.Elab.Utils
+import Idris.Error
+import Idris.ErrReverse (errReverse)
+import Idris.Output (pshow)
+import Idris.ProofSearch
 import Idris.Reflection
+import Idris.Termination (buildSCG, checkDeclTotality, checkPositive)
+
 import qualified Util.Pretty as U
 
 import Control.Applicative ((<$>))
@@ -39,13 +40,12 @@ import Control.Monad.State.Strict
 import Data.Foldable (for_)
 import Data.List
 import qualified Data.Map as M
-import Data.Maybe (mapMaybe, fromMaybe, catMaybes, maybeToList)
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe, maybeToList)
 import qualified Data.Set as S
 import qualified Data.Text as T
-
 import Debug.Trace
 
-data ElabMode = ETyDecl | ETransLHS | ELHS | ERHS
+data ElabMode = ETyDecl | ETransLHS | ELHS | EImpossible | ERHS
   deriving Eq
 
 
@@ -143,7 +143,7 @@ build ist info emode opts fn tm
          if log /= ""
             then trace log $ return (ElabResult tm ds (map snd is) ctxt impls highlights g_nextname)
             else return (ElabResult tm ds (map snd is) ctxt impls highlights g_nextname)
-  where pattern = emode == ELHS
+  where pattern = emode == ELHS || emode == EImpossible
         tydecl = emode == ETyDecl
 
         mkPat = do hs <- get_holes
@@ -189,7 +189,7 @@ buildTC ist info emode opts fn ns tm
          if (log /= "")
             then trace log $ return (ElabResult tm ds (map snd is) ctxt impls highlights g_nextname)
             else return (ElabResult tm ds (map snd is) ctxt impls highlights g_nextname)
-  where pattern = emode == ELHS
+  where pattern = emode == ELHS || emode == EImpossible
 
 -- | return whether arguments of the given constructor name can be
 -- matched on. If they're polymorphic, no, unless the type has beed
@@ -201,7 +201,7 @@ getUnmatchable ctxt n | isDConName n ctxt && n /= inferCon
           Nothing -> []
           Just ty -> checkArgs [] [] ty
   where checkArgs :: [Name] -> [[Name]] -> Type -> [Bool]
-        checkArgs env ns (Bind n (Pi _ t _) sc)
+        checkArgs env ns (Bind n (Pi _ _ t _) sc)
             = let env' = case t of
                               TType _ -> n : env
                               _ -> env in
@@ -227,7 +227,7 @@ goal_polymorphic =
    do ty <- goal
       case ty of
            P _ n _ -> do env <- get_env
-                         case lookup n env of
+                         case lookupBinder n env of
                               Nothing -> return False
                               _ -> return True
            _ -> return False
@@ -245,23 +245,30 @@ elab :: IState
 elab ist info emode opts fn tm
     = do let loglvl = opt_logLevel (idris_options ist)
          when (loglvl > 5) $ unifyLog True
-         compute -- expand type synonyms, etc
+         whnf_compute_args -- expand type synonyms, etc
          let fc = maybe "(unknown)"
          elabE initElabCtxt (elabFC info) tm -- (in argument, guarded, in type, in qquote)
          est <- getAux
          sequence_ (get_delayed_elab est)
          end_unify
+         when (pattern || intransform) $
+              -- convert remaining holes to pattern vars
+              do unify_all
+                 matchProblems False -- only the ones we matched earlier
+                 unifyProblems
+                 mkPat
+                 update_term liftPats
          ptm <- get_term
-         when (pattern || intransform) -- convert remaining holes to pattern vars
-              (do unify_all
-                  matchProblems False -- only the ones we matched earlier
-                  unifyProblems
-                  mkPat
-                  update_term liftPats)
+         when pattern $
+              -- Look for Rig1 (linear) pattern bindings
+              do let pnms = findLinear ist [] ptm
+                 update_term (setLinear pnms)
   where
-    pattern = emode == ELHS
+    pattern = emode == ELHS || emode == EImpossible
+    eimpossible = emode == EImpossible
     intransform = emode == ETransLHS
     bindfree = emode == ETyDecl || emode == ELHS || emode == ETransLHS
+               || emode == EImpossible
     autoimpls = opt_autoimpls (idris_options ist)
 
     get_delayed_elab est =
@@ -293,7 +300,7 @@ elab ist info emode opts fn tm
 
     -- | elabE elaborates an expression, possibly wrapping implicit coercions
     -- and forces/delays.  If you make a recursive call in elab', it is
-    -- normally correct to call elabE - the ones that don't are desugarings
+    -- normally correct to call elabE - the ones that don't are `desugarings
     -- typically
     elabE :: ElabCtxt -> Maybe FC -> PTerm -> ElabD ()
     elabE ina fc' t =
@@ -332,13 +339,13 @@ elab ist info emode opts fn tm
                               pexp ct]))
 
     forceErr orig env (CantUnify _ (t,_) (t',_) _ _ _)
-       | (P _ (UN ht) _, _) <- unApply (normalise (tt_ctxt ist) env t),
+       | (P _ (UN ht) _, _) <- unApply (whnf (tt_ctxt ist) env t),
             ht == txt "Delayed" = notDelay orig
     forceErr orig env (CantUnify _ (t,_) (t',_) _ _ _)
-       | (P _ (UN ht) _, _) <- unApply (normalise (tt_ctxt ist) env t'),
+       | (P _ (UN ht) _, _) <- unApply (whnf (tt_ctxt ist) env t'),
             ht == txt "Delayed" = notDelay orig
     forceErr orig env (InfiniteUnify _ t _)
-       | (P _ (UN ht) _, _) <- unApply (normalise (tt_ctxt ist) env t),
+       | (P _ (UN ht) _, _) <- unApply (whnf (tt_ctxt ist) env t),
             ht == txt "Delayed" = notDelay orig
     forceErr orig env (Elaborating _ _ _ t) = forceErr orig env t
     forceErr orig env (ElaboratingArg _ _ _ t) = forceErr orig env t
@@ -349,7 +356,7 @@ elab ist info emode opts fn tm
     notDelay _ = True
 
     local f = do e <- get_env
-                 return (f `elem` map fst e)
+                 return (f `elem` map fstEnv e)
 
     -- | Is a constant a type?
     constType :: Const -> Bool
@@ -370,7 +377,10 @@ elab ist info emode opts fn tm
          solve
          highlightSource fc' (AnnType "Type" "The type of types")
     elab' ina fc (PUniverse fc' u)   =
-      do apply (RUType u) []
+      do unless (UniquenessTypes `elem` idris_language_extensions ist
+                  || e_qq ina) $
+           lift $ tfail $ At fc' (Msg "You must turn on the UniquenessTypes extension to use UniqueType or AnyType")
+         apply (RUType u) []
          solve
          highlightSource fc' (AnnType (show u) "The type of unique types")
 --  elab' (_,_,inty) (PConstant c)
@@ -387,7 +397,7 @@ elab ist info emode opts fn tm
                           highlightSource fc' (AnnConst c)
     elab' ina fc (PQuote r)     = do fill r; solve
     elab' ina _ (PTrue fc _)   =
-       do hnf_compute
+       do whnf_compute
           g <- goal
           case g of
             TType _ -> elab' ina (Just fc) (PRef fc [] unitTy)
@@ -421,7 +431,7 @@ elab ist info emode opts fn tm
                     pexp l, pexp r]))
 
     elab' ina _ (PPair fc hls _ l r)
-        = do hnf_compute
+        = do whnf_compute
              g <- goal
              let (tc, _) = unApply g
              case g of
@@ -444,7 +454,7 @@ elab ist info emode opts fn tm
                 IsType -> asType
                 IsTerm -> asValue
                 TypeOrTerm ->
-                   do hnf_compute
+                   do whnf_compute
                       g <- goal
                       case g of
                          TType _ -> asType
@@ -498,11 +508,13 @@ elab ist info emode opts fn tm
               showHd x = getNameFrom (sMN 0 "_") -- We probably should do something better than this here
 
               doPrune as =
-                  do compute
+                  do compute -- to get 'Delayed' if it's there
                      ty <- goal
-                     let (tc, _) = unApply (unDelay ty)
+                     ctxt <- get_context
                      env <- get_env
-                     return $ pruneByType env tc (unDelay ty) ist as
+                     let ty' = unDelay ty
+                     let (tc, _) = unApply ty'
+                     return $ pruneByType eimpossible env tc ty' ist as
 
               unDelay t | (P _ (UN l) _, [_, arg]) <- unApply t,
                           l == txt "Delayed" = unDelay arg
@@ -532,7 +544,7 @@ elab ist info emode opts fn tm
                          (trySeq' deferr xs) True
     elab' ina fc (PAlternative ms TryImplicit (orig : alts)) = do
         env <- get_env
-        compute
+        whnf_compute
         ty <- goal
         let doelab = elab' ina fc orig
         tryCatch doelab
@@ -564,7 +576,7 @@ elab ist info emode opts fn tm
         recoverableErr _ = True
 
         pruneAlts (CantUnify _ (inc, _) (outc, _) _ _ _) alts env
-            = case unApply (normalise (tt_ctxt ist) env inc) of
+            = case unApply (whnf (tt_ctxt ist) env inc) of
                    (P (TCon _ _) n _, _) -> filter (hasArg n env) alts
                    (Constant _, _) -> alts
                    _ -> filter isLend alts -- special case hack for 'Borrowed'
@@ -656,7 +668,7 @@ elab ist info emode opts fn tm
                do fty <- get_type (Var n) -- check for implicits
                   ctxt <- get_context
                   env <- get_env
-                  let a' = insertScopedImps fc (normalise ctxt env fty) []
+                  let a' = insertScopedImps fc (whnfArgs ctxt env fty) []
                   if null a'
                      then erun fc $
                             do apply (Var n) []
@@ -698,19 +710,30 @@ elab ist info emode opts fn tm
                solve
                highlightSource nfc (AnnBoundName n False)
     elab' ina fc (PPi p n nfc Placeholder sc)
-          = do attack; arg n (is_scoped p) (sMN 0 "ty")
+          = do attack;
+               case pcount p of
+                    RigW -> return ()
+                    _ -> unless (LinearTypes `elem` idris_language_extensions ist
+                                       || e_qq ina) $
+                           lift $ tfail $ At nfc (Msg "You must turn on the LinearTypes extension to use a count")
+               arg n (pcount p) (is_scoped p) (sMN 0 "phTy")
                addAutoBind p n
                addPSname n -- okay for proof search
                elabE (ina { e_inarg = True, e_intype = True }) fc sc
                solve
                highlightSource nfc (AnnBoundName n False)
     elab' ina fc (PPi p n nfc ty sc)
-          = do attack; tyn <- getNameFrom (sMN 0 "ty")
+          = do attack; tyn <- getNameFrom (sMN 0 "piTy")
                claim tyn RType
                n' <- case n of
                         MN _ _ -> unique_hole n
                         _ -> return n
-               forall n' (is_scoped p) (Var tyn)
+               case pcount p of
+                    RigW -> return ()
+                    _ -> unless (LinearTypes `elem` idris_language_extensions ist
+                                       || e_qq ina) $
+                           lift $ tfail $ At nfc (Msg "You must turn on the LinearTypes extension to use a linear argument")
+               forall n' (pcount p) (is_scoped p) (Var tyn)
                addAutoBind p n'
                addPSname n' -- okay for proof search
                focus tyn
@@ -753,7 +776,7 @@ elab ist info emode opts fn tm
                          (ivs' \\ ivs)
                -- HACK: If the name leaks into its type, it may leak out of
                -- scope outside, so substitute in the outer scope.
-               expandLet n (case lookup n env of
+               expandLet n (case lookupBinder n env of
                                  Just (Let t v) -> v
                                  other -> error ("Value not a let binding: " ++ show other))
                solve
@@ -803,10 +826,10 @@ elab ist info emode opts fn tm
                                        ans <- claimArgTys env xs
                                        return ((aval, (True, (Var an))) : ans)
              fnTy [] ret  = forget ret
-             fnTy ((x, (_, xt)) : xs) ret = RBind x (Pi Nothing xt RType) (fnTy xs ret)
+             fnTy ((x, (_, xt)) : xs) ret = RBind x (Pi RigW Nothing xt RType) (fnTy xs ret)
 
              localVar env (PRef _ _ x)
-                           = case lookup x env of
+                           = case lookupBinder x env of
                                   Just _ -> Just x
                                   _ -> Nothing
              localVar env _ = Nothing
@@ -840,7 +863,7 @@ elab ist info emode opts fn tm
             let dataCon = isDConName f ctxt
             annot <- findHighlight f
             mapM_ checkKnownImplicit args_in
-            let args = insertScopedImps fc (normalise ctxt env fty) args_in
+            let args = insertScopedImps fc (whnfArgs ctxt env fty) args_in
             let unmatchableArgs = if pattern
                                      then getUnmatchable (tt_ctxt ist) f
                                      else []
@@ -849,7 +872,7 @@ elab ist info emode opts fn tm
                           && isTConName f (tt_ctxt ist)) $
               lift $ tfail $ Msg ("No explicit types on left hand side: " ++ show tm)
 --             trace (show (f, args_in, args)) $
-            if (f `elem` map fst env && length args == 1 && length args_in == 1)
+            if (f `elem` map fstEnv env && length args == 1 && length args_in == 1)
                then -- simple app, as below
                     do simple_app False
                                   (elabE (ina { e_isfn = True }) (Just fc) (PRef ffc hls f))
@@ -878,7 +901,7 @@ elab ist info emode opts fn tm
                     ns <- apply (Var f) (map isph args)
 --                    trace ("ns is " ++ show ns) $ return ()
                     -- mark any interface arguments as injective
---                     when (not pattern) $ 
+--                     when (not pattern) $
                     mapM_ checkIfInjective (map snd ns)
                     unifyProblems -- try again with the new information,
                                   -- to help with disambiguation
@@ -897,12 +920,12 @@ elab ist info emode opts fn tm
                     imp <- if (e_isfn ina) then
                               do guess <- get_guess
                                  env <- get_env
-                                 case safeForgetEnv (map fst env) guess of
+                                 case safeForgetEnv (map fstEnv env) guess of
                                       Nothing ->
                                          return []
                                       Just rguess -> do
                                          gty <- get_type rguess
-                                         let ty_n = normalise ctxt env gty
+                                         let ty_n = whnf ctxt env gty
                                          return $ getReqImps ty_n
                               else return []
                     -- Now we find out how many implicits we needed at the
@@ -916,7 +939,7 @@ elab ist info emode opts fn tm
                                  ivs' <- get_implementations
                                  -- Attempt to resolve any interfaces which have 'complete' types,
                                  -- i.e. no holes in them
-                                 when (not pattern || (e_inarg ina && not tcgen)) $ 
+                                 when (not pattern || (e_inarg ina && not tcgen)) $
                                     mapM_ (\n -> do focus n
                                                     g <- goal
                                                     env <- get_env
@@ -950,16 +973,16 @@ elab ist info emode opts fn tm
                     = lift $ tfail $ UnknownImplicit (pname imp) f
             checkKnownImplicit _ = return ()
 
-            getReqImps (Bind x (Pi (Just i) ty _) sc)
+            getReqImps (Bind x (Pi _ (Just i) ty _) sc)
                  = i : getReqImps sc
             getReqImps _ = []
 
             checkIfInjective n = do
                 env <- get_env
-                case lookup n env of
+                case lookupBinder n env of
                      Nothing -> return ()
                      Just b ->
-                       case unApply (normalise (tt_ctxt ist) env (binderTy b)) of
+                       case unApply (whnf (tt_ctxt ist) env (binderTy b)) of
                             (P _ c _, args) ->
                                 case lookupCtxtExact c (idris_interfaces ist) of
                                    Nothing -> return ()
@@ -969,7 +992,7 @@ elab ist info emode opts fn tm
                                            ulog <- getUnifyLog
                                            probs <- get_probs
                                            inj <- get_inj
-                                           traceWhen ulog ("Injective now " ++ show args ++ "\nAll: " ++ show inj 
+                                           traceWhen ulog ("Injective now " ++ show args ++ "\nAll: " ++ show inj
                                                             ++ "\nProblems: " ++ qshow probs) $
                                              unifyProblems
                                            probs <- get_probs
@@ -1032,6 +1055,9 @@ elab ist info emode opts fn tm
     elab' ina fc (PElabError e) = lift $ tfail e
     elab' ina mfc (PRewrite fc substfn rule sc newg)
         = elabRewrite (elab' ina mfc) ist fc substfn rule sc newg
+    -- A common error case if trying to typecheck an autogenerated case block
+    elab' ina _ c@(PCase fc Placeholder opts)
+        = lift $ tfail (Msg "No expression for the case to inspect.\nYou need to replace the _ with an expression.")
     elab' ina _ c@(PCase fc scr opts)
         = do attack
 
@@ -1069,13 +1095,13 @@ elab ist info emode opts fn tm
              -- unnecessarily (can only do this for unique things, since we
              -- assume they don't appear implicitly in types)
              ptm <- get_term
-             let inOpts = (filter (/= scvn) (map fst args)) \\ (concatMap (\x -> allNamesIn (snd x)) opts)
+             let inOpts = (filter (/= scvn) (map fstEnv args)) \\ (concatMap (\x -> allNamesIn (snd x)) opts)
 
-             let argsDropped = filter (isUnique envU)
+             let argsDropped = filter (\t -> isUnique envU t || isNotLift args t)
                                    (nub $ allNamesIn scr ++ inApp ptm ++
                                     inOpts)
 
-             let args' = filter (\(n, _) -> n `notElem` argsDropped) args
+             let args' = filter (\(n, _, _) -> n `notElem` argsDropped) args
 
              attack
              cname' <- defer argsDropped (mkN (mkCaseName fc fn))
@@ -1126,8 +1152,8 @@ elab ist info emode opts fn tm
                                      Just u -> u
                                      _ -> False
 
-              getKind env (n, _)
-                  = case lookup n env of
+              getKind env (n, _, _)
+                  = case lookupBinder n env of
                          Nothing -> return (n, False) -- can't happen, actually...
                          Just b ->
                             do ty <- get_type (forget (binderTy b))
@@ -1141,6 +1167,14 @@ elab ist info emode opts fn tm
                          [_] -> True
                          _ -> False
               tcName _ = False
+
+              isNotLift env n
+                 = case lookupBinder n env of
+                        Just ty ->
+                             case unApply (binderTy ty) of
+                                  (P _ n _, _) -> n `elem` noCaseLift info
+                                  _ -> False
+                        _ -> False
 
               usedIn ns (n, b)
                  = n `elem` ns
@@ -1210,13 +1244,13 @@ elab ist info emode opts fn tm
              loadState
              updateAux (\aux -> aux { highlighting = hs })
 
-             let quoted = fmap (explicitNames . binderVal) $ lookup nTm env
+             let quoted = fmap (explicitNames . binderVal) $ lookupBinder nTm env
                  isRaw = case unApply (normaliseAll ctxt env finalTy) of
                            (P _ n _, []) | n == reflm "Raw" -> True
                            _ -> False
              case quoted of
                Just q -> do ctxt <- get_context
-                            (q', _, _) <- lift $ recheck (constraintNS info) ctxt [(uq, Lam Erased) | uq <- unquoteNames] (forget q) q
+                            (q', _, _) <- lift $ recheck (constraintNS info) ctxt [(uq, RigW, Lam RigW Erased) | uq <- unquoteNames] (forget q) q
                             if pattern
                               then if isRaw
                                       then reflectRawQuotePattern unquoteNames (forget q')
@@ -1245,7 +1279,7 @@ elab ist info emode opts fn tm
     elab' ina fc (PQuoteName n True nfc) =
       do ctxt <- get_context
          env <- get_env
-         case lookup n env of
+         case lookupBinder n env of
            Just _ -> do fill $ reflectName n
                         solve
                         highlightSource nfc (AnnBoundName n False)
@@ -1274,7 +1308,9 @@ elab ist info emode opts fn tm
                                    dotterm
                                    elab' ina fc t
     elab' ina fc (PRunElab fc' tm ns) =
-      do attack
+      do unless (ElabReflection `elem` idris_language_extensions ist) $
+           lift $ tfail $ At fc' (Msg "You must turn on the ElabReflection extension to use %runElab")
+         attack
          n <- getNameFrom (sMN 0 "tacticScript")
          let scriptTy = RApp (Var (sNS (sUN "Elab")
                                   ["Elab", "Reflection", "Language"]))
@@ -1312,7 +1348,7 @@ elab ist info emode opts fn tm
          env <- get_env
          ctxt <- get_context
          let v = fmap (normaliseAll ctxt env . finalise . binderVal)
-                      (lookup n env)
+                      (lookupBinder n env)
          loadState -- we have the highlighting - re-elaborate the value
          elab' ina fc tm
          case v of
@@ -1335,9 +1371,9 @@ elab ist info emode opts fn tm
     delayElab pri t
        = updateAux (\e -> e { delayed_elab = delayed_elab e ++ [(pri, t)] })
 
-    isScr :: PTerm -> (Name, Binder Term) -> (Name, (Bool, Binder Term))
-    isScr (PRef _ _ n) (n', b) = (n', (n == n', b))
-    isScr _ (n', b) = (n', (False, b))
+    isScr :: PTerm -> (Name, RigCount, Binder Term) -> (Name, (Bool, Binder Term))
+    isScr (PRef _ _ n) (n', _, b) = (n', (n == n', b))
+    isScr _ (n', _, b) = (n', (False, b))
 
     caseBlock :: FC -> Name
                  -> PTerm -- original scrutinee
@@ -1421,7 +1457,7 @@ elab ist info emode opts fn tm
     insertLazy ina t@(PApp _ (PRef _ _ (UN l)) _) | l == txt "Delay" = return t
     insertLazy ina t@(PApp _ (PRef _ _ (UN l)) _) | l == txt "Force" = return t
     insertLazy ina (PCoerced t) = return t
-    -- Don't add a delay to top level pattern variables, since they 
+    -- Don't add a delay to top level pattern variables, since they
     -- can be forced on the rhs if needed
     insertLazy ina t@(PPatvar _ _) | pattern && not (e_guarded ina) = return t
     insertLazy ina t =
@@ -1437,8 +1473,8 @@ elab ist info emode opts fn tm
         mkDelay env (PAlternative ms b xs) = PAlternative ms b (map (mkDelay env) xs)
         mkDelay env t
             = let fc = fileFC "Delay" in
-                  addImplBound ist (map fst env) (PApp fc (PRef fc [] (sUN "Delay"))
-                                                 [pexp t])
+                  addImplBound ist (map fstEnv env) (PApp fc (PRef fc [] (sUN "Delay"))
+                                                    [pexp t])
 
 
     -- Don't put implicit coercions around applications which are marked
@@ -1463,7 +1499,7 @@ elab ist info emode opts fn tm
        case fullApp tm of
             -- if f is global, leave it alone because we've already
             -- expanded it to the right arity
-            PApp fc ftm@(PRef _ _ f) args | Just aty <- lookup f env ->
+            PApp fc ftm@(PRef _ _ f) args | Just aty <- lookupBinder f env ->
                do let a = length (getArgTys (normalise (tt_ctxt ist) env (binderTy aty)))
                   return (mkPApp fc a ftm args)
             _ -> return tm
@@ -1472,12 +1508,12 @@ elab ist info emode opts fn tm
     fullApp (PApp _ (PApp fc f args) xs) = fullApp (PApp fc f (args ++ xs))
     fullApp x = x
 
-    insertScopedImps fc (Bind n (Pi im@(Just i) _ _) sc) xs
+    insertScopedImps fc (Bind n (Pi _ im@(Just i) _ _) sc) xs
       | tcimplementation i && not (toplevel_imp i)
           = pimp n (PResolveTC fc) True : insertScopedImps fc sc xs
       | not (toplevel_imp i)
           = pimp n Placeholder True : insertScopedImps fc sc xs
-    insertScopedImps fc (Bind n (Pi _ _ _) sc) (x : xs)
+    insertScopedImps fc (Bind n (Pi _ _ _ _) sc) (x : xs)
         = x : insertScopedImps fc sc xs
     insertScopedImps _ _ xs = xs
 
@@ -1488,7 +1524,7 @@ elab ist info emode opts fn tm
            addLam ty' t
       where
         -- just one level at a time
-        addLam (Bind n (Pi (Just _) _ _) sc) t =
+        addLam (Bind n (Pi _ (Just _) _ _) sc) t =
                  do impn <- unique_hole n -- (sMN 0 "scoped_imp")
                     if e_isfn ina -- apply to an implicit immediately
                        then return (PApp emptyFC
@@ -1516,7 +1552,7 @@ elab ist info emode opts fn tm
          mkCoerce env (PAlternative ms aty tms) n
              = PAlternative ms aty (map (\t -> mkCoerce env t n) tms)
          mkCoerce env t n = let fc = maybe (fileFC "Coercion") id (highestFC t) in
-                                addImplBound ist (map fst env)
+                                addImplBound ist (map fstEnv env)
                                   (PApp fc (PRef fc [] n) [pexp (PCoerced t)])
 
     -- | Elaborate the arguments to a function
@@ -1575,7 +1611,7 @@ elab ist info emode opts fn tm
       fail $ "Can't elaborate these args: " ++ show arg ++ " " ++ show hole
 
     addAutoBind :: Plicity -> Name -> ElabD ()
-    addAutoBind (Imp _ _ _ _ False) n
+    addAutoBind (Imp _ _ _ _ False _) n
          = updateAux (\est -> est { auto_binds = n : auto_binds est })
     addAutoBind _ _ = return ()
 
@@ -1625,17 +1661,17 @@ pruneAlt xs = map prune xs
 
 -- Rule out alternatives that don't return the same type as the head of the goal
 -- (If there are none left as a result, do nothing)
-pruneByType :: Env -> Term -> -- head of the goal
+pruneByType :: Bool -> Env -> Term -> -- head of the goal
                Type -> -- goal
                IState -> [PTerm] -> [PTerm]
 -- if an alternative has a locally bound name at the head, take it
-pruneByType env t goalty c as
+pruneByType imp env t goalty c as
    | Just a <- locallyBound as = [a]
   where
     locallyBound [] = Nothing
     locallyBound (t:ts)
        | Just n <- getName t,
-         n `elem` map fst env = Just t
+         n `elem` map fstEnv env = Just t
        | otherwise = locallyBound ts
     getName (PRef _ _ n) = Just n
     getName (PApp _ (PRef _ _ (UN l)) [_, _, arg]) -- ignore Delays
@@ -1645,7 +1681,7 @@ pruneByType env t goalty c as
     getName _ = Nothing
 
 -- 'n' is the name at the head of the goal type
-pruneByType env (P _ n _) goalty ist as
+pruneByType imp env (P _ n _) goalty ist as
 -- if the goal type is polymorphic, keep everything
    | Nothing <- lookupTyExact n ctxt = as
 -- if the goal type is a ?metavariable, keep everything
@@ -1677,12 +1713,13 @@ pruneByType env (P _ n _) goalty ist as
                Just ty -> case unApply (getRetTy ty) of
                             (P _ ctyn _, _) | isTConName ctyn ctxt && not (ctyn == f)
                                      -> False
-                            _ -> let ty' = normalise ctxt [] ty in
---                                    trace ("Trying " ++ show (getRetTy ty') ++ " for " ++ show goalty) $
+                            _ -> let ty' = whnf ctxt [] ty in
+--                                    trace ("Trying " ++ show f' ++ " : " ++ show (getRetTy ty') ++ " for " ++ show goalty
+--                                       ++ "\nMATCH: " ++ show (pat, matching (getRetTy ty') goalty)) $
                                      case unApply (getRetTy ty') of
                                           (V _, _) ->
                                               isPlausible ist var env n ty
-                                          _ -> matching (getRetTy ty') goalty
+                                          _ -> matchingTypes imp (getRetTy ty') goalty
                                                  || isCoercion (getRetTy ty') goalty
 -- May be useful to keep for debugging purposes for a bit:
 --                                                let res = matching (getRetTy ty') goalty in
@@ -1690,9 +1727,12 @@ pruneByType env (P _ n _) goalty ist as
 --                                                     ("Rejecting " ++ show (getRetTy ty', goalty)) res
                _ -> False
 
+    matchingTypes True = matchingHead
+    matchingTypes False = matching
+
     -- If the goal is a constructor, it must match the suggested function type
     matching (P _ ctyn _) (P _ n' _)
-         | isTConName n' ctxt = ctyn == n'
+         | isTConName n' ctxt && isTConName ctyn ctxt = ctyn == n'
          | otherwise = True
     -- Variables match anything
     matching (V _) _ = True
@@ -1703,13 +1743,27 @@ pruneByType env (P _ n _) goalty ist as
     matching (Bind n _ sc) _ = True
     matching _ (Bind n _ sc) = True
     -- If we hit a function name, it's a plausible match
-    matching (App _ (P _ f _) _) _ | not (isConName f ctxt) = True
-    matching _ (App _ (P _ f _) _) | not (isConName f ctxt) = True
-    -- Otherwise, match the rest of the structure
-    matching (App _ f a) (App _ f' a') = matching f f' && matching a a'
+    matching apl@(App _ _ _) apr@(App _ _ _)
+         | (P _ fl _, argsl) <- unApply apl,
+           (P _ fr _, argsr) <- unApply apr
+       = fl == fr && and (zipWith matching argsl argsr)
+           || (not (isConName fl ctxt && isConName fr ctxt))
+    -- If the application structures aren't easily comparable, it's a
+    -- plausible match
+    matching (App _ f a) (App _ f' a') = True
     matching (TType _) (TType _) = True
     matching (UType _) (UType _) = True
     matching l r = l == r
+
+    -- In impossible-case mode, only look at the heads (this is to account for
+    -- the non type-directed case with 'impossible' - we'd be ruling out
+    -- too much and wouldn't find the mismatch we're looking for)
+    matchingHead apl@(App _ _ _) apr@(App _ _ _)
+         | (P _ fl _, argsl) <- unApply apl,
+           (P _ fr _, argsr) <- unApply apr,
+           isConName fl ctxt && isConName fr ctxt
+       = fl == fr
+    matchingHead _ _ = True
 
     -- Return whether there is a possible coercion between the return type
     -- of an alternative and the goal type
@@ -1735,7 +1789,7 @@ pruneByType env (P _ n _) goalty ist as
                        _ -> False
 
 
-pruneByType _ t _ _ as = as
+pruneByType _ _ t _ _ as = as
 
 -- Could the name feasibly be the return type?
 -- If there is an interface constraint on the return type, and no implementation
@@ -1752,7 +1806,7 @@ isPlausible ist var env n ty
    where
      collectConstraints :: [Name] -> [(Term, [Name])] -> Type ->
                                      (Maybe Name, [(Term, [Name])])
-     collectConstraints env tcs (Bind n (Pi _ ty _) sc)
+     collectConstraints env tcs (Bind n (Pi _ _ ty _) sc)
          = let tcs' = case unApply ty of
                            (P _ c _, _) ->
                                case lookupCtxtExact c (idris_interfaces ist) of
@@ -1770,7 +1824,7 @@ isPlausible ist var env n ty
 findHighlight :: Name -> ElabD OutputAnnotation
 findHighlight n = do ctxt <- get_context
                      env <- get_env
-                     case lookup n env of
+                     case lookupBinder n env of
                        Just _ -> return $ AnnBoundName n False
                        Nothing -> case lookupTyExact n ctxt of
                                     Just _ -> return $ AnnName n Nothing Nothing Nothing
@@ -1790,7 +1844,7 @@ solveAuto ist fn ambigok (n, failc)
                         when (not isg) $
                           proofSearch' ist True ambigok 100 True Nothing fn [] [])
              (lift $ Error (addLoc failc
-                   (CantSolveGoal g (map (\(n, b) -> (n, binderTy b)) env))))
+                   (CantSolveGoal g (map (\(n, _, b) -> (n, binderTy b)) env))))
         return ()
   where addLoc (FailContext fc f x : prev) err
            = At fc (ElaboratingArg f x
@@ -1863,7 +1917,7 @@ case_ ind autoSolve ist fn tm = do
   focus valn
   elab ist toplevel ERHS [] (sMN 0 "tac") tm
   env <- get_env
-  let (Just binding) = lookup letn env
+  let (Just binding) = lookupBinder letn env
   let val = binderVal binding
   if ind then induction (forget val)
          else casetac (forget val)
@@ -1886,7 +1940,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
     returnUnit = return $ P (DCon 0 0 False) unitCon (P (TCon 0 0) unitTy Erased)
 
     patvars :: [(Name, Term)] -> Term -> ([(Name, Term)], Term)
-    patvars ns (Bind n (PVar t) sc) = patvars ((n, t) : ns) (instantiate (P Bound n t) sc)
+    patvars ns (Bind n (PVar _ t) sc) = patvars ((n, t) : ns) (instantiate (P Bound n t) sc)
     patvars ns tm                   = (ns, tm)
 
     pullVars :: (Term, Term) -> ([(Name, Term)], Term, Term)
@@ -1941,8 +1995,6 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
                              clauses'
                              clauses'''
                              clauses'''
-                             clauses'''
-                             clauses'''
                              ty
                              ctxt
          set_context ctxt'
@@ -1957,7 +2009,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
 
     -- | Add another argument to a Pi
     mkPi :: RFunArg -> Raw -> Raw
-    mkPi arg rTy = RBind (argName arg) (Pi Nothing (argTy arg) (RUType AllTypes)) rTy
+    mkPi arg rTy = RBind (argName arg) (Pi RigW Nothing (argTy arg) (RUType AllTypes)) rTy
 
     mustBeType ctxt tm ty =
       case normaliseAll ctxt [] (finalise ty) of
@@ -2014,7 +2066,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
                       _ -> n
 
         getRetTy :: Type -> Type
-        getRetTy (Bind _ (Pi _ _ _) sc) = getRetTy sc
+        getRetTy (Bind _ (Pi _ _ _ _) sc) = getRetTy sc
         getRetTy ty = ty
 
     elabScriptStuck :: Term -> ElabD a
@@ -2222,7 +2274,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
       = do ~[n, ty] <- tacTmArgs 2 tac args
            n' <- reifyTTName n
            ty' <- reifyRaw ty
-           forall n' Nothing ty'
+           forall n' RigW Nothing ty'
            returnUnit
       | n == tacN "Prim__PatVar"
       = do ~[n] <- tacTmArgs 1 tac args
@@ -2232,7 +2284,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
       | n == tacN "Prim__PatBind"
       = do ~[n] <- tacTmArgs 1 tac args
            n' <- reifyTTName n
-           patbind n'
+           patbind n' RigW
            returnUnit
       | n == tacN "Prim__LetBind"
       = do ~[n, ty, tm] <- tacTmArgs 3 tac args
@@ -2254,7 +2306,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
       = do ~[tm] <- tacTmArgs 1 tac args
            tm' <- reifyTT tm
            ctxt <- get_context
-           fmap fst . checkClosed . reflect $ whnf ctxt tm'
+           fmap fst . checkClosed . reflect $ whnf ctxt [] tm'
       | n == tacN "Prim__Converts"
       = do ~[env, tm1, tm2] <- tacTmArgs 3 tac args
            env' <- reifyEnv env
@@ -2428,11 +2480,11 @@ runTac :: Bool -> IState -> Maybe FC -> Name -> PTactic -> ElabD ()
 runTac autoSolve ist perhapsFC fn tac
     = do env <- get_env
          g <- goal
-         let tac' = fmap (addImplBound ist (map fst env)) tac
+         let tac' = fmap (addImplBound ist (map fstEnv env)) tac
          if autoSolve
             then runT tac'
             else no_errors (runT tac')
-                   (Just (CantSolveGoal g (map (\(n, b) -> (n, binderTy b)) env)))
+                   (Just (CantSolveGoal g (map (\(n, _, b) -> (n, binderTy b)) env)))
   where
     runT (Intro []) = do g <- goal
                          attack; intro (bname g)
@@ -2462,7 +2514,7 @@ runTac autoSolve ist perhapsFC fn tac
              tryAll tacs
              when autoSolve solveAll
        where envArgs n = do e <- get_env
-                            case lookup n e of
+                            case lookupBinder n e of
                                Just t -> return $ map (const False)
                                                       (getArgTys (binderTy t))
                                _ -> return []
@@ -2480,7 +2532,7 @@ runTac autoSolve ist perhapsFC fn tac
        where isImp (PImp _ _ _ _ _) = True
              isImp _ = False
              envArgs n = do e <- get_env
-                            case lookup n e of
+                            case lookupBinder n e of
                                Just t -> return $ map (const False)
                                                       (getArgTys (binderTy t))
                                _ -> return []
@@ -2589,9 +2641,9 @@ runTac autoSolve ist perhapsFC fn tac
         where tacticTy = Var (reflm "Tactic")
               listTy = Var (sNS (sUN "List") ["List", "Prelude"])
               scriptTy = (RBind (sMN 0 "__pi_arg")
-                                (Pi Nothing (RApp listTy envTupleType) RType)
+                                (Pi RigW Nothing (RApp listTy envTupleType) RType)
                                     (RBind (sMN 1 "__pi_arg")
-                                           (Pi Nothing (Var $ reflm "TT") RType) tacticTy))
+                                           (Pi RigW Nothing (Var $ reflm "TT") RType) tacticTy))
     runT (ByReflection tm) -- run the reflection function 'tm' on the
                            -- goal, then apply the resulting reflected Tactic
         = do tgoal <- goal
@@ -2634,7 +2686,7 @@ runTac autoSolve ist perhapsFC fn tac
                           (value, _) <- get_type_val (Var letn)
                           ctxt <- get_context
                           env <- get_env
-                          let value' = hnf ctxt env value
+                          let value' = normalise ctxt env value
                           runTac autoSolve ist perhapsFC fn (Exact $ PQuote (reflect value'))
     runT (Fill v) = do attack -- let x = fill x in ...
                        tyn <- getNameFrom (sMN 0 "letty")
@@ -2787,7 +2839,7 @@ processTacticDecls info steps =
          mapM_ (addIBC . IBCDef . cn) ctors
          ctxt <- getContext
          let params = findParams tyn (normalise ctxt [] tyconTy) (map cty ctors)
-         let typeInfo = TI (map cn ctors) False [] params []
+         let typeInfo = TI (map cn ctors) False [] params [] False
          -- implicit precondition to IBCData is that idris_datatypes on the IState is populated.
          -- otherwise writing the IBC just fails silently!
          updateIState $ \i -> i { idris_datatypes =
@@ -2828,15 +2880,16 @@ processTacticDecls info steps =
     RClausesInstrs n cs ->
       do logElab 3 $ "Pattern-matching definition from tactics: " ++ show n
          solveDeferred emptyFC n
-         let lhss = map (\(_, lhs, _) -> lhs) cs
+         let lhss = map (\(ns, lhs, _) -> (map fst ns, lhs)) cs
          let fc = fileFC "elab_reflected"
          pmissing <-
            do ist <- getIState
               possible <- genClauses fc n lhss
-                                     (map (\lhs ->
+                                     (map (\ (ns, lhs) ->
                                         delab' ist lhs True True) lhss)
               missing <- filterM (checkPossible n) possible
-              return (filter (noMatch ist lhss) missing)
+              let undef = filter (noMatch ist (map snd lhss)) missing
+              return undef
          let tot = if null pmissing
                       then Unchecked -- still need to check recursive calls
                       else Partial NotCovering -- missing cases implies not total
@@ -2873,16 +2926,16 @@ processTacticDecls info steps =
   where
     -- TODO: see if the code duplication with Idris.Elab.Clause can be
     -- reduced or eliminated.
+    -- These are always cases generated by genClauses
     checkPossible :: Name -> PTerm -> Idris Bool
     checkPossible fname lhs_in =
        do ctxt <- getContext
           ist <- getIState
           let lhs = addImplPat ist lhs_in
           let fc = fileFC "elab_reflected_totality"
-          let tcgen = False -- TODO: later we may support dictionary generation
           case elaborate (constraintNS info) ctxt (idris_datatypes ist) (idris_name ist) (sMN 0 "refPatLHS") infP initEState
-                (erun fc (buildTC ist info ELHS [] fname (allNamesIn lhs_in)
-                                                         (infTerm lhs))) of
+                (erun fc (buildTC ist info EImpossible [] fname (allNamesIn lhs_in)
+                                                                (infTerm lhs))) of
             OK (ElabResult lhs' _ _ _ _ _ name', _) ->
               do -- not recursively calling here, because we don't
                  -- want to run infinitely many times
@@ -2892,9 +2945,7 @@ processTacticDecls info steps =
                       OK _ -> return True
                       err -> return False
             -- if it's a recoverable error, the case may become possible
-            Error err -> if tcgen then return (recoverableCoverage ctxt err)
-                                  else return (validCoverageCase ctxt err ||
-                                                 recoverableCoverage ctxt err)
+            Error err -> return (recoverableCoverage ctxt err)
 
 
     -- TODO: Attempt to reduce/eliminate code duplication with Idris.Elab.Clause

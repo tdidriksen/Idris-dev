@@ -3,7 +3,7 @@ module Pruviloj.Derive.Eliminators
 import Language.Reflection.Utils
 import Data.Vect
 
-import Pruviloj.Core
+import public Pruviloj.Core
 import Pruviloj.Internals.TyConInfo
 import Pruviloj.Internals
 import Pruviloj.Renamers
@@ -63,7 +63,7 @@ mkIh info motiveName recArg argty fam =
                 focus ihT
                 attack
                 for_ {b=()} argArgs $ \(n, b) =>
-                  forall n (getBinderTy b)
+                  forall n (binderTy b)
                 let argTm : Raw = mkApp (Var recArg) (map (Var . fst) argArgs)
                 argTmTy <- forget (snd !(check !getEnv argTm))
                 argHoles <- apply (Var motiveName)
@@ -239,7 +239,7 @@ getElimClause info elimn methCount (cn, args, resTy) whichCon =
 
   where bindLam : List (TTName, Binder Raw) -> Raw -> Raw
         bindLam [] x = x
-        bindLam ((n, b)::rest) x = RBind n (Lam (getBinderTy b)) $ bindLam rest x
+        bindLam ((n, b)::rest) x = RBind n (Lam (binderTy b)) $ bindLam rest x
 
 getElimClauses : TyConInfo -> (elimn : TTName) ->
                  List (TTName, List CtorArg, Raw) -> Elab (List (FunClause Raw))

@@ -2,6 +2,7 @@
 
 %access public export
 %default total
+%language UniquenessTypes
 
 ||| The canonical single-element type, also known as the trivially
 ||| true proposition.
@@ -160,7 +161,8 @@ par : Lazy a -> a -- Doesn't actually do anything yet. Maybe a 'Par a' type
 par (Delay x) = x
 
 ||| Assert to the totality checker that y is always structurally smaller than
-||| x (which is typically a pattern argument)
+||| x (which is typically a pattern argument, and *must* be in normal form
+||| for this to work)
 ||| @ x the larger value (typically a pattern argument)
 ||| @ y the smaller value (typically an argument to a recursive call)
 assert_smaller : (x : a) -> (y : b) -> b
@@ -175,6 +177,12 @@ assert_total x = x
 ||| is unreachable
 assert_unreachable : a
 -- compiled as primitive
+
+||| Abort immediately with an error message
+idris_crash : (msg : String) -> a
+-- compiled as primitive
+
+%used idris_crash msg
 
 ||| Subvert the type checker. This function is abstract, so it will not reduce in
 ||| the type checker. Use it with care - it can result in segfaults or worse!

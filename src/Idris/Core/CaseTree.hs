@@ -18,8 +18,8 @@ allows casing on arbitrary terms, here we choose to maintain the distinction
 in order to allow for better optimisation opportunities.
 
 -}
-{-# LANGUAGE PatternGuards, DeriveFunctor, TypeSynonymInstances,
-    DeriveGeneric #-}
+{-# LANGUAGE DeriveFunctor, DeriveGeneric, PatternGuards, TypeSynonymInstances
+             #-}
 
 module Idris.Core.CaseTree (
     CaseDef(..), SC, SC'(..), CaseAlt, CaseAlt'(..), ErasureInfo
@@ -31,11 +31,12 @@ module Idris.Core.CaseTree (
 import Idris.Core.TT
 
 import Control.Applicative hiding (Const)
-import Control.Monad.State
 import Control.Monad.Reader
-import Data.Maybe
+import Control.Monad.State
 import Data.List hiding (partition)
-import qualified Data.List(partition)
+import qualified Data.List (partition)
+import Data.Maybe
+import qualified Data.Set as S
 import Debug.Trace
 import GHC.Generics (Generic)
 
@@ -153,33 +154,34 @@ findCalls :: SC -> [Name] -> [(Name, [[Name]])]
 findCalls = findCalls' False
 
 findCalls' :: Bool -> SC -> [Name] -> [(Name, [[Name]])]
-findCalls' ignoreasserts sc topargs = nub $ nu' topargs sc where
-    nu' ps (Case _ n alts) = nub (concatMap (nua (n : ps)) alts)
-    nu' ps (ProjCase t alts) = nub $ nut ps t ++ concatMap (nua ps) alts
-    nu' ps (STerm t)     = nub $ nut ps t
-    nu' ps _ = []
+findCalls' ignoreasserts sc topargs = S.toList $ nu' topargs sc where
+    nu' ps (Case _ n alts) = S.unions $ map (nua (n : ps)) alts
+    nu' ps (ProjCase t alts) = S.unions $ nut ps t : map (nua ps) alts
+    nu' ps (STerm t)     = nut ps t
+    nu' ps _ = S.empty
 
-    nua ps (ConCase n i args sc) = nub (nu' (ps ++ args) sc)
-    nua ps (FnCase n args sc) = nub (nu' (ps ++ args) sc)
+    nua ps (ConCase n i args sc) = nu' (ps ++ args) sc
+    nua ps (FnCase n args sc) = nu' (ps ++ args) sc
     nua ps (ConstCase _ sc) = nu' ps sc
     nua ps (SucCase _ sc) = nu' ps sc
     nua ps (DefaultCase sc) = nu' ps sc
 
-    nut ps (P _ n _) | n `elem` ps = []
-                     | otherwise = [(n, [])] -- tmp
+    nut ps (P _ n _) | n `elem` ps = S.empty
+                     | otherwise = S.singleton (n, [])
     nut ps fn@(App _ f a)
         | (P _ n _, args) <- unApply fn
-             = if ignoreasserts && n == sUN "assert_total" 
-                  then []
-                  else if n `elem` ps 
-                          then nut ps f ++ nut ps a
-                          else [(n, map argNames args)] ++ concatMap (nut ps) args
-        | (P (TCon _ _) n _, _) <- unApply fn = []
-        | otherwise = nut ps f ++ nut ps a
-    nut ps (Bind n (Let t v) sc) = nut ps v ++ nut (n:ps) sc
+             = if ignoreasserts && n == sUN "assert_total"
+                  then S.empty
+                  else if n `elem` ps
+                          then S.union (nut ps f) (nut ps a)
+                          else S.insert (n, map argNames args)
+                                   (S.unions $ map (nut ps) args)
+        | (P (TCon _ _) n _, _) <- unApply fn = S.empty
+        | otherwise = S.union (nut ps f) (nut ps a)
+    nut ps (Bind n (Let t v) sc) = S.union (nut ps v) (nut (n:ps) sc)
     nut ps (Proj t _) = nut ps t
     nut ps (Bind n b sc) = nut (n:ps) sc
-    nut ps _ = []
+    nut ps _ = S.empty
 
     argNames tm = let ns = directUse tm in
                       filter (\x -> x `elem` ns) topargs
@@ -242,14 +244,18 @@ type CaseBuilder a = ReaderT ErasureInfo (State CS) a
 runCaseBuilder :: ErasureInfo -> CaseBuilder a -> (CS -> (a, CS))
 runCaseBuilder ei bld = runState $ runReaderT bld ei
 
-data Phase = CompileTime | RunTime
+data Phase = CoverageCheck [Int] -- list of positions explicitly given
+           | CompileTime
+           | RunTime
     deriving (Show, Eq)
 
 -- Generate a simple case tree
 -- Work Right to Left
 
 simpleCase :: Bool -> SC -> Bool ->
-              Phase -> FC -> [Int] -> 
+              Phase -> FC ->
+              -- Following two can be empty lists when Phase = CoverageCheck
+              [Int] -> -- Inaccessible argument positions
               [(Type, Bool)] -> -- (Argument type, whether it's canonical)
               [([Name], Term, Term)] ->
               ErasureInfo ->
@@ -289,7 +295,7 @@ simpleCase tc defcase reflect phase fc inacc argtys cs erInfo
           -- Check that all pattern variables are reachable by a case split
           -- Otherwise, they won't make sense on the RHS.
           chkAccessible (avs, l, c)
-               | phase == RunTime || reflect = return (l, c)
+               | phase /= CompileTime || reflect = return (l, c)
                | otherwise = do mapM_ (acc l) avs
                                 return (l, c)
 
@@ -343,6 +349,7 @@ isConstType _ _ = False
 
 data Pat = PCon Bool Name Int [Pat]
          | PConst Const
+         | PInferred Pat
          | PV Name Type
          | PSuc Pat -- special case for n+1 on Integer
          | PReflected Name [Pat]
@@ -381,10 +388,11 @@ toPat reflect tc = map $ toPat' []
 
     toPat' []   (P Bound n ty) = PV n ty
     toPat' args (App _ f a)    = toPat' (a : args) f
+    toPat' args (Inferred tm)  = PInferred (toPat' args tm)
     toPat' [] (Constant x) | isTypeConst x = PTyPat
                            | otherwise     = PConst x
 
-    toPat' [] (Bind n (Pi _ t _) sc)
+    toPat' [] (Bind n (Pi _ _ t _) sc)
         | reflect && noOccurrence n sc
         = PReflected (sUN "->") [toPat' [] t, toPat' [] sc]
 
@@ -431,12 +439,26 @@ partition xs = error $ "Partition " ++ show xs
 -- The first argument means [(Name, IsInaccessible)].
 
 order :: Phase -> [(Name, Bool)] -> [Clause] -> [Bool] -> ([Name], [Clause])
--- do nothing at compile time: FIXME (EB): Put this in after checking 
+-- do nothing at compile time: FIXME (EB): Put this in after checking
 -- implications for Franck's reflection work... see issue 3233
--- order CompileTime ns cs _ = (map fst ns, cs) 
+-- order CompileTime ns cs _ = (map fst ns, cs)
 order _ []  cs cans = ([], cs)
 order _ ns' [] cans = (map fst ns', [])
-order phase ns' cs cans 
+order (CoverageCheck pos) ns' cs cans
+    = let ns_out = pick 0 [] (map fst ns')
+          cs_out = map pickClause cs in
+          (ns_out, cs_out)
+  where
+    pickClause (pats, def) = (pick 0 [] pats, def)
+
+    -- Order the list so that things in a position in 'pos' are in the first
+    -- part, then all the other things later. Otherwise preserve order.
+    pick i skipped [] = reverse skipped
+    pick i skipped (x : xs)
+         | i `elem` pos = x : pick (i + 1) skipped xs
+         | otherwise    = pick (i + 1) (x : skipped) xs
+
+order phase ns' cs cans
     = let patnames = transpose (map (zip ns') (map (zip cans) (map fst cs)))
           -- only sort the arguments where there is no clash in
           -- constructor tags between families, the argument type is canonical,
@@ -444,7 +466,7 @@ order phase ns' cs cans
           -- clash, because otherwise we can't reliable make the
           -- case distinction on evaluation
           (patnames_ord, patnames_rest)
-                = Data.List.partition (noClash . map snd) patnames 
+                = Data.List.partition (noClash . map snd) patnames
           patnames_ord' = case phase of
                                CompileTime -> patnames_ord
                                -- reversing tends to make better case trees
@@ -460,7 +482,7 @@ order phase ns' cs cans
     rebuild patnames clause = (map (snd . snd) patnames, snd clause)
 
     noClash [] = True
-    noClash ((can, p) : ps) = can && not (any (clashPat p) (map snd ps)) 
+    noClash ((can, p) : ps) = can && not (any (clashPat p) (map snd ps))
                                   && noClash ps
 
     clashPat (PCon _ _ _ _) (PConst _) = True
@@ -471,7 +493,7 @@ order phase ns' cs cans
     clashPat _ _ = False
 
     -- this compares (+isInaccessible, -numberOfCases)
-    moreDistinct xs ys 
+    moreDistinct xs ys
         = compare (snd . fst . head $ xs, numNames [] (map snd ys))
                   (snd . fst . head $ ys, numNames [] (map snd xs))
 
@@ -482,6 +504,41 @@ order phase ns' cs cans
     numNames xs (_ : ps) = numNames xs ps
     numNames xs [] = length xs
 
+-- Reorder the patterns in the clause so that the PInferred patterns come
+-- last. Also strip 'PInferred' from the top level patterns so that we can
+-- go ahead and match.
+orderByInf :: [Name] -> [Clause] -> ([Name], [Clause])
+orderByInf vs cs = let alwaysInf = getInf cs in
+                       (selectInf alwaysInf vs,
+                        map deInf (map (selectExp alwaysInf) cs))
+  where
+    getInf [] = []
+    getInf [(pats, def)] = infPos 0 pats
+    getInf ((pats, def) : cs) = infPos 0 pats `intersect` getInf cs
+
+    selectExp :: [Int] -> Clause -> Clause
+    selectExp infs (pats, def)
+         = let (notInf, inf) = splitPats 0 infs [] [] pats in
+               (notInf ++ inf, def)
+
+    selectInf :: [Int] -> [a] -> [a]
+    selectInf infs ns = let (notInf, inf) = splitPats 0 infs [] [] ns in
+                            notInf ++ inf
+
+    splitPats i infpos notInf inf [] = (reverse notInf, reverse inf)
+    splitPats i infpos notInf inf (p : ps)
+         | i `elem` infpos = splitPats (i + 1) infpos notInf (p : inf) ps
+         | otherwise = splitPats (i + 1) infpos (p : notInf) inf ps
+
+    infPos i [] = []
+    infPos i (PInferred p : ps) = i : infPos (i + 1) ps
+    infPos i (_ : ps) = infPos (i + 1) ps
+
+    deInf (pats, def) = (map deInfPat pats, def)
+
+    deInfPat (PInferred p) = p
+    deInfPat p = p
+
 match :: [Name] -> [Clause] -> SC -- error case
                             -> CaseBuilder SC
 match [] (([], ret) : xs) err
@@ -490,8 +547,9 @@ match [] (([], ret) : xs) err
          case snd ret of
             Impossible -> return ImpossibleCase
             tm -> return $ STerm tm -- run out of arguments
-match vs cs err = do let ps = partition cs
-                     mixture vs ps err
+match vs cs err = do let (vs', de_inf) = orderByInf vs cs
+                         ps = partition de_inf
+                     mixture vs' ps err
 
 mixture :: [Name] -> [Partition] -> SC -> CaseBuilder SC
 mixture vs [] err = return err
@@ -765,7 +823,7 @@ prune proj (Case up n alts) = case alts' of
 prune _ t = t
 
 stripLambdas :: CaseDef -> CaseDef
-stripLambdas (CaseDef ns (STerm (Bind x (Lam _) sc)) tm)
+stripLambdas (CaseDef ns (STerm (Bind x (Lam _ _) sc)) tm)
     = stripLambdas (CaseDef (ns ++ [x]) (STerm (instantiate (P Bound x Erased) sc)) tm)
 stripLambdas x = x
 

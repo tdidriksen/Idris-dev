@@ -8,27 +8,27 @@ Maintainer  : The Idris Community.
 module IRTS.CodegenC (codegenC) where
 
 import Idris.AbsSyntax
+import Idris.Core.TT
 import IRTS.Bytecode
+import IRTS.CodegenCommon
+import IRTS.Defunctionalise
 import IRTS.Lang
 import IRTS.Simplified
-import IRTS.Defunctionalise
 import IRTS.System
-import IRTS.CodegenCommon
-import Idris.Core.TT
+
 import Util.System
 
-import Numeric
-import Data.Char
-import Data.Bits
-import Data.List (intercalate, nubBy)
-import System.Process
-import System.Exit
-import System.IO
-import System.Directory
-import System.FilePath ((</>), (<.>))
 import Control.Monad
-
+import Data.Bits
+import Data.Char
+import Data.List (intercalate, nubBy)
 import Debug.Trace
+import Numeric
+import System.Directory
+import System.Exit
+import System.FilePath ((<.>), (</>))
+import System.IO
+import System.Process
 
 codegenC :: CodeGenerator
 codegenC ci = do codegenC' (simpleDecls ci)
@@ -66,8 +66,8 @@ codegenC' defs out exec incs objs libs flags exports iface dbg
          let h = concatMap toDecl (map fst bc)
          let cc = concatMap (uncurry toC) bc
          let hi = concatMap ifaceC (concatMap getExp exports)
-         d <- getDataDir
-         mprog <- readFile (d </> "rts" </> "idris_main" <.> "c")
+         d <- getIdrisCRTSDir
+         mprog <- readFile (d </> "idris_main" <.> "c")
          let cout = headers incs ++ debug dbg ++ h ++ wrappers ++ cc ++
                      (if (exec == Executable) then mprog else hi)
          case exec of
@@ -617,6 +617,7 @@ doOp v (LIntCh ITNative) args = v ++ creg (last args)
 doOp v (LIntCh ITChar) args = doOp v (LIntCh ITNative) args
 
 doOp v LSystemInfo [x] = v ++ "idris_systemInfo(vm, " ++ creg x ++ ")"
+doOp v LCrash [x] = "idris_crash(GETSTR(" ++ creg x ++ "))"
 doOp v LNoOp args = v ++ creg (last args)
 
 -- Pointer primitives (declared as %extern in Builtins.idr)
@@ -673,7 +674,7 @@ doOp v (LExternal pk) [] | pk == sUN "prim__sizeofPtr"
 doOp v (LExternal mpt) [p] | mpt == sUN "prim__asPtr"
     = v ++ "MKPTR(vm, GETMPTR("++ creg p ++"))"
 doOp v (LExternal offs) [p, n] | offs == sUN "prim__ptrOffset"
-    = v ++ "MKPTR(vm, GETPTR(" ++ creg p ++ ") + GETINT(" ++ creg n ++ "))"
+    = v ++ "MKPTR(vm, (void *)((char *)GETPTR(" ++ creg p ++ ") + GETINT(" ++ creg n ++ ")))"
 doOp _ op args = error $ "doOp not implemented (" ++ show (op, args) ++ ")"
 
 

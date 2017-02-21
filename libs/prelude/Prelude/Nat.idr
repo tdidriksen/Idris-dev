@@ -91,6 +91,12 @@ hyper (S pn)   a (S pb) = hyper pn a (hyper (S pn) a pb)
 -- Comparisons
 --------------------------------------------------------------------------------
 
+||| Proofs that `n` or `m` is not equal to Z
+data NotBothZero : (n, m : Nat) -> Type where
+  LeftIsNotZero  : NotBothZero (S n) m
+  RightIsNotZero : NotBothZero n     (S m)
+
+
 ||| Proofs that `n` is less than or equal to `m`
 ||| @ n the smaller number
 ||| @ m the larger number
@@ -310,9 +316,19 @@ fact (S n) = (S n) * fact n
 -- Division and modulus
 --------------------------------------------------------------------------------
 
+||| The proof that no successor of a natural number can be zero.
+|||
+||| ```idris example
+||| modNatNZ 10 3 SIsNotZ
+||| ```
 SIsNotZ : {x: Nat} -> (S x = Z) -> Void
 SIsNotZ Refl impossible
 
+||| Modulus function where the divisor is not zero.
+|||
+||| ```idris example
+||| modNatNZ 100 2 SIsNotZ
+||| ```
 modNatNZ : Nat -> (y: Nat) -> Not (y = Z) -> Nat
 modNatNZ left Z         p = void (p Refl)
 modNatNZ left (S right) _ = mod' left left right
@@ -329,6 +345,11 @@ partial
 modNat : Nat -> Nat -> Nat
 modNat left (S right) = modNatNZ left (S right) SIsNotZ
 
+||| Division where the divisor is not zero.
+|||
+||| ```idris example
+||| divNatNZ 100 2 SIsNotZ
+||| ```
 divNatNZ : Nat -> (y: Nat) -> Not (y = Z) -> Nat
 divNatNZ left Z         p = void (p Refl)
 divNatNZ left (S right) _ = div' left left right
@@ -371,16 +392,15 @@ log2 (S n) = log2NZ (S n) SIsNotZ
 --------------------------------------------------------------------------------
 -- GCD and LCM
 --------------------------------------------------------------------------------
-partial
-gcd : Nat -> Nat -> Nat
-gcd a Z = a
-gcd a b = assert_total (gcd b (a `modNat` b))
+gcd : (a: Nat) -> (b: Nat) -> .{auto ok: NotBothZero a b} -> Nat
+gcd a Z     = a
+gcd Z b     = b
+gcd a (S b) = assert_total $ gcd (S b) (modNatNZ a (S b) SIsNotZ)
 
-partial
 lcm : Nat -> Nat -> Nat
-lcm _ Z = Z
-lcm Z _ = Z
-lcm x y = divNat (x * y) (gcd x y)
+lcm _ Z     = Z
+lcm Z _     = Z
+lcm a (S b) = assert_total $ divNat (a * (S b)) (gcd a (S b))
 
 
 --------------------------------------------------------------------------------

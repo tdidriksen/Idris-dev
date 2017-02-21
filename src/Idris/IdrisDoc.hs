@@ -5,57 +5,49 @@ Copyright   :
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 module Idris.IdrisDoc (generateDocs) where
 
-import Idris.Core.TT (Name (..), sUN, SpecialName (..), OutputAnnotation (..),
-                      TextFormatting (..), txt, str, nsroot, constIsType, toAlist)
-import Idris.Core.Evaluate (ctxtAlist, Def (..), lookupDefAcc,
-                            Accessibility (..), isDConName, isFnName,
-                            isTConName)
-import Idris.Parser.Helpers (opChars)
 import Idris.AbsSyntax
+import Idris.Core.Evaluate (Accessibility(..), Def(..), ctxtAlist, isDConName,
+                            isFnName, isTConName, lookupDefAcc)
+import Idris.Core.TT (Name(..), OutputAnnotation(..), SpecialName(..),
+                      TextFormatting(..), constIsType, nsroot, sUN, str,
+                      toAlist, txt)
 import Idris.Docs
 import Idris.Docstrings (nullDocstring)
 import qualified Idris.Docstrings as Docstrings
-
-import IRTS.System (getDataFileName)
+import Idris.Parser.Helpers (opChars)
+import IRTS.System (getIdrisDataFileByName)
 
 import Control.Applicative ((<|>))
 import Control.Monad (forM_)
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict
-
-import Data.Maybe
-
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BS2
-import qualified Data.Text.Encoding as E
 import qualified Data.List as L
 import qualified Data.List.Split as LS
 import qualified Data.Map as M hiding ((!))
+import Data.Maybe
 import Data.Monoid (mempty)
 import qualified Data.Ord (compare)
 import qualified Data.Set as S
 import qualified Data.Text as T
-
+import qualified Data.Text.Encoding as E
+import System.Directory
+import System.FilePath
 import System.IO
 import System.IO.Error
-import System.FilePath
-import System.Directory
-
-import Text.PrettyPrint.Annotated.Leijen (displayDecorated, renderCompact)
-
-import Text.Blaze (toValue, contents)
-import Text.Blaze.Internal (MarkupM (Empty))
-import Text.Blaze.Html5 ((!), toHtml, preEscapedToHtml)
+import Text.Blaze (contents, toValue)
+import qualified Text.Blaze.Html.Renderer.String as R
+import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
+import Text.Blaze.Html5 (preEscapedToHtml, toHtml, (!))
 import qualified Text.Blaze.Html5 as H
 import Text.Blaze.Html5.Attributes as A
-import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
-import qualified Text.Blaze.Html.Renderer.String as R
 import Text.Blaze.Renderer.String (renderMarkup)
+import Text.PrettyPrint.Annotated.Leijen (displayDecorated, renderCompact)
 
 -- ---------------------------------------------------------------- [ Public ]
 
@@ -174,7 +166,7 @@ removeOrphans list =
   in  filter ((flip S.notMember children) . (\(n, _, _) -> n)) list
 
   where names (Just (DataDoc _ fds))                  = map (\(FD n _ _ _ _) -> n) fds
-        names (Just (InterfaceDoc _ _ fds _ _ _ _ c)) = map (\(FD n _ _ _ _) -> n) fds ++ map (\(FD n _ _ _ _) -> n) (maybeToList c)
+        names (Just (InterfaceDoc _ _ fds _ _ _ _ _ c)) = map (\(FD n _ _ _ _) -> n) fds ++ map (\(FD n _ _ _ _) -> n) (maybeToList c)
         names _                                       = []
 
 -- | Whether a Name names something which should be documented
@@ -222,14 +214,14 @@ referredNss (n, Just d, _) =
       names  = concatMap (extractPTermNames) ts
   in  S.map getNs $ S.fromList names
 
-  where getFunDocs (FunDoc f)                      = [f]
-        getFunDocs (DataDoc f fs)                  = f:fs
-        getFunDocs (InterfaceDoc _ _ fs _ _ _ _ _) = fs
-        getFunDocs (RecordDoc _ _ f fs _)          = f:fs
-        getFunDocs (NamedImplementationDoc _ fd)         = [fd]
-        getFunDocs (ModDoc _ _)                    = []
-        types (FD _ _ args t _)                    = t:(map second args)
-        second (_, x, _, _)                        = x
+  where getFunDocs (FunDoc f)                        = [f]
+        getFunDocs (DataDoc f fs)                    = f:fs
+        getFunDocs (InterfaceDoc _ _ fs _ _ _ _ _ _) = fs
+        getFunDocs (RecordDoc _ _ f fs _)            = f:fs
+        getFunDocs (NamedImplementationDoc _ fd)     = [fd]
+        getFunDocs (ModDoc _ _)                      = []
+        types (FD _ _ args t _)                      = t:(map second args)
+        second (_, x, _, _)                          = x
 
 
 -- | Returns an NsDict of containing all known namespaces and their contents
@@ -550,7 +542,7 @@ createFunDoc :: IState -- ^ Needed to determine the types of names
 createFunDoc ist fd@(FD name docstring args ftype fixity) = do
   H.dt ! (A.id $ toValue $ show name) $ genTypeHeader ist fd
   H.dd $ do
-    (if nullDocstring docstring then Empty else Docstrings.renderHtml docstring)
+    (if nullDocstring docstring then mempty else Docstrings.renderHtml docstring)
     let args'             = filter (\(_, _, _, d) -> isJust d) args
     if (not $ null args') || (isJust fixity)
        then H.dl $ do
@@ -558,9 +550,9 @@ createFunDoc ist fd@(FD name docstring args ftype fixity) = do
              H.dt ! class_ "fixity" $ "Fixity"
              let f = fromJust fixity
              H.dd ! class_ "fixity" ! title (toValue $ show f) $ genFix f
-           else Empty
+           else mempty
          forM_ args' genArg
-       else Empty
+       else mempty
 
   where genFix (Infixl {prec=p})  =
           toHtml $ "Left associative, precedence " ++ show p
@@ -570,7 +562,7 @@ createFunDoc ist fd@(FD name docstring args ftype fixity) = do
           toHtml $ "Non-associative, precedence " ++ show p
         genFix (PrefixN {prec=p}) =
           toHtml $ "Prefix, precedence " ++ show p
-        genArg (_, _, _, Nothing)           = Empty
+        genArg (_, _, _, Nothing)           = mempty
         genArg (name, _, _, Just docstring) = do
           H.dt $ toHtml $ show name
           H.dd $ Docstrings.renderHtml docstring
@@ -583,7 +575,7 @@ createOtherDoc :: IState -- ^ Needed to determine the types of names
                -> H.Html -- ^ Resulting HTML
 createOtherDoc ist (FunDoc fd)                = createFunDoc ist fd
 
-createOtherDoc ist (InterfaceDoc n docstring fds _ _ _ _ c) = do
+createOtherDoc ist (InterfaceDoc n docstring fds _ _ _ _ _ c) = do
   H.dt ! (A.id $ toValue $ show n) $ do
     H.span ! class_ "word" $ do "interface"; nbsp
     H.span ! class_ "name type"
@@ -591,7 +583,7 @@ createOtherDoc ist (InterfaceDoc n docstring fds _ _ _ _ c) = do
            $ toHtml $ name $ nsroot n
     H.span ! class_ "signature" $ nbsp
   H.dd $ do
-    (if nullDocstring docstring then Empty else Docstrings.renderHtml docstring)
+    (if nullDocstring docstring then mempty else Docstrings.renderHtml docstring)
     H.dl ! class_ "decls" $ (forM_ (maybeToList c ++ fds) (createFunDoc ist))
 
   where name (NS n ns) = show (NS (sUN $ name n) ns)
@@ -608,10 +600,10 @@ createOtherDoc ist (RecordDoc n doc ctor projs params) = do
            $ toHtml $ name $ nsroot n
     H.span ! class_ "type" $ do nbsp ; prettyParameters
   H.dd $ do
-    (if nullDocstring doc then Empty else Docstrings.renderHtml doc)
+    (if nullDocstring doc then mempty else Docstrings.renderHtml doc)
     if not $ null params
        then H.dl $ forM_ params genParam
-       else Empty
+       else mempty
     H.dl ! class_ "decls" $ createFunDoc ist ctor
     H.dl ! class_ "decls" $ forM_ projs (createFunDoc ist)
   where name (NS n ns) = show (NS (sUN $ name n) ns)
@@ -631,14 +623,14 @@ createOtherDoc ist (DataDoc fd@(FD n docstring args _ _) fds) = do
     H.span ! class_ "word" $ do "data"; nbsp
     genTypeHeader ist fd
   H.dd $ do
-    (if nullDocstring docstring then Empty else Docstrings.renderHtml docstring)
+    (if nullDocstring docstring then mempty else Docstrings.renderHtml docstring)
     let args' = filter (\(_, _, _, d) -> isJust d) args
     if not $ null args'
        then H.dl $ forM_ args' genArg
-       else Empty
+       else mempty
     H.dl ! class_ "decls" $ forM_ fds (createFunDoc ist)
 
-  where genArg (_, _, _, Nothing)           = Empty
+  where genArg (_, _, _, Nothing)           = mempty
         genArg (name, _, _, Just docstring) = do
           H.dt $ toHtml $ show name
           H.dd $ Docstrings.renderHtml docstring
@@ -670,7 +662,7 @@ wrapper ns inner =
       H.div ! class_ "wrapper" $ do
         H.header $ do
           H.strong "IdrisDoc"
-          if index then Empty else do
+          if index then mempty else do
             ": "
             toHtml str
           H.nav $ H.a ! href (toValue indexPage) $ "Index"
@@ -715,5 +707,5 @@ copyDependencies :: FilePath -- ^ The base directory to which
                              --   dependencies should be written
                  -> IO ()
 copyDependencies dir =
-  do styles <- getDataFileName $ "idrisdoc" </> "styles.css"
+  do styles <- getIdrisDataFileByName $ "idrisdoc" </> "styles.css"
      copyFile styles (dir </> "styles.css")

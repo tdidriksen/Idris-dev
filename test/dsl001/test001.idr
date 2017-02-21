@@ -3,6 +3,8 @@ module Main
 import Data.Vect
 import Data.Fin
 
+%language DSLNotation
+
 data Ty = TyInt | TyBool| TyFun Ty Ty
 
 interpTy : Ty -> Type
@@ -99,6 +101,5 @@ testEnv x = [x,x]
 main : IO ()
 main = do { printLn testFac
             printLn test }
-
 
 

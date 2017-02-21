@@ -10,28 +10,28 @@ Maintainer  : The Idris Community.
 
 module Idris.Error where
 
-import Prelude hiding (catch)
 import Idris.AbsSyntax
-import Idris.Delaborate
-
+import Idris.Core.Constraints
 import Idris.Core.Evaluate (ctxtAlist)
 import Idris.Core.TT
 import Idris.Core.Typecheck
-import Idris.Core.Constraints
+import Idris.Delaborate
 import Idris.Output
 
-import System.Console.Haskeline
-import System.Console.Haskeline.MonadException
+import Prelude hiding (catch)
+
 import Control.Monad (when)
 import Control.Monad.State.Strict
-import System.IO.Error(isUserError, ioeGetErrorString)
 import Data.Char
-import Data.List (intercalate, isPrefixOf)
-import qualified Data.Text as T
-import qualified Data.Set as S
-import Data.Typeable
-import qualified Data.Traversable as Traversable
 import qualified Data.Foldable as Foldable
+import Data.List (intercalate, isPrefixOf)
+import qualified Data.Set as S
+import qualified Data.Text as T
+import qualified Data.Traversable as Traversable
+import Data.Typeable
+import System.Console.Haskeline
+import System.Console.Haskeline.MonadException
+import System.IO.Error (ioeGetErrorString, isUserError)
 
 iucheck :: Idris ()
 iucheck = do tit <- typeInType
@@ -78,6 +78,12 @@ tclift (OK v) = return v
 tclift (Error err@(At fc e)) = do setErrSpan fc; throwError err
 tclift (Error err@(UniverseError fc _ _ _ _)) = do setErrSpan fc; throwError err
 tclift (Error err) = throwError err
+
+tcliftAt :: FC -> TC a -> Idris a
+tcliftAt fc (OK v) = return v
+tcliftAt fc (Error err@(At _ e)) = do setErrSpan fc; throwError err
+tcliftAt fc (Error err@(UniverseError _ _ _ _ _)) = do setErrSpan fc; throwError err
+tcliftAt fc (Error err) = do setErrSpan fc; throwError (At fc err)
 
 tctry :: TC a -> TC a -> Idris a
 tctry tc1 tc2
