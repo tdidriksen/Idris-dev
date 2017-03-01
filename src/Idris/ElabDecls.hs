@@ -381,44 +381,5 @@ elabDecl' what info (PCopatterns fc syn clauses)
               _ -> 
                 do logLvl 0 $ "No projection found"
                    return Nothing
-            
-            -- logLvl 0 $ "Known projections: " ++ show recordCtxt
-            -- let result = fmap (\ri -> (n, ri)) (lookupCtxtExact n recordCtxt)
-            -- logLvl 0 $ "Found projection: " ++ show (fmap (\(pn, _) -> pn) result)
-            -- return result
 
-       -- hasCopatterns :: PClause -> Bool
-       -- hasCopatterns (PCoClause _ _ _ _ _ [_ : _]) = True
-       -- hasCopatterns _ = False
-
-       -- toRegularPatternClause :: PClause -> Maybe PClause
-       -- toRegularPatternClause (PCoClause fc n lhs rhs wheres (_ : _) = Nothing
-       -- toRegularPatternClause (PCoClause fc n lhs rhs wheres []) = Just $ PClause fc n lhs [] rhs wheres
-       -- toRegularPatternClause c = Just c
-             
-
-       -- partitionClauses :: Name -> FnOpts -> [PClause] -> [PClause] -> Idris [PDecl]
-       -- partitionClauses fn fnOpts acc (c@(PCoClause fc n lhs rhs wheres path) : clauses)
-       --   do projection <- findProjection n
-       --      case (projection, nextNameUnderProjection lhs) of
-       --       (Just (pn, recordInfo), Just (nextFn, nextLhs)) -> 
-       --         partitionClauses nextFn fnOpts acc (PCoClause fc nextFn nextLhs rhs wheres ((pn,recordInfo):path) : clauses)
-       --       (Nothing, _) -> if fn == n 
-       --                       then partitionClauses nextFn (c : acc) clauses
-       --                       else let clauses' = reverse acc
-       --                            in PClauses (fcOf $ head clauses') fn clauses' : partitionClauses n [] clauses
-            
-        -- 1) is n the name of a projection?
-        -- 2) If yes, put it into the path and look at next applied name from lhs
-        -- 3) If no, a function name has been found
-        -- 4) Recursively find related clauses
-
-       -- fcOf :: PClause -> FC
-       -- fcOf (PClause fc _ _ _ _ _) = fc
-       -- fcOf (PWith fc _ _ _ _ _ _) = fc
-       -- fcOf (PClauseR fc _ _ _ _ _) = fc
-       -- fcOf (PWithR fc _ _ _ _ _) = fc
-       -- fcOf (PCoClause fc _ _ _ _ _) = fc
-       
-         
 elabDecl' _ _ _ = return () -- skipped this time

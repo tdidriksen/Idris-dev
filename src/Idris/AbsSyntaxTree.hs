@@ -311,7 +311,6 @@ data IState = IState {
   , idris_ttstats                :: M.Map Term (Int, Term)
   , idris_fragile                :: Ctxt String               -- ^ Fragile names and explanation.
   , idris_interactiveOpts        :: InteractiveOpts
-  , idris_copatterns             :: M.Map Name [Name] --(RecordInfo, [(Name, Name)])
   , idris_proj_type              :: M.Map Name PTerm -- TODO: should be part of record info
   }
   deriving Generic
@@ -417,7 +416,7 @@ idrisInit = IState initContext S.empty []
                    [] [] Nothing [] Nothing [] [] Nothing Nothing emptyContext Private DefaultCheckingPartial [] Nothing [] []
                    (RawOutput stdout) True defaultTheme [] (0, emptyContext) emptyContext M.empty
                    AutomaticWidth S.empty S.empty [] [] [] M.empty [] [] []
-                   emptyContext S.empty M.empty emptyContext initialInteractiveOpts M.empty M.empty
+                   emptyContext S.empty M.empty emptyContext initialInteractiveOpts M.empty
 
 -- | The monad for the main REPL - reading and processing files and
 -- updating global state (hence the IO inner monad).
