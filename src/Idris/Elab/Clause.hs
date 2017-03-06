@@ -1357,7 +1357,9 @@ mapRHSdecl f t = t
 
 -- COPATTERNS
 
-applyCoPath :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
+type CoClausePath = [(Name, Name, RecordInfo)]
+
+applyCoPath :: PTerm -> CoClausePath -> PTerm
 applyCoPath term [] = term
 applyCoPath term ((pn, rn, ri) : path) = applyCoPath (PApp NoFC (PRef NoFC [] pn) [pexp term]) path
 
@@ -1376,65 +1378,45 @@ pVTyToPi (arg:args) (Bind bn (PVTy pty) sc) env =
      tfst (x, _, _) = x
 pVTyToPi _ ty _ = return ty
 
-elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [PClause] -> [PClause] -> Idris ()
-elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path@[_]):cs) acc =
-  do logLvl 0 $ "lhs: " ++ show lhs
-     i <- getIState
+mkCopatternTyDecl :: ElabWhat -> ElabInfo -> Name -> Type -> Idris ()
+mkCopatternTyDecl what info pfn piElhsTy =
+  do i <- getIState
+     let tyDecl = PTy emptyDocstring [] defaultSyntax NoFC [] pfn NoFC (delab i piElhsTy)
+     logLvl 0 $ "tyDecl: " ++ show tyDecl
+     (rec_elabDecl info) what info tyDecl
+
+copatternType :: ElabInfo -> Name -> CoClausePath -> Idris Type
+copatternType info fn path =
+  do i <- getIState
      let fnPArgs = case lookupCtxtExact fn (idris_implicits i) of
-                     Just pargs ->
-                       flip map (zip pargs [0..]) (\(p,i) ->
-                          case p of
-                            PExp _ _ n _ -> pexp (PRef NoFC [] (mkMN n))
-                            _ -> p { getTm = PRef NoFC [] ((mkMN . pname) p) })
+                     Just pargs -> map (\p -> p { getTm = PRef NoFC [] (pname p) }) pargs
                      Nothing -> []
-     let newlhs = PApp NoFC (PRef NoFC [] pfn) fnPArgs
      let ap = applyCoPath (PApp NoFC (PRef NoFC [] fn) fnPArgs) path
      logLvl 0 $ "ap: " ++ show ap
      (_, elhsTy) <- elabVal info ELHS ap
      logLvl 0 $ "elhsTy: " ++ show elhsTy
      piElhsTy <- pVTyToPi fnPArgs elhsTy []
      logLvl 0 $ "piElhsTy: " ++ show piElhsTy
-     
-     let lhsSubst = substMatch fn (PRef NoFC [] pfn) lhs
-     ctxt <- getContext
-     
-     unless (isJust $ lookupTyNameExact pfn ctxt)
-      (do i <- getIState
-          let tyDecl = PTy emptyDocstring [] defaultSyntax NoFC [] pfn NoFC (delab i piElhsTy)
-          logLvl 0 $ "tyDecl: " ++ show tyDecl
-          (rec_elabDecl info) what info tyDecl)
+     return piElhsTy
 
-     i <- getIState
-     let clause = PClause NoFC pfn lhsSubst [] rhs wheres
+elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [PClause] -> [PClause] -> Idris ()
+elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path@[_]):cs) acc =
+  do logLvl 0 $ "lhs: " ++ show lhs
+     piElhsTy <- copatternType info fn path
+
+     ctxt <- getContext
+     unless (isJust $ lookupTyNameExact pfn ctxt) $ mkCopatternTyDecl what info pfn piElhsTy
+
+     let clause = PClause NoFC pfn (substMatch fn (PRef NoFC [] pfn) lhs) [] rhs wheres
      logLvl 0 $ "clause': " ++ show clause
      elabCoClauses' what info fn pfn cs ([clause] ++ acc)
-  where
-   mkMN :: Name -> Name
-   mkMN (UN n) | "__pi_arg" `isPrefixOf` (str n) = MN 0 n
-   mkMN n = n
 elabCoClauses' what info fn pfn cs@(PCoClause fc cn lhs rhs wheres path@(p:path'):_) acc =
   do logLvl 0 $ "lhs: " ++ show lhs
-     i <- getIState
-     let fnPArgs = case lookupCtxtExact fn (idris_implicits i) of
-                     Just pargs ->
-                       flip map (zip pargs [0..]) (\(p,i) ->
-                          case p of
-                            PExp _ _ n _ -> pexp (PRef NoFC [] n)
-                            _ -> p { getTm = PRef NoFC [] (pname p) })
-                     Nothing -> []
-     let ap = applyCoPath (PApp NoFC (PRef NoFC [] fn) fnPArgs) [p]
-     logLvl 0 $ "ap: " ++ show ap
-     (_, elhsTy) <- elabVal info ELHS ap
-     logLvl 0 $ "elhsTy: " ++ show elhsTy
-     piElhsTy <- pVTyToPi fnPArgs elhsTy []
-     logLvl 0 $ "piElhsTy: " ++ show piElhsTy
+     piElhsTy <- copatternType info fn [p]
 
      ctxt <- getContext
-     unless (isJust $ lookupTyNameExact pfn ctxt)
-      (do i <- getIState
-          let tyDecl = PTy emptyDocstring [] defaultSyntax NoFC [] pfn NoFC (delab i piElhsTy)
-          logLvl 0 $ "tyDecl': " ++ show tyDecl
-          (rec_elabDecl info) what info tyDecl)
+     unless (isJust $ lookupTyNameExact pfn ctxt) $ mkCopatternTyDecl what info pfn piElhsTy
+
      elabCoClauses what info NoFC [] pfn (map (tailPathClause . lhsSubstClause) cs)
   where
    tailPathClause (PCoClause fc cn lhs rhs wheres (p:ps)) = PCoClause fc cn lhs rhs wheres ps
