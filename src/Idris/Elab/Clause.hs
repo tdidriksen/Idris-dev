@@ -1417,7 +1417,8 @@ elabCoClauses' what info fn pfn cs@(PCoClause fc cn lhs rhs wheres path@(p:path'
      ctxt <- getContext
      unless (isJust $ lookupTyNameExact pfn ctxt) $ mkCopatternTyDecl what info pfn piElhsTy
 
-     elabCoClauses what info NoFC [] pfn (map (tailPathClause . lhsSubstClause) cs)
+     clauses <- elabCoClauses what info NoFC [] pfn (map (tailPathClause . lhsSubstClause) cs)
+     rec_elabDecl info what info $ PClauses NoFC [] pfn clauses
   where
    tailPathClause (PCoClause fc cn lhs rhs wheres (p:ps)) = PCoClause fc cn lhs rhs wheres ps
    tailPathClause c = c
@@ -1437,15 +1438,31 @@ elabCoClausesDecl what info d@(PClauses fc opts fn cs)
   | all (\c -> case c of
           PCoClause _ _ _ _ _ (_:_) -> False
           _ -> True) cs
-    = rec_elabDecl info what info (PClauses fc opts fn (map toPClause cs))
+    = do logLvl 0 $ show d ++ ": Not a coclause"
+         let d' = PClauses fc opts fn (map toPClause cs)
+         logLvl 0 $ "d': " ++ show d'
+         rec_elabDecl info what info d'
   where
     toPClause :: PClause -> PClause
     toPClause (PCoClause fc n lhs rhs wheres path) = PClause fc n lhs [] rhs wheres
     toPClause c = c
 elabCoClausesDecl what info (PClauses fc opts fn cs) =
-  elabCoClauses what info fc opts fn cs
+  do cs' <- elabCoClauses what info fc opts fn cs
+     rec_elabDecl info what info $ PClauses fc opts fn cs'
+elabCoClausesDecl what info (PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn ds) =
+  do ds' <- forM ds substClauses
+     rec_elabDecl info what info $ PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn ds'
+  where
+    substClauses :: PDecl -> Idris PDecl
+    substClauses (PClauses fc opts fn cs) =
+      do cs' <- elabCoClauses what info fc opts fn cs
+         return $ PClauses fc opts fn cs'
+    substClauses x = return x
+elabCoClausesDecl what info d =
+  do logLvl 0 $ "No copatterns here: " ++ show d
+     rec_elabDecl info what info d -- No copatterns here
 
-elabCoClauses :: ElabWhat -> ElabInfo -> FC -> FnOpts -> Name -> [PClause] -> Idris ()
+elabCoClauses :: ElabWhat -> ElabInfo -> FC -> FnOpts -> Name -> [PClause] -> Idris [PClause]
 elabCoClauses what info fc opts fn cs@(c:_) =
   do ctxt <- getContext
 
@@ -1483,7 +1500,7 @@ elabCoClauses what info fc opts fn cs@(c:_) =
      let clause = PClause NoFC fn lhs [] rhs []
      logLvl 0 $ "clause: " ++ show clause
 
-     rec_elabDecl info what info $ PClauses fc opts fn [clause]
+     return [clause]
   where
     coClauseConstructor :: PClause -> Maybe Name
     coClauseConstructor (PCoClause _ _ _ _ _ ((_,_,ri):_)) = Just $ record_constructor ri
@@ -1505,4 +1522,4 @@ elabCoClauses what info fc opts fn cs@(c:_) =
           Just _  -> auxName (nextName n)
           Nothing -> return n
 elabCoClauses what info fc opts fn [] =
-  return ()
+  return []
