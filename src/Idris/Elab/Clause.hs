@@ -1389,7 +1389,7 @@ copatternType :: ElabInfo -> Name -> CoClausePath -> Idris Type
 copatternType info fn path =
   do i <- getIState
      let fnPArgs = case lookupCtxtExact fn (idris_implicits i) of
-                     Just pargs -> map (\p -> p { getTm = PRef NoFC [] (pname p) }) pargs
+                     Just pargs -> map (\(p,i) -> p { getTm = PRef NoFC [] (piHack (pname p) i) }) (zip pargs [0..])
                      Nothing -> []
      let ap = applyCoPath (PApp NoFC (PRef NoFC [] fn) fnPArgs) path
      logLvl 0 $ "ap: " ++ show ap
@@ -1398,10 +1398,15 @@ copatternType info fn path =
      piElhsTy <- pVTyToPi fnPArgs elhsTy []
      logLvl 0 $ "piElhsTy: " ++ show piElhsTy
      return piElhsTy
+  where
+    -- piHack is needed because UN is used for implicitly bound pi arguments in the parser (__pi_arg)
+    piHack :: Name -> Int -> Name
+    piHack (UN n) i | "__pi_arg" `isPrefixOf` (str n) = sUN $ (str n) ++ show i
+    piHack n _ = n
 
 elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [PClause] -> [PClause] -> Idris ()
 elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path@[_]):cs) acc =
-  do logLvl 0 $ "lhs: " ++ show lhs
+  do logLvl 0 $ "lhs-one: " ++ show lhs
      piElhsTy <- copatternType info fn path
 
      ctxt <- getContext
@@ -1411,7 +1416,7 @@ elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path@[_]):cs) a
      logLvl 0 $ "clause': " ++ show clause
      elabCoClauses' what info fn pfn cs ([clause] ++ acc)
 elabCoClauses' what info fn pfn cs@(PCoClause fc cn lhs rhs wheres path@(p:path'):_) acc =
-  do logLvl 0 $ "lhs: " ++ show lhs
+  do logLvl 0 $ "lhs-morethanone: " ++ show lhs
      piElhsTy <- copatternType info fn [p]
 
      ctxt <- getContext
@@ -1449,15 +1454,6 @@ elabCoClausesDecl what info d@(PClauses fc opts fn cs)
 elabCoClausesDecl what info (PClauses fc opts fn cs) =
   do cs' <- elabCoClauses what info fc opts fn cs
      rec_elabDecl info what info $ PClauses fc opts fn cs'
-elabCoClausesDecl what info (PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn ds) =
-  do ds' <- forM ds substClauses
-     rec_elabDecl info what info $ PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn ds'
-  where
-    substClauses :: PDecl -> Idris PDecl
-    substClauses (PClauses fc opts fn cs) =
-      do cs' <- elabCoClauses what info fc opts fn cs
-         return $ PClauses fc opts fn cs'
-    substClauses x = return x
 elabCoClausesDecl what info d =
   do logLvl 0 $ "No copatterns here: " ++ show d
      rec_elabDecl info what info d -- No copatterns here
@@ -1465,7 +1461,7 @@ elabCoClausesDecl what info d =
 elabCoClauses :: ElabWhat -> ElabInfo -> FC -> FnOpts -> Name -> [PClause] -> Idris [PClause]
 elabCoClauses what info fc opts fn cs@(c:_) =
   do ctxt <- getContext
-
+     logLvl 0 $ "CoElaborating: " ++ show fn
      -- Build LHS
      fTy <- case lookupTyNameExact fn ctxt of
               Just (_, ty) -> return ty

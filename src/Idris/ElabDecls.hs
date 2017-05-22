@@ -306,7 +306,7 @@ elabDecl' what info (PRunElabDecl fc script ns)
 elabDecl' what info (PCopatterns fc syn clauses)
     = do -- Partition clauses into copattern clauses and regular pattern clauses
          -- Elaborate regular pattern clauses as expected
-         -- Collect coclauses 
+         -- Collect coclauses
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
          ds <- collectDecls Nothing [] clauses
          logLvl 0 $ "Decls: " ++ show ds
@@ -317,7 +317,6 @@ elabDecl' what info (PCopatterns fc syn clauses)
          mapM_ (elabDecl ETypes info) tydecls
          mapM_ (elabCoClausesDecl what info) cs
       where
-        
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]
        collectDecls targetName cs ((PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)) : ds) =
          do logLvl 0 $ "Encountered CoClause: " ++ show n
@@ -333,6 +332,14 @@ elabDecl' what info (PCopatterns fc syn clauses)
        collectDecls (Just tn) cs (PClauses fc opts pn [] : []) =
          return [PClauses fc opts tn (reverse cs)]
        collectDecls targetName cs (PClauses fc opts pn [] : ds) = collectDecls targetName cs ds
+       collectDecls targetName cs (PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn ds : ds') =
+         do logLvl 0 $ "Encountered implementation: " ++ show n
+            implementationDecls <- collectDecls Nothing [] ds
+            rest <- collectDecls targetName cs ds'
+            return $ (implementationWithNewDecls implementationDecls): rest
+         where
+           implementationWithNewDecls :: [PDecl] -> PDecl
+           implementationWithNewDecls newDecls = PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn newDecls
        collectDecls targetName cs (d : ds) = do logLvl 0 $ "Encountered decl: " ++ show d
                                                 ds' <- collectDecls targetName cs ds
                                                 return $ d : ds'

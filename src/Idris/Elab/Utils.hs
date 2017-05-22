@@ -176,6 +176,7 @@ decorateid decorate (PTy doc argdocs s f o n nfc t) = PTy doc argdocs s f o (dec
 decorateid decorate (PClauses f o n cs)
    = PClauses f o (decorate n) (map dc cs)
     where dc (PClause fc n t as w ds) = PClause fc (decorate n) (dappname t) as w ds
+          dc (PCoClause fc n lhs rhs wheres path) = PCoClause fc (decorate n) (dappname lhs) rhs wheres path
           dc (PWith   fc n t as w pn ds)
                  = PWith fc (decorate n) (dappname t) as w pn
                             (map (decorateid decorate) ds)

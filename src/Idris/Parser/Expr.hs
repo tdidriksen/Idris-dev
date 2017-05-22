@@ -1136,7 +1136,7 @@ unboundPi opts st syn = do
        x <- opExpr syn
        (do binder <- bindsymbol opts st syn
            sc <- expr syn
-           return (PPi binder (sMN 0 "__pi_arg") NoFC x sc))
+           return (PPi binder (sUN "__pi_arg") NoFC x sc))
               <|> return x
 
 -- This is used when we need to disambiguate from a constraint list
@@ -1145,7 +1145,7 @@ unboundPiNoConstraint opts st syn = do
        (do binder <- bindsymbol opts st syn
            sc <- expr syn
            notFollowedBy $ reservedOp "=>"
-           return (PPi binder (sMN 0 "__pi_arg") NoFC x sc))
+           return (PPi binder (sUN "__pi_arg") NoFC x sc))
               <|> do notFollowedBy $ reservedOp "=>"
                      return x
 

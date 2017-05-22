@@ -204,7 +204,19 @@ elabImplementation info syn doc argDocs what fc cs parents acc opts n nfc ps pex
          let wbVals' = map (addParams prop_params) wbVals
 
          logElab 5 ("Elaborating method bodies: " ++ show wbVals')
-         mapM_ (rec_elabDecl info EAll info) wbVals'
+
+         let hasCoClauses = any (\c -> case c of
+                PCoClause _ _ _ _ _ _ -> True
+                _ -> False)
+         let hasCoClausesDecl d = case d of
+                PClauses f o n cs -> hasCoClauses cs
+                _ -> False
+
+         let wbVals'' = map (\d -> if hasCoClausesDecl d
+                                   then PCopatterns fc defaultSyntax (pure d)
+                                   else d) wbVals'
+
+         mapM_ (rec_elabDecl info EAll info) wbVals''
 
          mapM_ (checkInjectiveDef fc (interface_methods ci)) (zip ds' wbVals')
 
