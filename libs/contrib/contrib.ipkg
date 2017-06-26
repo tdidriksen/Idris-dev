@@ -1,6 +1,6 @@
 package contrib
 
-opts = "--nobasepkgs --total -i ../prelude -i ../base"
+opts = "--nobasepkgs --partial-eval --total -i ../prelude -i ../base"
 modules = CFFI, CFFI.Types, CFFI.Memory,
 
           Control.Algebra,
@@ -8,6 +8,8 @@ modules = CFFI, CFFI.Types, CFFI.Memory,
           Control.Algebra.NumericImplementations,
           Control.Isomorphism.Primitives,
           Control.Partial,
+          Control.Pipeline,
+          Control.ST, Control.ST.ImplicitCall, Control.ST.Exception,
 
           Interfaces.Verified,
 
@@ -24,8 +26,10 @@ modules = CFFI, CFFI.Types, CFFI.Memory,
 
           Decidable.Decidable, Decidable.Order,
 
-          Network.Cgi, Network.Socket,
+          Network.Cgi, Network.Socket.Data, Network.Socket.Raw, Network.Socket,
 
           System.Concurrency.Process,
+
+          Text.Lexer, Text.Parser,
 
           Data.Fin.Extra

@@ -64,23 +64,44 @@ contribute.
 cross-platform program for developing Haskell projects, that enhances
 the functionality provided by Cabal. There is experimental support for
 building Idris from source with stack.
+
 This installation has been tested on Ubuntu 16.04.1 LTS, and the current
 NixOS unstable.
 
-To build Idris with stack the following commands are recommended:
+*Important* Stack will not install any external dependencies required
+to build Idris. Before you try stack please ensure you have the
+correct depenencies.
+
+To build Idris with stack use the following command:
 
 * `stack build`
 
-This will install Idris (and related executables) into `./local/bin/`
-on Unix based systems and an appropriate place on Windows. If you
-haven't used stack before this will also setup the related
-infrastructure. For more information about Stack please visit the
-[Stack website](https://github.com/commercialhaskell/stack).
+To install Idris:
+
+* `stack install`
+
+Stack will install Idris (and related executables) into `$HOME/.local/bin/`
+on Unix based systems and an appropriate place on Windows.
+
+Of note: If you haven't used stack before commands will also setup the
+related infrastructure. For more information about Stack please visit
+the [Stack website](https://github.com/commercialhaskell/stack).
 
 On NixOS, please use the following command instead, to make sure
 the required libraries and header files are available:
 
 * `stack build --nix`
+
+### before rebuilding new pulls
+the default build will currently just reuse `.ibc` files which can result
+in build-failures in the `Building libraries...` phase.
+
+A safer way to do this is therefore to recursively delete all the `*.ibc`
+files from the `libs/` folder.
+
+On Linux(or similar) you can do this with
+
+    find . -name "*.ibc" -exec rm -rf {} \;
 
 ### System GHC
 
@@ -101,4 +122,4 @@ encounter this then the fix is to augment the `PKG_CONFIG_PATH` for
 
 ```
 PKG_CONFIG_PATH=/usr/local/opt/libffi/lib/pkgconfig stack build
-```
+``` 

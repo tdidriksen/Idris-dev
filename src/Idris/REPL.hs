@@ -26,6 +26,10 @@ import Control.Monad
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State.Strict (evalStateT, get, put)
+import qualified Data.Binary as Binary
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Lazy as Lazy
+import qualified Data.ByteString.UTF8 as UTF8
 import Data.Char
 import Data.Either (partitionEithers)
 import Data.List hiding (group)
@@ -46,6 +50,7 @@ import Idris.Core.TT
 import Idris.Core.Unify
 import Idris.Core.WHNF
 import Idris.Coverage
+import Idris.DataOpts
 import Idris.Delaborate
 import Idris.Docs
 import Idris.Docstrings (overview, renderDocTerm, renderDocstring)
@@ -91,6 +96,8 @@ import Util.Net (listenOnLocalhost, listenOnLocalhostAnyPort)
 import Util.Pretty hiding ((</>))
 import Util.System
 import Version_idris (gitHash)
+
+import Debug.Trace
 
 -- | Run the REPL
 repl :: IState -- ^ The initial state
@@ -421,9 +428,9 @@ runIdeModeCommand h id orig fn mods (IdeMode.Metavariables cols) =
         splitPi :: IState -> Int -> Type -> ([(Name, Type, PTerm)], Type, PTerm)
         splitPi ist i (Bind n (Pi _ _ t _) rest) | i > 0 =
           let (hs, c, pc) = splitPi ist (i - 1) rest in
-            ((n, t, delabTy' ist [] t False False True):hs,
-             c, delabTy' ist [] c False False True)
-        splitPi ist i tm = ([], tm, delabTy' ist [] tm False False True)
+            ((n, t, delabTy' ist [] [] t False False True):hs,
+             c, delabTy' ist [] [] c False False True)
+        splitPi ist i tm = ([], tm, delabTy' ist [] [] tm False False True)
 
         -- | Get the types of a list of metavariable names
         mvTys :: IState -> [(Name, Int)] -> [(Name, Int, Type)]
@@ -579,6 +586,16 @@ ideModeForceTermImplicits h id bnd impl tm =
      runIO . hPutStrLn h $ IdeMode.convSExp "return" msg id
 
 splitName :: String -> Either String Name
+splitName s | "{{{{{" `isPrefixOf` s =
+              decode $ drop 5 $ reverse $ drop 5 $ reverse s
+  where decode x =
+          case Base64.decode (UTF8.fromString x) of
+            Left err -> Left err
+            Right ok ->
+              case Binary.decodeOrFail (Lazy.fromStrict ok) of
+                Left _ -> Left "Bad binary instance for Name"
+                Right (_, _, n) -> Right n
+
 splitName s = case reverse $ splitOn "." s of
                 [] -> Left ("Didn't understand name '" ++ s ++ "'")
                 [n] -> Right . sUN $ unparen n
@@ -1236,7 +1253,8 @@ process fn (TestInline t)
 process fn (Execute tm)
                    = idrisCatch
                        (do ist <- getIState
-                           (m, _) <- elabVal (recinfo (fileFC "toplevel")) ERHS (elabExec fc tm)
+                           (m_in, _) <- elabVal (recinfo (fileFC "toplevel")) ERHS (elabExec fc tm)
+                           m <- applyOpts m_in
                            (tmpn, tmph) <- runIO $ tempfile ""
                            runIO $ hClose tmph
                            t <- codegen
@@ -1509,15 +1527,16 @@ pprintDef asCore n =
         ppDef amb ist (n, (clauses, missing)) =
           prettyName True amb [] n <+> colon <+>
           align (pprintDelabTy ist n) <$>
-          ppClauses ist (map (\(ns, lhs, rhs) -> (map fst ns, lhs, rhs)) clauses) <> ppMissing missing
+          ppClauses ist clauses <> ppMissing missing
         ppClauses ist [] = text "No clauses."
         ppClauses ist cs = vsep (map pp cs)
-          where pp (vars, lhs, rhs) =
-                  let ppTm t = annotate (AnnTerm (zip vars (repeat False)) t) .
+          where pp (varTys, lhs, rhs) =
+                  let vars = map fst varTys
+                      ppTm t = annotate (AnnTerm (zip vars (repeat False)) t) .
                                pprintPTerm (ppOptionIst ist)
                                      (zip vars (repeat False))
                                      [] (idris_infixes ist) .
-                               delab ist $
+                               delabWithEnv ist varTys $
                                t
                   in group $ ppTm lhs <+> text "=" <$> (group . align . hang 2 $ ppTm rhs)
         ppMissing _ = empty

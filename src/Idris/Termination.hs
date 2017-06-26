@@ -163,7 +163,7 @@ checkTotality path fc n
         t <- getTotality n
         i <- getIState
         ctxt' <- do ctxt <- getContext
-                    tclift $ simplifyCasedef n (getErasureInfo i) ctxt
+                    tclift $ simplifyCasedef n [] [] (getErasureInfo i) ctxt
         setContext ctxt'
         ctxt <- getContext
         i <- getIState
@@ -239,7 +239,7 @@ verifyTotality (fc, n)
                  case getPartial ist [] ns of
                       Nothing -> return ()
                       Just bad -> do let t' = Partial (Other bad)
-                                     logCoverage 2 $ "Set to " ++ show t'
+                                     logCoverage 2 $ "Set in verify to " ++ show t'
                                      setTotality n t'
                                      addIBC (IBCTotal n t')
               _ -> return ()
@@ -270,8 +270,8 @@ verifyTotality (fc, n)
 buildSCG :: (FC, Name) -> Idris ()
 buildSCG (_, n) = do
    ist <- getIState
-   case lookupCtxt n (idris_callgraph ist) of
-       [cg] -> case lookupDefExact n (tt_ctxt ist) of
+   case lookupCtxtExact n (idris_callgraph ist) of
+       Just cg -> case lookupDefExact n (tt_ctxt ist) of
            Just (CaseOp _ _ _ pats _ cd) ->
              let (args, sc) = cases_compiletime cd in
                do logCoverage 2 $ "Building SCG for " ++ show n ++ " from\n"
@@ -280,13 +280,12 @@ buildSCG (_, n) = do
                   logCoverage 5 $ "SCG is: " ++ show newscg
                   addToCG n ( cg { scg = newscg } )
            _ -> return () -- CG comes from a type declaration only
-       [] -> logCoverage 5 $ "Could not build SCG for " ++ show n ++ "\n"
-       x -> error $ "buildSCG: " ++ show (n, x)
+       _ -> logCoverage 5 $ "Could not build SCG for " ++ show n ++ "\n"
 
 delazy = delazy' False -- not lazy codata
 delazy' all t@(App _ f a)
-     | (P _ (UN l) _, [_, _, arg]) <- unApply t,
-       l == txt "Force" = delazy' all arg
+     | (P _ (UN l) _, [P _ (UN lty) _, _, arg]) <- unApply t,
+       l == txt "Force" && (all || lty /= txt "Infinite") = delazy' all arg
      | (P _ (UN l) _, [P _ (UN lty) _, _, arg]) <- unApply t,
        l == txt "Delay" && (all || lty /= txt "Infinite") = delazy arg
      | (P _ (UN l) _, [P _ (UN lty) _, arg]) <- unApply t,
@@ -352,7 +351,8 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
        Delayed <- guarded
        -- Under a delayed recursive call just check the arguments
            = concatMap (\x -> findCalls cases Unguarded x pvs pargs) args
-     | (P _ n _, args) <- unApply ap
+     | (P _ n _, args) <- unApply ap,
+       not (n `elem` pvs)
         -- Ordinary call, not under a delay.
         -- If n is a constructor, set 'args' as Guarded
         = let nguarded = case guarded of
@@ -448,14 +448,17 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
           | otherwise = checkSize a ps
       checkSize a [] = Nothing
 
-      -- the smaller thing we find must be defined in the same group of mutally
-      -- defined types as <a>, and not be coinductive - so carry the type of
-      -- the constructor we've gone under.
-
-      smaller (Just tyn) a (t, Just tyt)
-         | a == t = isInductive (fst (unApply (getRetTy tyn)))
-                                (fst (unApply (getRetTy tyt)))
+      -- Can't be smaller than an erased thing (need to be careful here
+      -- because Erased equals everything)
+      smaller _ _ (Erased, _) = False -- never smaller than an erased thing
+      -- If a == t, and we're under a cosntructor, we've found something
+      -- smaller
+      smaller (Just tyn) a (t, Just tyt) | a == t = True
       smaller ty a (ap@(App _ f s), _)
+          -- Nothing can be smaller than a delayed infinite thing...
+          | (P (DCon _ _ _) (UN d) _, [P _ (UN reason) _, _, _]) <- unApply ap,
+            d == txt "Delay" && reason == txt "Infinite"
+               = False
           | (P (DCon _ _ _) n _, args) <- unApply ap
                = let tyn = getType n in
                      any (smaller (ty `mplus` Just tyn) a)
@@ -468,13 +471,6 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
 
       getType n = case lookupTyExact n (tt_ctxt ist) of
                        Just ty -> delazy (normalise (tt_ctxt ist) [] ty) -- must exist
-
-      isInductive (P _ nty _) (P _ nty' _) =
-          let (co, muts) = case lookupCtxt nty (idris_datatypes ist) of
-                                [TI _ x _ _ muts _] -> (x, muts)
-                                _ -> (False, []) in
-              (nty == nty' || any (== nty') muts) && not co
-      isInductive _ _ = False
 
   dePat (Bind x (PVar _ ty) sc) = dePat (instantiate (P Bound x ty) sc)
   dePat t = t
@@ -634,16 +630,16 @@ collapse' def (d : xs)         = collapse' d xs
 -- collapse' Unchecked []         = Total []
 collapse' def []               = def
 
-totalityCheckBlock :: Idris ()
-totalityCheckBlock = do
-         ist <- getIState
-         -- Do totality checking after entire mutual block
-         mapM_ (\n -> do logElab 5 $ "Simplifying " ++ show n
-                         ctxt' <- do ctxt <- getContext
-                                     tclift $ simplifyCasedef n (getErasureInfo ist) ctxt
-                         setContext ctxt')
-                 (map snd (idris_totcheck ist))
-         mapM_ buildSCG (idris_totcheck ist)
-         mapM_ checkDeclTotality (idris_totcheck ist)
-         clear_totcheck
+-- totalityCheckBlock :: Idris ()
+-- totalityCheckBlock = do
+--          ist <- getIState
+--          -- Do totality checking after entire mutual block
+--          mapM_ (\n -> do logElab 5 $ "Simplifying " ++ show n
+--                          ctxt' <- do ctxt <- getContext
+--                                      tclift $ simplifyCasedef n (getErasureInfo ist) ctxt
+--                          setContext ctxt')
+--                  (map snd (idris_totcheck ist))
+--          mapM_ buildSCG (idris_totcheck ist)
+--          mapM_ checkDeclTotality (idris_totcheck ist)
+--          clear_totcheck
 

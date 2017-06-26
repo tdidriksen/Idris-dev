@@ -36,6 +36,39 @@ foldl1 f (x::xs) = foldl f x xs
 (++) : String -> String -> String
 (++) = prim__concat
 
+||| A preallocated buffer for building a String. This allows a function (in IO)
+||| to allocate enough space for a string which will be built from smaller
+||| pieces without having to allocate at every step.
+||| To build a string using a `StringBuffer`, see `newStringBuffer`,
+||| `addToStringBuffer` and `getStringFromBuffer`.
+export
+data StringBuffer = MkString Ptr
+
+||| Create a buffer for a string with maximum length len
+export
+newStringBuffer : (len : Int) -> IO StringBuffer
+newStringBuffer len = do ptr <- foreign FFI_C "idris_makeStringBuffer"
+                                         (Int -> IO Ptr) len
+                         pure (MkString ptr)
+
+||| Append a string to the end of a string buffer
+export
+addToStringBuffer : StringBuffer -> String -> IO ()
+addToStringBuffer (MkString ptr) str =
+    foreign FFI_C "idris_addToString" (Ptr -> String -> IO ())
+            ptr str
+
+||| Get the string from a string buffer. The buffer is invalid after
+||| this.
+export
+getStringFromBuffer : StringBuffer -> IO String
+getStringFromBuffer (MkString ptr) =
+    do vm <- getMyVM
+       MkRaw str <- foreign FFI_C "idris_getString"
+                            (Ptr -> Ptr -> IO (Raw String))
+                            vm ptr
+       pure str
+
 ||| Returns the first character in the specified string.
 |||
 ||| Doesn't work for empty strings.
@@ -214,7 +247,7 @@ break p = span (not . p)
 split : (Char -> Bool) -> String -> List String
 split p xs = map pack (split p (unpack xs))
 
-||| Removes whitespace (determined with 'isSpace') from
+||| Removes whitespace (determined by 'isSpace') from
 ||| the start of the string.
 |||
 ||| ```idris example
@@ -229,7 +262,7 @@ ltrim xs with (strM xs)
     ltrim (strCons x xs) | StrCons _ _
         = if (isSpace x) then assert_total (ltrim xs) else (strCons x xs)
 
-||| Removes whitespace (determined with 'isSpace') from
+||| Removes whitespace (determined by 'isSpace') from
 ||| the start and end of the string.
 |||
 ||| ```idris example
@@ -338,7 +371,7 @@ toLower x with (strM x)
 ||| Uppercases all characters in the string.
 |||
 ||| ```idris example
-||| toLower "aBc12!"
+||| toUpper "aBc12!"
 ||| ```
 toUpper : String -> String
 toUpper x with (strM x)

@@ -29,12 +29,15 @@ import Control.Monad.Trans
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Control.Monad.Trans.State.Strict
 import Data.Bits
+import Data.IORef
 import qualified Data.Map as M
 import Data.Maybe
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Traversable (forM)
 import Debug.Trace
 import System.IO
+import System.IO.Error
+import System.IO.Unsafe
 
 #ifdef IDRIS_FFI
 import Foreign.C.String
@@ -70,6 +73,32 @@ data ExecVal = EP NameType Name ExecVal
              | forall a. EPtr (Ptr a)
              | EThunk Context ExecEnv Term
              | EHandle Handle
+             | EStringBuf (IORef String)
+
+fileError :: IORef ExecVal
+{-# NOINLINE fileError #-}
+fileError = unsafePerformIO $ newIORef $ operationNotPermitted
+
+operationNotPermitted =
+  ioWrap $ mkRaw $ EApp (EP (DCon 0 1 False)
+                            (sNS (sUN "GenericFileError") ["File", "Prelude"])
+                            EErased)
+                        (EConstant (I 1))
+
+namedFileError name =
+  ioWrap $ mkRaw $ (EP (DCon 0 0 False)
+                       (sNS (sUN name) ["File", "Prelude"])
+                       EErased)
+
+mapError :: IOError -> ExecVal
+mapError e
+  | (isDoesNotExistError e) = namedFileError "FileNotFound"
+  | (isPermissionError e)   = namedFileError "PermissionDenied"
+  | otherwise               = operationNotPermitted
+
+mkRaw :: ExecVal -> ExecVal
+mkRaw arg = EApp (EApp (EP (DCon 0 1 False) (sNS (sUN "MkRaw") ["FFI_C"]) EErased)
+                       EErased) arg
 
 instance Show ExecVal where
   show (EP _ n _)        = show n
@@ -83,6 +112,7 @@ instance Show ExecVal where
   show (EPtr p)          = "<<ptr " ++ show p ++ ">>"
   show (EThunk _ env tm) = "<<thunk " ++ show env ++ "||||" ++ show tm ++ ">>"
   show (EHandle h)       = "<<handle " ++ show h ++ ">>"
+  show (EStringBuf h)    = "<<string buffer>>"
 
 toTT :: ExecVal -> Exec Term
 toTT (EP nt n ty) = (P nt n) <$> (toTT ty)
@@ -117,6 +147,7 @@ toTT (EThunk ctxt env tm) = do env' <- mapM toBinder env
                              return (n, RigW, Let Erased v')
 toTT (EHandle _) = execFail $ Msg "Can't convert handles back to TT after execution."
 toTT (EPtr ptr) = execFail $ Msg "Can't convert pointers back to TT after execution."
+toTT (EStringBuf ptr) = execFail $ Msg "Can't convert string buffers back to TT after execution."
 
 unApplyV :: ExecVal -> (ExecVal, [ExecVal])
 unApplyV tm = ua [] tm
@@ -191,7 +222,7 @@ doExec env ctxt v@(V i) | i < length env = return (snd (env !! i))
                         | otherwise      = execFail . Msg $ "env too small"
 doExec env ctxt (Bind n (Let t v) body) = do v' <- doExec env ctxt v
                                              doExec ((n, v'):env) ctxt body
-doExec env ctxt (Bind n (NLet t v) body) = trace "NLet" $ undefined
+doExec env ctxt (Bind n (NLet t v) body) = undefined
 doExec env ctxt tm@(Bind n b body) = do b' <- forM b (doExec env ctxt)
                                         return $
                                           EBind n b' (\arg -> doExec ((n, arg):env) ctxt body)
@@ -317,7 +348,11 @@ execForeign env ctxt arity ty fn xs onfail
                 ch <- execIO $ fmap (ioWrap . EConstant . I . fromEnum) getChar
                 execApp env ctxt ch xs
     | Just (FFun "idris_time" _ _) <- foreignFromTT arity ty fn xs
-           = do execIO $ fmap (ioWrap . EConstant . I . round) getPOSIXTime
+           = do execIO $ fmap (ioWrap . mkRaw . EConstant . I . round) getPOSIXTime
+    | Just (FFun "idris_showerror" _ _) <- foreignFromTT arity ty fn xs
+           = do execIO $ return $ ioWrap $ EConstant $ Str "Operation not permitted"
+    | Just (FFun "idris_mkFileError" _ _) <- foreignFromTT arity ty fn xs
+           = do execIO $ readIORef fileError
     | Just (FFun "fileOpen" [(_,fileStr), (_,modeStr)] _) <- foreignFromTT arity ty fn xs
            = case (fileStr, modeStr) of
                (EConstant (Str f), EConstant (Str mode)) ->
@@ -335,8 +370,8 @@ execForeign env ctxt arity ty fn xs onfail
                                                    hSetBinaryMode h' True
                                                    return $ Right (ioWrap (EHandle h'), drop arity xs)
                                      Left err -> return $ Left err)
-                               (\e -> let _ = ( e::SomeException)
-                                      in return $ Right (ioWrap (EPtr nullPtr), drop arity xs))
+                               (\e -> do writeIORef fileError $ mapError e
+                                         return $ Right (ioWrap (EPtr nullPtr), drop arity xs))
                     case f of
                       Left err -> execFail . Msg $ err
                       Right (res, rest) -> execApp env ctxt res rest
@@ -404,6 +439,37 @@ execForeign env ctxt arity ty fn xs onfail
             execIO $ hSetBuffering stdout NoBuffering
             execApp env ctxt ioUnit (drop arity xs)
 
+    -- Just use a Haskell String in an IORef for a string buffer
+    | Just (FFun "idris_makeStringBuffer" [(_, len)] _) <- foreignFromTT arity ty fn xs
+       = case len of
+              EConstant (I _) -> do buf <- execIO $ newIORef ""
+                                    let res = ioWrap (EStringBuf buf)
+                                    execApp env ctxt res (drop arity xs)
+
+              _ -> execFail . Msg $
+                      "The argument to idris_makeStringBuffer should be an Int, but it was " ++
+                      show len ++
+                      ". Are all cases covered?"
+    | Just (FFun "idris_addToString" [(_, strBuf), (_, str)] _) <- foreignFromTT arity ty fn xs
+       = case (strBuf, str) of
+              (EStringBuf ref, EConstant (Str add)) ->
+                  do execIO $ modifyIORef ref (++add)
+                     execApp env ctxt ioUnit (drop arity xs)
+              _ -> execFail . Msg $
+                      "The arguments to idris_addToString should be a StringBuffer and a String, but were " ++
+                      show strBuf ++ " and " ++ show str ++
+                      ". Are all cases covered?"
+    | Just (FFun "idris_getString" [_, (_, str)] _) <- foreignFromTT arity ty fn xs
+       = case str of
+              EStringBuf ref -> do str <- execIO $ readIORef ref
+                                   let res = ioWrap (mkRaw (EConstant (Str str)))
+                                   execApp env ctxt res (drop arity xs)
+              _ -> execFail . Msg $
+                      "The argument to idris_getString should be a StringBuffer, but it was " ++
+                      show str ++
+                      ". Are all cases covered?"
+
+
 
 -- Right now, there's no way to send command-line arguments to the executor,
 -- so just return 0.
@@ -438,6 +504,7 @@ deNS (NS n _) = n
 deNS n = n
 
 prf = sUN "prim__readFile"
+prc = sUN "prim__readChars"
 pwf = sUN "prim__writeFile"
 prs = sUN "prim__readString"
 pws = sUN "prim__writeString"
@@ -457,7 +524,7 @@ getOp :: Name -> [ExecVal] -> Maybe (Exec ExecVal, [ExecVal])
 getOp fn (_ : _ : x : xs) | fn == pbm = Just (return x, xs)
 getOp fn (_ : EConstant (Str n) : xs)
     | fn == pws =
-              Just (do execIO $ putStr n
+              Just (do execIO $ putStr n >> hFlush stdout
                        return (EConstant (I 0)), xs)
 getOp fn (_:xs)
     | fn == prs =
@@ -465,7 +532,7 @@ getOp fn (_:xs)
                        return (EConstant (Str line)), xs)
 getOp fn (_ : EP _ fn' _ : EConstant (Str n) : xs)
     | fn == pwf && fn' == pstdout =
-              Just (do execIO $ putStr n
+              Just (do execIO $ putStr n >> hFlush stdout
                        return (EConstant (I 0)), xs)
 getOp fn (_ : EP _ fn' _ : xs)
     | fn == prf && fn' == pstdin =
@@ -473,12 +540,22 @@ getOp fn (_ : EP _ fn' _ : xs)
                        return (EConstant (Str line)), xs)
 getOp fn (_ : EHandle h : EConstant (Str n) : xs)
     | fn == pwf =
-              Just (do execIO $ hPutStr h n
+              Just (do execIO $ hPutStr h n >> hFlush h
                        return (EConstant (I 0)), xs)
 getOp fn (_ : EHandle h : xs)
     | fn == prf =
               Just (do contents <- execIO $ hGetLine h
                        return (EConstant (Str (contents ++ "\n"))), xs)
+getOp fn (_ : EConstant (I len) : EHandle h : xs)
+    | fn == prc =
+              Just (do contents <- execIO $ hGetChars h len
+                       return (EConstant (Str contents)), xs)
+  where hGetChars h 0 = return ""
+        hGetChars h i = do eof <- hIsEOF h
+                           if eof then return "" else do
+                             c <- hGetChar h
+                             rest <- hGetChars h (i - 1)
+                             return (c : rest)
 getOp fn (_ : arg : xs)
     | fn == prf =
               Just $ (execFail (Msg "Can't use prim__readFile on a raw pointer in the executor."), xs)

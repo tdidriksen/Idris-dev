@@ -99,6 +99,10 @@ elabImplementation info syn doc argDocs what fc cs parents acc opts n nfc ps pex
                                 (map fst $ interface_implementations ci)
                           addImplementation intImpl True n iname
             _ -> addImplementation intImpl False n iname
+
+    ist <- getIState
+    checkInjectiveArgs fc n (interface_determiners ci) (lookupTyExact iname (tt_ctxt ist))
+
     when (what /= ETypes && (not (null ds && not emptyinterface))) $ do
          -- Add the parent implementation names to the privileged set
          oldOpen <- addOpenImpl parents
@@ -154,8 +158,7 @@ elabImplementation info syn doc argDocs what fc cs parents acc opts n nfc ps pex
          let ds_defs = insertDefaults ist iname (interface_defaults ci) ns ds
          logElab 3 ("After defaults: " ++ show ds_defs ++ "\n")
 
-         let ds' = map (addUnfold iname (map fst (interface_methods ci))) $
-                    reorderDefs (map fst (interface_methods ci)) ds_defs
+         let ds' = reorderDefs (map fst (interface_methods ci)) ds_defs
          logElab 1 ("Reordered: " ++ show ds' ++ "\n")
 
          mapM_ (warnMissing ds' ns iname) (map fst (interface_methods ci))
@@ -225,7 +228,6 @@ elabImplementation info syn doc argDocs what fc cs parents acc opts n nfc ps pex
          setOpenImpl oldOpen
 --          totalityCheckBlock
 
-         checkInjectiveArgs fc n (interface_determiners ci) (lookupTyExact iname (tt_ctxt ist))
          addIBC (IBCImplementation intImpl (isNothing expn) n iname)
 
   where
@@ -234,12 +236,6 @@ elabImplementation info syn doc argDocs what fc cs parents acc opts n nfc ps pex
     intImpl = case ps of
                 [PConstant NoFC (AType (ATInt ITNative))] -> True
                 _ -> False
-
-    addUnfold iname ms (PTy doc docs syn fc opts n fc' tm)
-       = PTy doc docs syn fc (UnfoldIface iname ms : opts) n fc' tm
-    addUnfold iname ms (PClauses fc opts n cs)
-       = PClauses fc (UnfoldIface iname ms : opts) n cs
-    addUnfold iname ms dec = dec
 
     mkiname n' ns ps' expn' =
         case expn' of
@@ -262,9 +258,6 @@ elabImplementation info syn doc argDocs what fc cs parents acc opts n nfc ps pex
                               (_:_) -> return True
             _ -> return False -- couldn't find interface, just let elabImplementation fail later
 
-    -- TODO: largely based upon elabType' - should try to abstract
-    -- Issue #1614 in the issue tracker:
-    --    https://github.com/idris-lang/Idris-dev/issues/1614
     elabFindOverlapping i ci iname syn t
         = do ty' <- addUsingConstraints syn fc t
              -- TODO think: something more in info?
@@ -525,7 +518,8 @@ checkInjectiveArgs fc n ds (Just ty)
     isInj i (P _ n _) = isConName n (tt_ctxt i)
     isInj i (App _ f a) = isInj i f && isInj i a
     isInj i (V _) = True
-    isInj i (Bind n b sc) = isInj i sc
+    isInj i (Bind n b@(Pi{}) sc) = isInj i (binderTy b) && isInj i sc
+    isInj i (Bind n b sc) = False
     isInj _ _ = True
 
     instantiateRetTy (Bind n (Pi _ _ _ _) sc)

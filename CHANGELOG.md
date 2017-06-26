@@ -1,3 +1,64 @@
+# New in 1.0.1
+
+## Library Updates
+
++ Added `Text.Lexer` and `Text.Parser` to `contrib`. These are small libraries
+  for implementing total lexical analysers and parsers.
++ New instances:
+    + Added `Catchable` for `ReaderT`, `WriterT`, and `RWST`.
+    + Added `MonadTrans` for `RWST`.
++ Added utility functions to `Data.SortedMap` and `Data.SortedSet` (`contrib`),
+  most notably `merge`, merging two maps by their `Semigroup` op (`<+>`)
++ Added utility functions to `Data.SortedMap` and `Data.SortedSet` (`contrib`),
+  most notably `merge`, merging two maps by their `Semigroup` op (`<+>`)
+  
++ `Prelude.WellFounded` now contains an interface `Sized a` that defines a size
+  mapping from `a` to `Nat`. For example, there is an implementation for lists,
+  where `size = length`.
+
+  The function `sizeAccessible` then proves well-foundedness of the relation
+  `Smaller x y = LT (size x) (size y)`, which  allows us to use strong
+  induction conveniently with any type that implements `Sized`.
+
+  In practice, this allows us to write functions that recurse not only on
+  direct subterms of their arguments but on any value
+  with a (strictly) smaller `size`.
+
+  A good example of this idiom at work is `Data.List.Views.splitRec` from `base`.
+
+## Tool Updates
+
++ New JavaScript code generator that uses an higher level intermediate
+  representation.
+
++ Various optimizations of the new JavaScript code generator.
+
++ Names are now annotated with their representations over the IDE
+  protocol, which allows IDEs to provide commands that work on special
+  names that don't have syntax, such as case block names.
+
+
+# New in 1.0
+
++ It's about time
+
+# New in 0.99.2
+
+## Library Updates
+
++ Added `Data.Buffer` to `base`. This allows basic manipulation of mutable
+  buffers of `Bits8`, including reading from and writing to files.
+
+## Tool Updates
+
++ Idris now checks the list of packages specified at the command line
+  against those installed. If there is a mismatch Idris will complain.
+
+## Miscellaneous Updates
+
++ Documentation updates for the new `Control.ST` library
++ Various stability/efficiency fixes
+
 # New in 0.99.1:
 
 ## Language updates
@@ -35,6 +96,11 @@
 + Idris now runs in a UTF-8-compatible codepage on Windows. This fixes many
   Unicode-rendering issues on Windows (e.g., error messages stating
   `commitBuffer: invalid argument (invalid character)`).
+
++ Idris now has a `--warnipkg` flag to enable auditing of Idris
+  packages during build time. Currently auditing check's the list of
+  modules specified in the `iPKG` file with those presented in the
+  package directory.
 
 ## Library Updates
 

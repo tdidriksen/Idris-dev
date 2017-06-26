@@ -53,7 +53,7 @@ this specific example later.
 Hello world
 ===========
 
-To give an idea of how programs with effects look in , here is the
+To give an idea of how programs with effects look, here is the
 ubiquitous “Hello world” program, written using the ``Effects``
 library:
 
@@ -65,7 +65,7 @@ library:
    import Effect.StdIO
 
    hello : Eff () [STDIO]
-   hello = putStrLn “Hello world!”
+   hello = putStrLn "Hello world!"
 
    main : IO ()
    main = run hello

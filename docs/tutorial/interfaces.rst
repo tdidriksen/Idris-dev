@@ -153,6 +153,16 @@ separated list, for example:
     sortAndShow : (Ord a, Show a) => List a -> String
     sortAndShow xs = show (sort xs)
 
+Note: Interfaces and ``mutual`` blocks
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Idris is strictly "define before use", except in ``mutual`` blocks.
+In a ``mutual`` block, Idris elaborates in two passes: types on the first 
+pass and definitions on the second. When the mutual block contains an
+interface declaration, it elaborates the interface header but none of the
+method types on the first pass, and elaborates the method types and any
+default definitions on the second pass.
+
 Functors and Applicatives
 =========================
 
@@ -192,6 +202,8 @@ abstracts the notion of function application:
     interface Functor f => Applicative (f : Type -> Type) where
         pure  : a -> f a
         (<*>) : f (a -> b) -> f a -> f b
+
+.. _monadsdo:
 
 Monads and ``do``-notation
 ==========================
@@ -241,9 +253,9 @@ are both available, or return ``Nothing`` if one or both are not ("fail fast"). 
 
 ::
 
-    *ifaces> m_add (Just 20) (Just 22)
+    *Interfaces> m_add (Just 20) (Just 22)
     Just 42 : Maybe Int
-    *ifaces> m_add (Just 20) Nothing
+    *Interfaces> m_add (Just 20) Nothing
     Nothing : Maybe Int
 
 Pattern Matching Bind
@@ -553,6 +565,49 @@ implementation ``myord`` as follows, at the Idris prompt:
     *named_impl> show (sort @{myord} testList)
     "[ssssO, sssO, sO]" : String
 
+
+Sometimes, we also need access to a named parent implementation. For example,
+the prelude defines the following ``Semigroup`` interface:
+
+.. code-block:: idris
+
+    interface Semigroup ty where
+      (<+>) : ty -> ty -> ty
+
+Then it defines ``Monoid``, which extends ``Semigroup`` with a "neutral"
+value:
+
+.. code-block:: idris
+
+    interface Semigroup ty => Monoid ty where
+      neutral : ty
+
+We can define two different implementations of ``Semigroup`` and
+``Monoid`` for ``Nat``, one based on addition and one on multiplication:
+
+.. code-block:: idris
+
+    [PlusNatSemi] Semigroup Nat where
+      (<+>) x y = x + y
+
+    [MultNatSemi] Semigroup Nat where
+      (<+>) x y = x * y
+
+The neutral value for addition is ``0``, but the neutral value for multiplication
+is ``1``. It's important, therefore, that when we define implementations
+of ``Monoid`` they extend the correct ``Semigroup`` implementation. We can
+do this with a ``using`` clause in the implementation as follows:
+
+.. code-block:: idris
+
+    [PlusNatMonoid] Monoid Nat using PlusNatSemi where
+      neutral = 0
+
+    [MultNatMonoid] Monoid Nat using MultNatSemi where
+      neutral = 1
+
+The ``using PlusNatSemi`` clause indicates that ``PlusNatMonoid`` should
+extend ``PlusNatSemi`` specifically.
 
 Determining Parameters
 ======================

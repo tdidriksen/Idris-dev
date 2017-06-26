@@ -26,6 +26,7 @@ module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC,
                 lookupRigCount, lookupRigCountExact,
                 lookupNameTotal, lookupMetaInformation, lookupTyEnv, isTCDict,
                 isCanonical, isDConName, canBeDConName, isTConName, isConName, isFnName,
+                conGuarded,
                 Value(..), Quote(..), initEval, uniqueNameCtxt, uniqueBindersCtxt, definitions,
                 isUniverse, linearCheck, linearCheckArg) where
 
@@ -36,6 +37,7 @@ import Control.Applicative hiding (Const)
 import Control.Monad.State
 import Data.Binary hiding (get, put)
 import qualified Data.Binary as B
+import Data.List
 import Data.Maybe (listToMaybe)
 import Debug.Trace
 import GHC.Generics (Generic)
@@ -76,6 +78,7 @@ data Value = VP NameType Name Value
 
 canonical :: Value -> Bool
 canonical (VP (DCon _ _ _) _ _) = True
+canonical (VP (TCon _ _) _ _) = True
 canonical (VApp f a) = canonical f
 canonical (VConstant _) = True
 canonical (VType _) = True
@@ -638,14 +641,6 @@ convEq ctxt holes topx topy = ceq [] topx topy where
         | x `elem` holes || y `elem` holes = return True
         | x == y || (x, y) `elem` ps || (y,x) `elem` ps = return True
         | otherwise = sameDefs ps x y
-    ceq ps x (Bind n (Lam _ t) (App _ y (V 0)))
-          = ceq ps x (substV (P Bound n t) y)
-    ceq ps (Bind n (Lam _ t) (App _ x (V 0))) y
-          = ceq ps (substV (P Bound n t) x) y
-    ceq ps x (Bind n (Lam _ t) (App _ y (P Bound n' _)))
-        | n == n' = ceq ps x y
-    ceq ps (Bind n (Lam _ t) (App _ x (P Bound n' _))) y
-        | n == n' = ceq ps x y
 
     ceq ps (Bind n (PVar _ t) sc) y = ceq ps sc y
     ceq ps x (Bind n (PVar _ t) sc) = ceq ps x sc
@@ -666,6 +661,16 @@ convEq ctxt holes topx topy = ceq [] topx topy where
             ceqB ps (Guess v t) (Guess v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps (Pi r i v t) (Pi r' i' v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps b b' = ceq ps (binderTy b) (binderTy b')
+
+    ceq ps x (Bind n (Lam _ t) (App _ y (V 0)))
+          = ceq ps x (substV (P Bound n t) y)
+    ceq ps (Bind n (Lam _ t) (App _ x (V 0))) y
+          = ceq ps (substV (P Bound n t) x) y
+    ceq ps x (Bind n (Lam _ t) (App _ y (P Bound n' _)))
+        | n == n' = ceq ps x y
+    ceq ps (Bind n (Lam _ t) (App _ x (P Bound n' _))) y
+        | n == n' = ceq ps x y
+
     -- Special case for 'case' blocks - size of scope causes complications,
     -- we only want to check the blocks themselves are valid and identical
     -- in the current scope. So, just check the bodies, and the additional
@@ -989,12 +994,13 @@ addCasedef n ei ci@(CaseInfo inline alwaysInline tcdict)
 --                    other -> tfail (Msg $ "Error adding case def: " ++ show other)
          return uctxt { definitions = ctxt' }
 
--- simplify a definition by inlining
--- (Note: This used to be for totality checking, and now it's actually a
--- no-op, but I'm keeping it here because I'll be putting it back with some
--- more carefully controlled inlining at some stage. --- EB)
-simplifyCasedef :: Name -> ErasureInfo -> Context -> TC Context
-simplifyCasedef n ei uctxt
+-- simplify a definition by unfolding interface methods
+-- We need this for totality checking, because functions which use interfaces
+-- in an implementation definition themselves need to have the implementation
+-- inlined or it'll be treated as a higher order function that will potentially
+-- loop.
+simplifyCasedef :: Name -> [Name] -> [[Name]] -> ErasureInfo -> Context -> TC Context
+simplifyCasedef n ufnames umethss ei uctxt
    = do let ctxt = definitions uctxt
         ctxt' <- case lookupCtxt n ctxt of
                    [(CaseOp ci ty atys [] ps _, rc, inj, acc, tot, metainf)] ->
@@ -1018,8 +1024,36 @@ simplifyCasedef n ei uctxt
                                 (vs, x', y')
     debind (Left x)       = let (vs, x') = depat [] x in
                                 (vs, x', Impossible)
-    simpl (Right (x, y)) = Right (x, y) -- inline uctxt [] y)
+    simpl (Right (x, y))
+         = if null ufnames then Right (x, y)
+              else Right (x, unfold uctxt [] (map (\n -> (n, 1)) (uns y)) y)
     simpl t = t
+
+    -- Unfold the given name, interface methdods, and any function which uses it as
+    -- an argument directly. This is specifically for finding applications of
+    -- interface dictionaries and inlining them both for totality checking and for
+    -- a small performance gain.
+    uns tm = getNamesToUnfold ufnames umethss tm
+
+    getNamesToUnfold :: [Name] -> [[Name]] -> Term -> [Name]
+    getNamesToUnfold inames ms tm = nub $ inames ++ getNames Nothing tm ++ concat ms
+      where
+        getNames under fn@(App _ _ _)
+            | (f, args) <- unApply fn
+                 = let under' = case f of
+                                     P _ fn _ -> Just fn
+                                     _ -> Nothing
+                                  in
+                       getNames under f ++ concatMap (getNames under') args
+        getNames (Just under) (P _ ref _)
+            = if ref `elem` inames then [under] else []
+        getNames under (Bind n (Let t v) sc)
+            = getNames Nothing t ++
+              getNames Nothing v ++
+              getNames Nothing sc
+        getNames under (Bind n b sc) = getNames Nothing (binderTy b) ++
+                                       getNames Nothing sc
+        getNames _ _ = []
 
 addOperator :: Name -> Type -> Int -> ([Value] -> Maybe Value) ->
                Context -> Context
@@ -1106,6 +1140,17 @@ isTCDict n ctxt
          Just (Operator _ _ _)      -> False
          Just (CaseOp ci _ _ _ _ _) -> tc_dictionary ci
          _                          -> False
+
+-- Is the name guarded by constructors in the term?
+-- We assume the term is normalised, so no looking under 'let' for example.
+conGuarded :: Context -> Name -> Term -> Bool
+conGuarded ctxt n tm = guarded n tm
+  where
+    guarded n (P _ n' _) = n == n'
+    guarded n ap@(App _ _ _)
+        | (P _ f _, as) <- unApply ap,
+          isConName f ctxt = any (guarded n) as
+    guarded _ _ = False
 
 lookupP :: Name -> Context -> [Term]
 lookupP = lookupP_all False False

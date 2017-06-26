@@ -124,12 +124,6 @@ and somewhat self-explanatory.
     stack test --test-arguments="--pattern foo042 --accept"
     ```
 8. Check the content of `expected`. Maybe the test didn't do what you thought it would. Fix and go back to 7 until it's ok.
-9. Add under `Extra-source-files` in `idris.cabal` the patterns that match the folder's content. If you forget this, your test will fail in Travis CI. With the previous example, it should be at least:
-    ```
-    test/foo042/run
-    test/foo042/expected
-    test/foo042/*.idr
-    ```
 
 ### Specifying compatible backends
 
@@ -138,7 +132,7 @@ for the compatible backends are:
 
 - `ANY`: choose this if your test will work with any code generator
 - `C_CG`: choose this to only test against the C code generator
-- `JS_CG`: choose this to only test against the Node code generator
+- `NODE_CG`: choose this to only test against the Node code generator
 - `NONE`: choose this if you don't want your test to be run with multiple code
 generators (mainly for tests that only perform type checking)
 

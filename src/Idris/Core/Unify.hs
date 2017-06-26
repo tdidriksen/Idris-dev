@@ -105,10 +105,10 @@ match_unify ctxt env (topx, xfrom) (topy, yfrom) inj holes from =
 
     un names tx@(P _ x _) tm
         | tx /= tm && holeIn env x || x `elem` holes
-            = do sc 1; checkCycle names (x, tm)
+            = do sc 1; checkCycle names tx (x, tm)
     un names tm ty@(P _ y _)
         | ty /= tm && holeIn env y || y `elem` holes
-            = do sc 1; checkCycle names (y, tm)
+            = do sc 1; checkCycle names ty (y, tm)
     un bnames (V i) (P _ x _)
         | length bnames > i,
           fst (fst (bnames!!i)) == x ||
@@ -183,11 +183,12 @@ match_unify ctxt env (topx, xfrom) (topy, yfrom) inj holes from =
 
 --     substN n tm (var, sol) = (var, subst n tm sol)
 
-    checkCycle ns p@(x, P _ x' _) | x == x' = return []
-    checkCycle ns p@(x, P _ _ _) = return [p]
-    checkCycle ns (x, tm)
-        | not (x `elem` freeNames tm) = checkScope ns (x, tm)
-        | otherwise = lift $ tfail (InfiniteUnify x tm (errEnv env))
+    checkCycle ns xtm p@(x, P _ x' _) | x == x' = return []
+    checkCycle ns xtm p@(x, P _ _ _) = return [p]
+    checkCycle ns xtm (x, tm)
+        | conGuarded ctxt x tm = lift $ tfail (InfiniteUnify x tm (errEnv env))
+        | x `elem` freeNames tm = unifyFail xtm tm
+        | otherwise = checkScope ns (x, tm)
 
     checkScope ns (x, tm) =
 --           case boundVs (envPos x 0 env) tm of
@@ -302,10 +303,16 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
 
     injective (P (DCon _ _ _) _ _) = True
     injective (P (TCon _ _) _ _) = True
-    injective (P Ref n _)
-         | Just i <- lookupInjectiveExact n ctxt = i
+--     injective (P Ref n _)
+--          | Just i <- lookupInjectiveExact n ctxt = i
     injective (App _ f a)        = injective f -- && injective a
     injective _                  = False
+
+--     injectiveTC (P Ref n _) (P Ref n' _)
+--          | Just i <- lookupInjectiveExact n ctxt,
+--            n == n' = i
+--     injectiveTC (App _ f a) (App _ f' a') = injectiveTC f a
+--     injectiveTC _ _ = False
 
 --     injectiveVar (P _ (MN _ _) _) = True -- TMP HACK
     injectiveVar (P _ n _)        = n `elem` inj
@@ -368,8 +375,8 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
         | tx /= ty && (holeIn env x || x `elem` holes)
                    && (holeIn env y || y `elem` holes)
             = case compare (envPos 0 x env) (envPos 0 y env) of
-                   LT -> do sc 1; checkCycle bnames (x, ty)
-                   _ -> do sc 1; checkCycle bnames (y, tx)
+                   LT -> do sc 1; checkCycle bnames tx (x, ty)
+                   _ -> do sc 1; checkCycle bnames ty (y, tx)
        where envPos i n ((n',_,_):env) | n == n' = i
              envPos i n (_:env) = envPos (i+1) n env
              envPos _ _ _ = 100000
@@ -377,7 +384,7 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
         | pureTerm tm, holeIn env x || x `elem` holes
                        = do UI s f <- get
                             -- injectivity check
-                            x <- checkCycle bnames (x, tm)
+                            x <- checkCycle bnames xtm (x, tm)
                             if (notP tm && fn)
 --                               trace (show (x, tm, normalise ctxt env tm)) $
 --                                 put (UI s ((tm, topx, topy) : i) f)
@@ -385,13 +392,13 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
                                  else do sc 1
                                          return x
         | pureTerm tm, not (injective xtm) && injective tm
-                       = do checkCycle bnames (x, tm)
+                       = do checkCycle bnames xtm (x, tm)
                             unifyTmpFail xtm tm
     un' env fn bnames tm ytm@(P _ y _)
         | pureTerm tm, holeIn env y || y `elem` holes
                        = do UI s f <- get
                             -- injectivity check
-                            x <- checkCycle bnames (y, tm)
+                            x <- checkCycle bnames ytm (y, tm)
                             if (notP tm && fn)
 --                               trace (show (y, tm, normalise ctxt env tm)) $
 --                                 put (UI s ((tm, topx, topy) : i) f)
@@ -399,7 +406,7 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
                                  else do sc 1
                                          return x
         | pureTerm tm, not (injective ytm) && injective tm
-                       = do checkCycle bnames (y, tm)
+                       = do checkCycle bnames ytm (y, tm)
                             unifyTmpFail tm ytm
     un' env fn bnames (V i) (P _ x _)
         | length bnames > i,
@@ -415,14 +422,14 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
 
 -- Pattern unification rule
     un' env fn bnames tm app@(App _ _ _)
-        | (P _ mv _, args) <- unApply app,
+        | (mvtm@(P _ mv _), args) <- unApply app,
           holeIn env mv || mv `elem` holes,
           all rigid args,
           containsOnly (mapMaybe getname args) (mapMaybe getV args) tm
           -- && TODO: tm does not refer to any variables other than those
           -- in 'args'
         = -- trace ("PATTERN RULE SOLVE: " ++ show (mv, tm, env, bindLams args (substEnv env tm))) $
-          checkCycle bnames (mv, eta [] $ bindLams args (substEnv env tm))
+          checkCycle bnames mvtm (mv, eta [] $ bindLams args (substEnv env tm))
       where rigid (V i) = True
             rigid (P _ t _) = t `elem` map fstEnv env &&
                               not (holeIn env t || t `elem` holes)
@@ -533,6 +540,7 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
          | (injectiveApp fx && injectiveApp fy)
         || (injectiveApp fx && metavarApp fy && ax == ay)
         || (injectiveApp fy && metavarApp fx && ax == ay)
+        || (injectiveTC fx fy) -- data interface method
          = do let (headx, _) = unApply fx
               let (heady, _) = unApply fy
               -- fail quickly if the heads are disjoint
@@ -611,6 +619,15 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
 
             notFn t = injective t || metavar t || inenv t
 
+            injectiveTC t@(P Ref n _) t'@(P Ref n' _)
+                | Just ni <- lookupInjectiveExact n ctxt,
+                  Just ni' <- lookupInjectiveExact n' ctxt
+              = (n == n' && ni) ||
+                (ni && metavar t') ||
+                (metavar t && ni')
+            injectiveTC (App _ f a) (App _ f' a') = injectiveTC f f'
+            injectiveTC _ _ = False
+
 
     unifyTmpFail :: Term -> Term -> StateT UInfo TC [(Name, TT Name)]
     unifyTmpFail x y
@@ -658,10 +675,11 @@ unify ctxt env (topx, xfrom) (topy, yfrom) inj holes usersupp from =
                                    env, err, from, Unify) : f))
                        return [] -- lift $ tfail err
 
-    checkCycle ns p@(x, P _ _ _) = return [p]
-    checkCycle ns (x, tm)
-        | not (x `elem` freeNames tm) = checkScope ns (x, tm)
-        | otherwise = lift $ tfail (InfiniteUnify x tm (errEnv env))
+    checkCycle ns xtm p@(x, P _ _ _) = return [p]
+    checkCycle ns xtm (x, tm)
+        | conGuarded ctxt x tm = lift $ tfail (InfiniteUnify x tm (errEnv env))
+        | x `elem` freeNames tm = unifyTmpFail xtm tm
+        | otherwise = checkScope ns (x, tm)
 
     checkScope ns (x, tm) | pureTerm tm =
 --           case boundVs (envPos x 0 env) tm of

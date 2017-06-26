@@ -1,3 +1,4 @@
+dist: trusty
 sudo: false
 
 language: c
@@ -54,6 +55,8 @@ before_cache:
   - rm -fv $HOME/.cabal/packages/hackage.haskell.org/00-index.tar
 
 before_install:
+  - nvm install 6
+  - nvm use 6
   - unset CC
   - if [[ $TRAVIS_OS_NAME == 'linux' ]];
     then
@@ -151,7 +154,9 @@ script:
   - echo -en 'travis_fold:end:script.tests\\r'
 ###
   - echo 'Benchmarks...' && echo -en 'travis_fold:start:script.benchmarks\\r'
-  - cd benchmarks && ./build.pl && ./run.pl && cd ..
+  - if [[ "$TESTS" == "test_c" ]]; then
+      cd benchmarks && ./build.pl && ./run.pl && cd ..;
+    fi
   - echo -en 'travis_fold:end:script.benchmarks\\r'
 ###
 # EOF

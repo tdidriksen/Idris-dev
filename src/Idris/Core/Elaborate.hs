@@ -578,7 +578,7 @@ prepare_apply fn imps =
        -- Count arguments to check if we need to normalise the type
        let usety = if argsOK (finalise ty) imps
                       then finalise ty
-                      else whnfArgs ctxt env (finalise ty)
+                      else normalise ctxt env (finalise ty)
        claims <- -- trace (show (fn, imps, ty, map fst env, normalise ctxt env (finalise ty))) $
                  mkClaims usety imps [] (map fstEnv env)
        ES (p, a) s prev <- get
@@ -611,9 +611,7 @@ prepare_apply fn imps =
     mkClaims _ _ _ _
             | Var n <- fn
                    = do ctxt <- get_context
-                        case lookupTy n ctxt of
-                                [] -> lift $ tfail $ NoSuchVariable n
-                                _ -> lift $ tfail $ TooManyArguments n
+                        lift $ tfail $ TooManyArguments n
             | otherwise = fail $ "Too many arguments for " ++ show fn
 
     doClaim ((i, _), n, t) = do claim n t
@@ -748,7 +746,7 @@ checkPiGoal n
             = do g <- goal
                  ctxt <- get_context
                  env <- get_env
-                 case (whnf ctxt env g) of
+                 case (normalise ctxt env g) of
                     Bind _ (Pi _ _ _ _) _ -> return ()
                     _ -> do a <- getNameFrom (sMN 0 "__pargTy")
                             b <- getNameFrom (sMN 0 "__pretTy")
@@ -823,7 +821,7 @@ dep_app fun arg str =
        focus s; attack;
        ctxt <- get_context
        env <- get_env
-       case whnf ctxt env fty of
+       case normalise ctxt env fty of
             -- if f gives a function type, unify our argument type with
             -- f's expected argument type
             Bind _ (Pi _ _ argty _) _ -> unifyGoal (forget argty)
@@ -965,12 +963,14 @@ tryAll' constrok xs = doAll [] 999999 xs
        = do s <- get
             ps <- get_probs
             ivs <- get_implementations
+            g <- goal
             case prunStateT pmax True ps (if constrok then Nothing
                                                       else Just ivs) x s of
                 OK ((v, newps, probs), s') ->
                       do let cs' = if (newps < pmax)
                                       then [do put s'; return $! v]
                                       else (do put s'; return $! v) : cs
+                         put s
                          doAll cs' newps xs
                 Error err -> do put s
                                 doAll cs pmax xs

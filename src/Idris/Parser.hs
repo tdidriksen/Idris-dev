@@ -1830,7 +1830,7 @@ loadSource lidr f toline
                   mapM_ (\n -> do logLvl 5 $ "Simplifying " ++ show n
                                   ctxt' <-
                                     do ctxt <- getContext
-                                       tclift $ simplifyCasedef n (getErasureInfo i) ctxt
+                                       tclift $ simplifyCasedef n [] [] (getErasureInfo i) ctxt
                                   setContext ctxt')
                            (map snd (idris_totcheck i))
                   -- build size change graph from simplified definitions

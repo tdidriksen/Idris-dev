@@ -1,5 +1,5 @@
 Name:           idris
-Version:        0.99
+Version:        1.0
 License:        BSD3
 License-file:   LICENSE
 Author:         Edwin Brady
@@ -47,10 +47,11 @@ Build-type:     Custom
 Tested-With:    GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.1
 
 Data-files:            idrisdoc/styles.css
-                       jsrts/Runtime-browser.js
+                       jsrts/jsbn/jsbn-browser.js
+                       jsrts/jsbn/jsbn-node.js
                        jsrts/Runtime-common.js
+                       jsrts/Runtime-javascript.js
                        jsrts/Runtime-node.js
-                       jsrts/jsbn/jsbn.js
                        jsrts/jsbn/LICENSE
                        rts/arduino/idris_main.c
                        rts/idris_bitstring.c
@@ -223,6 +224,11 @@ Library
                 , IRTS.CodegenJavaScript
                 , IRTS.Exports
                 , IRTS.JavaScript.AST
+                , IRTS.JavaScript.Name
+                , IRTS.JavaScript.Codegen
+                , IRTS.JavaScript.LangTransforms
+                , IRTS.JavaScript.Specialize
+                , IRTS.JavaScript.PrimOp
                 , IRTS.Compiler
                 , IRTS.Defunctionalise
                 , IRTS.DumpBC
@@ -252,7 +258,7 @@ Library
                 , Tools_idris
 
   Build-depends:  base >=4 && <5
-                , aeson >= 0.6 && < 1.1
+                , aeson >= 0.6 && < 1.2
                 , annotated-wl-pprint >= 0.7 && < 0.8
                 , ansi-terminal < 0.7
                 , ansi-wl-pprint < 0.7
@@ -270,7 +276,7 @@ Library
                 , filepath < 1.5
                 , fingertree >= 0.1 && < 0.2
                 , haskeline >= 0.7 && < 0.8
-                , ieee754 >= 0.7 && < 0.8
+                , ieee754 >= 0.7 && <= 0.8.0
                 , mtl >= 2.1 && < 2.3
                 , network < 2.7
                 , optparse-applicative >= 0.11 && < 0.14
@@ -287,7 +293,7 @@ Library
                 , uniplate >=1.6 && < 1.7
                 , unordered-containers < 0.3
                 , utf8-string < 1.1
-                , vector < 0.12
+                , vector < 0.13
                 , vector-binary-instances < 0.3
                 , zip-archive > 0.2.3.5 && < 0.4
                 , fsnotify >= 0.2 && < 2.2
@@ -309,6 +315,9 @@ Library
      build-depends: safe == 0.3.9
   else
      build-depends: safe >= 0.3.9
+
+  if impl(ghc < 7.8.4)
+     build-depends: tagsoup < 0.14.1
 
   Extensions:     MultiParamTypeClasses
                 , DeriveFoldable
@@ -356,7 +365,7 @@ Executable idris
                 , transformers
 
   ghc-prof-options: -auto-all -caf-all
-  ghc-options:      -threaded -rtsopts -funbox-strict-fields
+  ghc-options:      -threaded -rtsopts -funbox-strict-fields -with-rtsopts=-I0
 
 Test-suite regression-and-feature-tests
   Type:           exitcode-stdio-1.0
