@@ -862,12 +862,14 @@ data PClause' t = PClause   FC Name t [t] t                    [PDecl' t] -- ^ A
                 | PWith     FC Name t [t] t (Maybe (Name, FC)) [PDecl' t]
                 | PClauseR  FC        [t] t                    [PDecl' t]
                 | PWithR    FC        [t] t (Maybe (Name, FC)) [PDecl' t]
-                | PCoClause FC Name t     t                    [PDecl' t] [(Name, Name, RecordInfo)]
+                | PCoClause FC Name t     t                    [PDecl' t] [Path]
     deriving (Functor, Generic)
 
 {-!
 deriving instance Binary PClause'
 !-}
+
+data Path = Path (Name, Name, RecordInfo) | Ambiguous [(Name, Name, RecordInfo)] deriving Show
 
 -- | Data declaration
 data PData' t  =
@@ -999,6 +1001,7 @@ declared (PImplementation _ _ _ _ _ _ _ _ _ _ _ _ _ mn _)
 declared (PDSL n _) = [n]
 declared (PSyntax _ _) = []
 declared (PMutual _ ds) = concatMap declared ds
+declared (PCopatterns _ _ ds) = concatMap declared ds
 declared (PDirective _) = []
 declared _ = []
 
@@ -1043,6 +1046,7 @@ defined (PImplementation _ _ _ _ _ _ _ _ _ _ _ _ _ mn _)
 defined (PDSL n _)                                = [n]
 defined (PSyntax _ _)                             = []
 defined (PMutual _ ds)                            = concatMap defined ds
+defined (PCopatterns _ _ ds)                      = concatMap defined ds
 defined (PDirective _)                            = []
 defined _                                         = []
 
@@ -2261,7 +2265,7 @@ showCImp ppo (PWith _ n l ws r pn w)
     showWs []       = empty
     showWs (x : xs) = text "|" <+> prettyImp ppo x <+> showWs xs
 showCImp ppo (PCoClause _ n l r w p)
- = text "co" <+> text (show (map (\(pn,_,_) -> pn) p)) <+> prettyImp ppo l <+> text "=" <+> prettyImp ppo r
+ = text "co" <+> text (show $ map show p) <+> prettyImp ppo l <+> text "=" <+> prettyImp ppo r
              <+> text "where" <+> text (show w)
   where
     showWs [] = empty
@@ -2289,6 +2293,8 @@ showDeclImp o (PInterface _ _ _ cs n _ ps _ _ ds _ _)
    = text "interface" <+> text (show cs) <+> text (show n) <+> text (show ps) <> line <> showDecls o ds
 showDeclImp o (PImplementation _ _ _ _ cs _ acc _ n _ _ _ t _ ds)
    = text "implementation" <+> text (show cs) <+> text (show n) <+> prettyImp o t <> line <> showDecls o ds
+showDeclImp o (PCopatterns fc syn ds)
+   = text "copatterns" <> line <> showDecls o ds
 showDeclImp _ _ = text "..."
 -- showDeclImp (PImport o) = "import " ++ o
 

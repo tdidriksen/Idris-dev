@@ -795,7 +795,8 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         -- Elaborate those with a type *before* RHS, those without *after*
         let (wbefore, wafter) = sepBlocks wb
 
-        logElab 5 $ "Where block:\n " ++ show wbefore ++ "\n" ++ show wafter
+        logElab 0 $ "Wherex: " ++ foldr (\x acc -> show x ++ "\n" ++ acc) "" whereblock
+        logElab 0 $ "Where block:\n " ++ show wbefore ++ "\n" ++ show wafter
         mapM_ (rec_elabDecl info EAll winfo) wbefore
         -- Now build the RHS, using the type of the LHS as the goal.
         i <- getIState -- new implicits from where block
@@ -1298,9 +1299,13 @@ mapRHSdecl f t = t
 
 -- COPATTERNS
 
-type CoClausePath = [(Name, Name, RecordInfo)]
+data DisAmbCoClause = CoClause FC Name PTerm PTerm [PDecl' PTerm] [(Name, Name, RecordInfo)] deriving Show
 
-applyCoPath :: PTerm -> CoClausePath -> PTerm
+getPClause :: DisAmbCoClause -> PClause
+getPClause (CoClause fc n lhs rhs wheres path) = PCoClause fc n lhs rhs wheres (map Path path)
+
+
+applyCoPath :: PTerm -> [(Name, Name, RecordInfo)] -> PTerm
 applyCoPath term [] = term
 applyCoPath term ((pn, rn, ri) : path) = applyCoPath (PApp NoFC (PRef NoFC [] pn) [pexp term]) path
 
@@ -1326,7 +1331,7 @@ mkCopatternTyDecl what info pfn piElhsTy =
      logLvl 0 $ "tyDecl: " ++ show tyDecl
      (rec_elabDecl info) what info tyDecl
 
-copatternType :: ElabInfo -> Name -> CoClausePath -> Idris Type
+copatternType :: ElabInfo -> Name -> [(Name, Name, RecordInfo)] -> Idris Type
 copatternType info fn path =
   do i <- getIState
      let fnPArgs = case lookupCtxtExact fn (idris_implicits i) of
@@ -1345,8 +1350,8 @@ copatternType info fn path =
     piHack (UN n) i | "__pi_arg" `isPrefixOf` (str n) = sUN $ (str n) ++ show i
     piHack n _ = n
 
-elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [PClause] -> [PClause] -> Idris ()
-elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path@[_]):cs) acc =
+elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [DisAmbCoClause] -> [PClause] -> Idris ()
+elabCoClauses' what info fn pfn ((CoClause fc cn lhs rhs wheres path@[_]):cs) acc =
   do logLvl 0 $ "lhs-one: " ++ show lhs
      piElhsTy <- copatternType info fn path
 
@@ -1356,14 +1361,14 @@ elabCoClauses' what info fn pfn ((PCoClause fc cn lhs rhs wheres path@[_]):cs) a
      let clause = PClause NoFC pfn (substMatch fn (PRef NoFC [] pfn) lhs) [] rhs wheres
      logLvl 0 $ "clause': " ++ show clause
      elabCoClauses' what info fn pfn cs ([clause] ++ acc)
-elabCoClauses' what info fn pfn cs@(PCoClause fc cn lhs rhs wheres path@(p:path'):_) acc =
+elabCoClauses' what info fn pfn cs@(CoClause fc cn lhs rhs wheres path@(p:path'):_) acc =
   do logLvl 0 $ "lhs-morethanone: " ++ show lhs
      piElhsTy <- copatternType info fn [p]
 
      ctxt <- getContext
      unless (isJust $ lookupTyNameExact pfn ctxt) $ mkCopatternTyDecl what info pfn piElhsTy
 
-     clauses <- elabCoClauses what info NoFC [] pfn (map (tailPathClause . lhsSubstClause) cs)
+     clauses <- elabCoClauses what info NoFC [] pfn (map (tailPathClause . lhsSubstClause . getPClause) cs)
      rec_elabDecl info what info $ PClauses NoFC [] pfn clauses
   where
    tailPathClause (PCoClause fc cn lhs rhs wheres (p:ps)) = PCoClause fc cn lhs rhs wheres ps
@@ -1400,7 +1405,7 @@ elabCoClausesDecl what info d =
      rec_elabDecl info what info d -- No copatterns here
 
 elabCoClauses :: ElabWhat -> ElabInfo -> FC -> FnOpts -> Name -> [PClause] -> Idris [PClause]
-elabCoClauses what info fc opts fn cs@(c:_) =
+elabCoClauses what info fc opts fn cs'@(c:_) =
   do ctxt <- getContext
      logLvl 0 $ "CoElaborating: " ++ show fn
      -- Build LHS
@@ -1416,8 +1421,13 @@ elabCoClauses what info fc opts fn cs@(c:_) =
      let lhs = PApp NoFC (PRef NoFC [] fn) pargs -- Rewrite with idris_implicits?
      logLvl 0 $ "lhs: " ++ show lhs
 
+     fRetTyName <- case getRetTy fTy of
+                     P _ n _ -> return n
+                     t -> ifail $ show t ++ ": Not a P"
+     cs <- mapM (disambiguatePath fRetTyName) cs'
+
      -- Build RHS
-     constructorName <- case coClauseConstructor c of
+     constructorName <- case coClauseConstructor ((extractPath . head) cs) of
                           Just n -> return n
                           Nothing -> ifail "Coclause for a non-record type definition"
      logLvl 0 $ "constructorName: " ++ show constructorName
@@ -1439,8 +1449,14 @@ elabCoClauses what info fc opts fn cs@(c:_) =
 
      return [clause]
   where
-    coClauseConstructor :: PClause -> Maybe Name
-    coClauseConstructor (PCoClause _ _ _ _ _ ((_,_,ri):_)) = Just $ record_constructor ri
+    disambiguatePath :: Name -> PClause -> Idris DisAmbCoClause
+    disambiguatePath n' (PCoClause fc n lhs rhs wheres p) = do
+      path <- mapM (collapsePath n') p
+      return $ CoClause fc n lhs rhs wheres path
+    disambiguatePath _ c = ifail "Cannot disambiguate path of non-coclause"
+    
+    coClauseConstructor :: [(Name, Name, RecordInfo)] -> Maybe Name
+    coClauseConstructor ((_,_,ri):_) = Just $ record_constructor ri
     coClauseConstructor _ = Nothing
 
     eqPaths :: [(Name, Name, RecordInfo)] -> [(Name, Name, RecordInfo)] -> Bool
@@ -1448,8 +1464,8 @@ elabCoClauses what info fc opts fn cs@(c:_) =
     eqPaths [] [] = True
     eqPaths _  _  = False
 
-    extractPath :: PClause -> [(Name, Name, RecordInfo)]
-    extractPath (PCoClause _ _ _ _ _ path) = path
+    extractPath :: DisAmbCoClause -> [(Name, Name, RecordInfo)]
+    extractPath (CoClause _ _ _ _ _ path) = path
     extractPath _ = []
 
     auxName :: Name -> Idris Name
@@ -1458,5 +1474,12 @@ elabCoClauses what info fc opts fn cs@(c:_) =
         case lookupTyNameExact n ctxt of
           Just _  -> auxName (nextName n)
           Nothing -> return n
+
+    collapsePath :: Name -> Path -> Idris (Name, Name, RecordInfo)
+    collapsePath n (Path p) = return p
+    collapsePath n (Ambiguous ((pn,rn,ri):p))
+      | rn == n = return (pn,rn,ri)
+      | otherwise = collapsePath n (Ambiguous p)
+    collapsePath n _ = ifail $ "collapsePath for " ++ show n ++ ": No match found"
 elabCoClauses what info fc opts fn [] =
   return []

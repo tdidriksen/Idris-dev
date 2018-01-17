@@ -1269,7 +1269,8 @@ clause syn
                                                return ([], [])]
                   ist <- get
                   put (ist { lastParse = Just n })
-                  return $ mkSimpleClause syn fc n capp wargs r wheres) <|> (do
+                  let cowheres = if in_copatterns syn then [PCopatterns fc syn wheres] else wheres
+                  return $ mkSimpleClause syn fc n capp wargs r cowheres) <|> (do
                    reservedHL "with"
                    ist <- get
                    put (ist { lastParse = Just n })

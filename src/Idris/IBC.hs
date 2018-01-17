@@ -1686,6 +1686,19 @@ instance Binary SyntaxInfo where
                x9 <- get
                return (Syn x1 x2 x3 x4 [] id x5 x6 x7 Nothing 0 x8 0 True True x9)
 
+instance Binary Path where
+  put (Path p) = do putWord8 0
+                    put p
+  put (Ambiguous p) = do putWord8 1
+                         put p
+
+  get = do i <- getWord8
+           case i of
+             0 -> do p <- get
+                     return (Path p)
+             1 -> do p <- get
+                     return (Ambiguous p) 
+  
 instance (Binary t) => Binary (PClause' t) where
         put x
           = case x of

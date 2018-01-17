@@ -369,7 +369,10 @@ elabDecl' what info (PCopatterns fc syn clauses)
 
        expandNSClause :: SyntaxInfo -> PClause -> PClause
        expandNSClause syn (PCoClause fc n lhs rhs wheres path) =
-         let expandedName = expandNS syn n
+         let expandedName =
+               case n of
+                 (SN _) -> n
+                 _      -> expandNS syn n
          in PCoClause fc expandedName (substMatch n (PRef fc [] expandedName) lhs) rhs wheres path
        expandNSClause _ c = c
 
@@ -377,15 +380,18 @@ elabDecl' what info (PCopatterns fc syn clauses)
        extractPath c@(PCoClause fc n lhs@(PApp _ (PRef _ _ n') (lhsArg : _)) rhs wheres path) | n == n' =
          do logLvl 0 $ "Path for name " ++ show n ++ ": " ++ show path
             projection <- findProjection n
+            i <- getIState
+            logLvl 0 $ "(getTm lhsArg): " ++ show (getTm lhsArg)
             case (projection, nextNameUnderProjection (getTm lhsArg)) of
-             (Just (pn, rn, ri), Just (nextFn, nextLhs)) -> 
-               do logLvl 0 $ "Found projection " ++ show pn ++ " for lhs: " ++ show lhs ++ " . Next lhs is: " ++ show nextLhs
-                  extractPath (PCoClause fc nextFn nextLhs rhs wheres ((pn, rn, ri):path))
-             (_, _) -> return c
+             (Just p, Just (nextFn, nextLhs)) -> 
+               do logLvl 0 $ "Found projection(s) " ++ show p ++ " for lhs: " ++ show lhs ++ " . Next lhs is: " ++ show nextLhs
+                  extractPath (PCoClause fc nextFn nextLhs rhs wheres (p:path))
+             (p, nn) -> do logLvl 0 $ "nextNameUnderProjection? " ++ (show p) ++ " -- " ++ (show nn)
+                           return c
        extractPath c = return c
 
        nextNameUnderProjection :: PTerm -> Maybe (Name, PTerm)
-       nextNameUnderProjection t@(PApp _ (PRef _ _ n) (arg : _)) = Just (n, t)
+       nextNameUnderProjection t@(PApp _ (PRef _ _ n) _) = Just (n, t)
        nextNameUnderProjection t@(PRef _ _ n)                    = Just (n, t)
        nextNameUnderProjection _                                 = Nothing
 
@@ -396,7 +402,7 @@ elabDecl' what info (PCopatterns fc syn clauses)
        clauseName (PWithR _ _ _ _ _) = Nothing
        clauseName (PCoClause _ n _ _ _ _) = Just n
 
-       findProjection :: Name -> Idris (Maybe (Name, Name, RecordInfo))
+       findProjection :: Name -> Idris (Maybe Path)
        findProjection n_in = 
          do let n = nsroot n_in
             ctxt <- getIState
@@ -406,7 +412,11 @@ elabDecl' what info (PCopatterns fc syn clauses)
             case catMaybes matchingRecords of
               [(pn, recordName, recordInfo)] ->
                 do logLvl 0 $ "Found projection: " ++ show pn
-                   return $ Just (pn, recordName, recordInfo)
+                   return $ Just(Path (pn, recordName, recordInfo))
+              r:rs ->
+                do logLvl 0 $ "Found multiple projections"
+                   logLvl 0 $ show $ map (\(pn, rn, _) -> show (pn, rn)) (r:rs)
+                   return $ Just (Ambiguous (r:rs))
               _ -> 
                 do logLvl 0 $ "No projection found"
                    return Nothing

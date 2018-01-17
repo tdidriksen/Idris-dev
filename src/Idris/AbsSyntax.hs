@@ -1362,8 +1362,16 @@ expandParamsD rhsonly ist dec ps ns (PClauses fc opts n cs)
     = let n' = if n `elem` ns then dec n else n in
           PClauses fc opts n' (map expandParamsC cs)
   where
-    expandParamsC (PCoClause fc n lhs rhs wheres path) =
-      PCoClause fc n lhs rhs wheres path
+    expandParamsC (PCoClause fc n lhs rhs wheres path)
+        = let ps'' = updateps False (namesIn [] ist lhs) (zip ps [0..])
+              lhs' = if rhsonly then lhs else (expandParams dec ps'' ns [] lhs)
+              n' = if n `elem` ns then dec n else n
+              -- names bound on the lhs should not be expanded on the rhs
+              ns' = removeBound lhs ns in
+              PCoClause fc n' lhs'
+                            (expandParams dec ps'' ns' [] rhs)
+                            (map (expandParamsD True ist dec ps'' ns') wheres)
+                            path
     expandParamsC (PClause fc n lhs ws rhs ds)
         = let -- ps' = updateps True (namesIn ist rhs) (zip ps [0..])
               ps'' = updateps False (namesIn [] ist lhs) (zip ps [0..])
@@ -1443,6 +1451,8 @@ expandParamsD rhs ist dec ps ns (PImplementation doc argDocs info f cs pnames ac
                      (expandParams dec ps ns [] ty)
                      cn'
                      (map (expandParamsD True ist dec ps ns) decls)
+expandParamsD rhs ist dec ps ns (PCopatterns f syn pds)
+   = PCopatterns f syn (map (expandParamsD rhs ist dec ps ns) pds)
 expandParamsD rhs ist dec ps ns d = d
 
 mapsnd f (x, t) = (x, f t)
