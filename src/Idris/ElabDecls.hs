@@ -408,6 +408,7 @@ elabDecl' what info (PCopatterns fc syn clauses)
             ctxt <- getIState
             logLvl 0 $ "Trying to find projection for name " ++ show n
             let recordCtxt = toAlist $ idris_records ctxt
+            logLvl 0 $ "Records: " ++ show recordCtxt
             let matchingRecords = map (\(rn, ri) -> fmap (\pn -> (pn, rn, ri)) (find (\m -> n == nsroot m) $ record_projections ri)) recordCtxt
             case catMaybes matchingRecords of
               [(pn, recordName, recordInfo)] ->

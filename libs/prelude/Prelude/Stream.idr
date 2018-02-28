@@ -13,25 +13,27 @@ import Prelude.List
 %default total
 
 ||| An infinite stream
-data Stream : Type -> Type where
-  (::) : (value : elem) -> Inf (Stream elem) -> Stream elem
+corecord Stream elem where
+  constructor (::)
+  head : elem 
+  tail : Stream elem
 
 -- Hints for interactive editing
 %name Stream xs,ys,zs,ws
 
 -- Usage hints for erasure analysis
-%used Stream.(::) value
+%used Stream.(::) head
 
 Functor Stream where
     map f (x::xs) = f x :: map f xs
 
 ||| The first element of an infinite stream
-head : Stream a -> a
-head (x::xs) = x
+-- head : Stream a -> a
+-- head (x::xs) = x
 
-||| All but the first element
-tail : Stream a -> Stream a
-tail (x::xs) = xs
+-- ||| All but the first element
+-- tail : Stream a -> Stream a
+-- tail (x::xs) = xs
 
 ||| Take precisely n elements from the stream
 ||| @ n how many elements to take

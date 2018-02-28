@@ -1421,9 +1421,7 @@ elabCoClauses what info fc opts fn cs'@(c:_) =
      let lhs = PApp NoFC (PRef NoFC [] fn) pargs -- Rewrite with idris_implicits?
      logLvl 0 $ "lhs: " ++ show lhs
 
-     fRetTyName <- case getRetTy fTy of
-                     P _ n _ -> return n
-                     t -> ifail $ show t ++ ": Not a P"
+     fRetTyName <- retTyName (getRetTy fTy)
      cs <- mapM (disambiguatePath fRetTyName) cs'
 
      -- Build RHS
@@ -1449,6 +1447,11 @@ elabCoClauses what info fc opts fn cs'@(c:_) =
 
      return [clause]
   where
+    retTyName :: Type -> Idris Name
+    retTyName (P _ n _) = return n
+    retTyName (App _ t _) = retTyName t
+    retTyName t = ifail $ show t ++ ": Not a P"
+    
     disambiguatePath :: Name -> PClause -> Idris DisAmbCoClause
     disambiguatePath n' (PCoClause fc n lhs rhs wheres p) = do
       path <- mapM (collapsePath n') p
