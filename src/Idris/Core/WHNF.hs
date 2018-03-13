@@ -1,21 +1,18 @@
 {-|
 Module      : Idris.Core.WHNF
 Description : Reduction to Weak Head Normal Form
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
 
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE FlexibleContexts, PatternGuards #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 module Idris.Core.WHNF(whnf, whnfArgs, WEnv) where
 
 import Idris.Core.CaseTree
 import Idris.Core.Evaluate hiding (quote)
-import qualified Idris.Core.Evaluate as Evaluate
 import Idris.Core.TT
-
-import Debug.Trace
 
 -- | A stack entry consists of a term and the environment it is to be
 -- evaluated in (i.e. it's a thunk)
@@ -88,7 +85,7 @@ do_whnf ctxt genv tm = eval (WEnv 0 []) [] tm
          | i < length env = let (tm, env') = env !! i in
                                 eval env' stk tm
          | otherwise = WV i
-    eval wenv@(WEnv d env) stk (Bind n (Let t v) sc)
+    eval wenv@(WEnv d env) stk (Bind n (Let c t v) sc)
          = eval (WEnv d ((v, wenv) : env)) stk sc
     eval (WEnv d env) ((tm, tenv) : stk) (Bind n b@(Lam _ _) sc)
          = eval (WEnv d ((tm, tenv) : env)) stk sc
@@ -97,7 +94,7 @@ do_whnf ctxt genv tm = eval (WEnv 0 []) [] tm
               WBind n' (fmap (\t -> (t, wenv)) b) (sc, WEnv (d + 1) env)
 
     eval env stk (P nt n ty)
-         | Just (Let t v) <- lookupBinder n genv = eval env stk v
+         | Just (Let c t v) <- lookupBinder n genv = eval env stk v
     eval env stk (P nt n ty) = apply env nt n ty stk
     eval env stk (App _ f a) = eval env ((a, env) : stk) f
     eval env stk (Constant c) = unload (WConstant c) stk

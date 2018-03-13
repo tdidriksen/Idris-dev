@@ -7,7 +7,7 @@ import Prelude.Uninhabited
 %access public export
 
 ||| Boolean Data Type
-%case data Bool = False | True
+data Bool = False | True
 
 ||| The underlying implementation of the if ... then ... else ... syntax
 ||| @ b the condition on the if
@@ -18,7 +18,8 @@ ifThenElse True  t e = t
 ifThenElse False t e = e
 
 -- Boolean Operator Precedence
-infixl 4 &&, ||
+infixr 4 ||
+infixr 5 &&
 
 ||| Boolean OR only evaluates the second argument if the first is `False`.
 (||) : Bool -> Lazy Bool -> Bool
@@ -35,3 +36,12 @@ not : Bool -> Bool
 not True = False
 not False = True
 
+--------------------------------------------------------------------------------
+-- Properties
+--------------------------------------------------------------------------------
+
+Uninhabited (True = False) where
+  uninhabited Refl impossible
+
+Uninhabited (False = True) where
+  uninhabited Refl impossible

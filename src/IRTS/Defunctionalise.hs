@@ -1,7 +1,7 @@
 {-|
 Module      : IRTS.Defunctionalise
 Description : Defunctionalise Idris' IR.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -19,7 +19,7 @@ To defunctionalise:
 8. Add explicit EVAL to case, primitives, and foreign calls
 
 -}
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE FlexibleContexts, PatternGuards #-}
 module IRTS.Defunctionalise(module IRTS.Defunctionalise
                           , module IRTS.Lang
                           ) where
@@ -32,14 +32,13 @@ import Control.Monad
 import Control.Monad.State
 import Data.List
 import Data.Maybe
-import Debug.Trace
 
-data DExp = DV LVar
+data DExp = DV Name
           | DApp Bool Name [DExp] -- True = tail call
           | DLet Name DExp DExp -- name just for pretty printing
           | DUpdate Name DExp -- eval expression, then update var with it
           | DProj DExp Int
-          | DC (Maybe LVar) Int Name [DExp]
+          | DC (Maybe Name) Int Name [DExp]
           | DCase CaseType DExp [DAlt]
           | DChkCase DExp [DAlt] -- a case where the type is unknown (for EVAL/APPLY)
           | DConst Const
@@ -90,27 +89,27 @@ addApps defs (n, LFun _ _ args e)
          return (n, DFun n args e')
   where
     aa :: [Name] -> LExp -> State ([Name], [(Name, Int)]) DExp
-    aa env (LV (Glob n)) | n `elem` env = return $ DV (Glob n)
-                         | otherwise = aa env (LApp False (LV (Glob n)) [])
-    aa env (LApp tc (LV (Glob n)) args)
+    aa env (LV n) | n `elem` env = return $ DV n
+                         | otherwise = aa env (LApp False (LV n) [])
+    aa env (LApp tc (LV n) args)
        = do args' <- mapM (aa env) args
             case lookupCtxtExact n defs of
                 Just (LConstructor _ i ar) -> return $ DApp tc n args'
                 Just (LFun _ _ as _) -> let arity = length as in
                                                fixApply tc n args' arity
-                Nothing -> return $ chainAPPLY (DV (Glob n)) args'
+                Nothing -> return $ chainAPPLY (DV n) args'
     aa env (LLazyApp n args)
        = do args' <- mapM (aa env) args
             case lookupCtxtExact n defs of
                 Just (LConstructor _ i ar) -> return $ DApp False n args'
                 Just (LFun _ _ as _) -> let arity = length as in
                                            fixLazyApply n args' arity
-                Nothing -> return $ chainAPPLY (DV (Glob n)) args'
-    aa env (LForce (LLazyApp n args)) = aa env (LApp False (LV (Glob n)) args)
+                Nothing -> return $ chainAPPLY (DV n) args'
+    aa env (LForce (LLazyApp n args)) = aa env (LApp False (LV n) args)
     aa env (LForce e) = liftM eEVAL (aa env e)
     aa env (LLet n v sc) = liftM2 (DLet n) (aa env v) (aa (n : env) sc)
     aa env (LCon loc i n args) = liftM (DC loc i n) (mapM (aa env) args)
-    aa env (LProj t@(LV (Glob n)) i)
+    aa env (LProj t@(LV n) i)
         | n `elem` env = do t' <- aa env t
                             return $ DProj (DUpdate n t') i
     aa env (LProj t i) = do t' <- aa env t
@@ -165,32 +164,6 @@ addApps defs (n, LFun _ _ args e)
 --          = chainAPPLY (DApp False (sMN 0 "APPLY2") [f, a, b]) as
     chainAPPLY f (a : as) = chainAPPLY (DApp False (sMN 0 "APPLY") [f, a]) as
 
-    -- if anything in the DExp is projected from, we'll need to evaluate it,
-    -- but we only want to do it once, rather than every time we project.
-
-    preEval [] t = t
-    preEval (x : xs) t
-       | needsEval x t = DLet x (DV (Glob x)) (preEval xs t)
-       | otherwise = preEval xs t
-
-    needsEval x (DApp _ _ args) = any (needsEval x) args
-    needsEval x (DC _ _ _ args) = any (needsEval x) args
-    needsEval x (DCase up e alts) = needsEval x e || any nec alts
-      where nec (DConCase _ _ _ e) = needsEval x e
-            nec (DConstCase _ e) = needsEval x e
-            nec (DDefaultCase e) = needsEval x e
-    needsEval x (DChkCase e alts) = needsEval x e || any nec alts
-      where nec (DConCase _ _ _ e) = needsEval x e
-            nec (DConstCase _ e) = needsEval x e
-            nec (DDefaultCase e) = needsEval x e
-    needsEval x (DLet n v e)
-          | x == n = needsEval x v
-          | otherwise = needsEval x v || needsEval x e
-    needsEval x (DForeign _ _ args) = any (needsEval x) (map snd args)
-    needsEval x (DOp op args) = any (needsEval x) args
-    needsEval x (DProj (DV (Glob x')) _) = x == x'
-    needsEval x _ = False
-
 eEVAL x = DApp False (sMN 0 "EVAL") [x]
 
 data EvalApply a = EvalCase (Name -> a)
@@ -207,7 +180,7 @@ toCons ns (n, i)
           EvalCase (\tlarg ->
             (DConCase (-1) (mkFnCon n) (take i (genArgs 0))
               (dupdate tlarg
-                (DApp False n (map (DV . Glob) (take i (genArgs 0))))))))
+                (DApp False n (map DV (take i (genArgs 0))))))))
           : [] -- mkApplyCase n 0 i
     | otherwise = []
   where dupdate tlarg x = DUpdate tlarg x
@@ -219,23 +192,22 @@ toConsA ns (n, i)
 --           EvalCase (\tlarg ->
 --             (DConCase (-1) (mkFnCon n) (take i (genArgs 0))
 --               (dupdate tlarg
---                 (DApp False n (map (DV . Glob) (take i (genArgs 0))))))))
+--                 (DApp False n (map DV (take i (genArgs 0))))))))
           = mkApplyCase n ar i
     | otherwise = []
-  where dupdate tlarg x = x
 
 mkApplyCase fname n ar | n == ar = []
 mkApplyCase fname n ar
         = let nm = mkUnderCon fname (ar - n) in
               (nm, n, ApplyCase (DConCase (-1) nm (take n (genArgs 0))
                   (DApp False (mkUnderCon fname (ar - (n + 1)))
-                       (map (DV . Glob) (take n (genArgs 0) ++
+                       (map DV (take n (genArgs 0) ++
                          [sMN 0 "arg"])))))
                             :
               if (ar - (n + 2) >=0 )
                  then (nm, n, Apply2Case (DConCase (-1) nm (take n (genArgs 0))
                       (DApp False (mkUnderCon fname (ar - (n + 2)))
-                       (map (DV . Glob) (take n (genArgs 0) ++
+                       (map DV (take n (genArgs 0) ++
                          [sMN 0 "arg0", sMN 0 "arg1"])))))
                             :
                             mkApplyCase fname (n + 1) ar
@@ -243,9 +215,9 @@ mkApplyCase fname n ar
 
 mkEval :: [(Name, Int, EvalApply DAlt)] -> (Name, DDecl)
 mkEval xs = (sMN 0 "EVAL", DFun (sMN 0 "EVAL") [sMN 0 "arg"]
-               (mkBigCase (sMN 0 "EVAL") 256 (DV (Glob (sMN 0 "arg")))
+               (mkBigCase (sMN 0 "EVAL") 256 (DV (sMN 0 "arg"))
                   (mapMaybe evalCase xs ++
-                      [DDefaultCase (DV (Glob (sMN 0 "arg")))])))
+                      [DDefaultCase (DV (sMN 0 "arg"))])))
   where
     evalCase (n, t, EvalCase x) = Just (x (sMN 0 "arg"))
     evalCase _ = Nothing
@@ -256,7 +228,7 @@ mkApply xs = (sMN 0 "APPLY", DFun (sMN 0 "APPLY") [sMN 0 "fn", sMN 0 "arg"]
                                 [] -> DNothing
                                 cases ->
                                     mkBigCase (sMN 0 "APPLY") 256
-                                               (DV (Glob (sMN 0 "fn")))
+                                               (DV (sMN 0 "fn"))
                                               (cases ++
                                     [DDefaultCase DNothing])))
   where
@@ -269,14 +241,14 @@ mkApply2 xs = (sMN 0 "APPLY2", DFun (sMN 0 "APPLY2") [sMN 0 "fn", sMN 0 "arg0", 
                                 [] -> DNothing
                                 cases ->
                                     mkBigCase (sMN 0 "APPLY") 256
-                                               (DV (Glob (sMN 0 "fn")))
+                                               (DV (sMN 0 "fn"))
                                               (cases ++
                                     [DDefaultCase
                                        (DApp False (sMN 0 "APPLY")
                                        [DApp False (sMN 0 "APPLY")
-                                              [DV (Glob (sMN 0 "fn")),
-                                               DV (Glob (sMN 0 "arg0"))],
-                                               DV (Glob (sMN 0 "arg1"))])
+                                              [DV (sMN 0 "fn"),
+                                               DV (sMN 0 "arg0")],
+                                               DV (sMN 0 "arg1")])
                                                ])))
   where
     applyCase (n, t, Apply2Case x) = Just x
@@ -297,8 +269,7 @@ mkUnderCon n missing = sMN missing ("U_" ++ show n)
 
 instance Show DExp where
    show e = show' [] e where
-     show' env (DV (Loc i)) = "var " ++ env!!i
-     show' env (DV (Glob n)) = "GLOB " ++ show n
+     show' env (DV n) = show n
      show' env (DApp _ e args) = show e ++ "(" ++
                                    showSep ", " (map (show' env) args) ++")"
      show' env (DLet n v e) = "let " ++ show n ++ " = " ++ show' env v ++ " in " ++
@@ -332,30 +303,7 @@ instance Show DExp where
 -- 'max' branches
 mkBigCase cn max arg branches
    | length branches <= max = DChkCase arg branches
-   | otherwise = -- DChkCase arg branches -- until I think of something...
-       -- divide the branches into groups of at most max (by tag),
-       -- generate a new case and shrink, recursively
-       let bs = sortBy tagOrd branches
-           (all, def) = case (last bs) of
-                    DDefaultCase t -> (init all, Just (DDefaultCase t))
-                    _ -> (all, Nothing)
-           bss = groupsOf max all
-           cs = map mkCase bss in
-           DChkCase arg branches
-
-    where mkCase bs = DChkCase arg bs
-
-          tagOrd (DConCase t _ _ _) (DConCase t' _ _ _) = compare t t'
-          tagOrd (DConstCase c _) (DConstCase c' _) = compare c c'
-          tagOrd (DDefaultCase _) (DDefaultCase _) = EQ
-
-          tagOrd (DConCase _ _ _ _) (DDefaultCase _) = LT
-          tagOrd (DConCase _ _ _ _) (DConstCase _ _) = LT
-          tagOrd (DConstCase _ _) (DDefaultCase _) = LT
-
-          tagOrd (DDefaultCase _) (DConCase _ _ _ _) = GT
-          tagOrd (DConstCase _ _) (DConCase _ _ _ _) = GT
-          tagOrd (DDefaultCase _) (DConstCase _ _) = GT
+   | otherwise = DChkCase arg branches
 
 groupsOf :: Int -> [DAlt] -> [[DAlt]]
 groupsOf x [] = []

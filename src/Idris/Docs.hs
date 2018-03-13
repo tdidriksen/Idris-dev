@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Docs
 Description : Data structures and utilities to work with Idris Documentation.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -15,7 +15,7 @@ module Idris.Docs (
   , FunDoc, FunDoc'(..), Docs, Docs'(..)
   ) where
 
-import Idris.AbsSyntax (FixDecl(..), Fixity, HowMuchDocs(..), IState(..), Idris,
+import Idris.AbsSyntax (FixDecl(..), Fixity, IState(..), Idris,
                         InterfaceInfo(..), PArg'(..), PDecl'(..), PPOption(..),
                         PTerm(..), Plicity(..), RecordInfo(..), basename,
                         getIState, modDocName, ppOptionIst, pprintPTerm,
@@ -26,6 +26,7 @@ import Idris.Delaborate
 import Idris.Docstrings (DocTerm, Docstring, emptyDocstring, noDocs,
                          nullDocstring, overview, renderDocTerm,
                          renderDocstring)
+import Idris.Options (HowMuchDocs(..))
 
 import Util.Pretty
 
@@ -238,10 +239,6 @@ pprintDocs ist (InterfaceDoc n doc meths params constraints implementations sub_
 
     updateRef nm (PRef fc _ _) = PRef fc [] nm
     updateRef _  pt          = pt
-
-    isSubInterface (PPi (Constraint _ _ _) _ _ (PApp _ _ args) (PApp _ (PRef _ _ nm) args')) = nm == n && map getTm args == map getTm args'
-    isSubInterface (PPi _   _            _ _ pt)                                           = isSubInterface pt
-    isSubInterface _                                                                       = False
 
     prettyConstraints =
       cat (punctuate (comma <> space) (map (pprintPTerm ppo params' [] infixes) constraints))

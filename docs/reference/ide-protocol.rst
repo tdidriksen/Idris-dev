@@ -51,9 +51,6 @@ The available commands include:
   ``(:interpret STRING)``
     Interpret ``STRING`` at the Idris REPL, returning a highlighted result.
 
-  ``(:repl-completions STRING)``
-    Return the result of tab-completing ``STRING`` as a REPL command.
-
   ``(:type-of STRING)``
     Return the type of the name, written with Idris syntax in the ``STRING``.
     The reply may contain highlighting information.
@@ -116,13 +113,13 @@ The available commands include:
     Return a highlighted string consisting of the results of making all arguments in serialised term ``TM`` (which would previously have been sent as the ``tt-term`` property of a string) follow their usual implicitness setting.
 
   ``(:elaborate-term TM)``
-    Return a highlighted string consisting of the the core language term corresponding to serialised term ``TM`` (which would previously have been sent as the ``tt-term`` property of a string).
+    Return a highlighted string consisting of the core language term corresponding to serialised term ``TM`` (which would previously have been sent as the ``tt-term`` property of a string).
 
   ``(:print-definition NAME)``
     Return the definition of ``NAME`` as a highlighted string.
 
   ``(:repl-completions NAME)``
-    Search names, types and documentations which contain ``NAME``.
+    Search names, types and documentations which contain ``NAME``. Return the result of tab-completing ``NAME`` as a REPL command.
 
   ``:version``
     Return the version information of the Idris compiler.

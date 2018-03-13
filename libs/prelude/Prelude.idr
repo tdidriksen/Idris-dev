@@ -212,7 +212,7 @@ Enum Integer where
           go : Integer -> Integer -> List Integer
           go n m = go' n (natRange (S (cast {to = Nat} (m - n))))
   enumFromThenTo n next m = if n == m then [n]
-                            else if next - n == 0 || next - n < 0 /= m - n < 0 then []
+                            else if next - n == 0 || (next - n < 0) /= (m - n < 0) then []
                             else go (natRange (S (divNatNZ (fromInteger (abs (m - n))) (S (fromInteger ((abs (next - n)) - 1))) SIsNotZ)))
     where go : List Nat -> List Integer
           go [] = []
@@ -234,7 +234,7 @@ Enum Int where
   enumFromThen n inc = countFrom n (inc - n)
 
   enumFromThenTo n next m = if n == m then [n]
-                            else if next - n == 0 || next - n < 0 /= m - n < 0 then []
+                            else if next - n == 0 || (next - n < 0) /= (m - n < 0) then []
                             else go (natRange (S (divNatNZ (cast {to=Nat} (abs (m - n))) (S (cast {to=Nat} ((abs (next - n)) - 1))) SIsNotZ)))
     where go : List Nat -> List Int
           go [] = []
@@ -280,8 +280,7 @@ namespace JSNull
 
 ||| Pointer equality
 eqPtr : Ptr -> Ptr -> IO Bool
-eqPtr x y = do eq <- foreign FFI_C "idris_eqPtr" (Ptr -> Ptr -> IO Int) x y
-               pure (eq /= 0)
+eqPtr x y = pure $ prim__eqPtr x y /= 0
 
 ||| Loop while some test is true
 |||

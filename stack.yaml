@@ -1,15 +1,18 @@
-resolver: lts-8.18
+#recheck extra-deps next on resolver or cabal file change
+resolver: lts-10.4
 
 packages:
   - location: .
+
+extra-deps: []
 
 flags:
   idris:
     FFI: true
     GMP: true
 
-extra-deps:
-  - libffi-0.1
+ghc-options:
+  idris: -fwarn-unused-imports -fwarn-unused-binds
 
 nix:
   enable: false

@@ -1,16 +1,16 @@
+||| Monads and Functors
 module Prelude.Monad
-
--- Monads and Functors
 
 import Builtins
 import Prelude.Functor
 import public Prelude.Applicative
 import Prelude.Basics
+import Prelude.Foldable
 import IO
 
 %access public export
 
-infixl 5 >>=
+infixl 1 >>=
 
 interface Applicative m => Monad (m : Type -> Type) where
     ||| Also called `bind`.
@@ -27,11 +27,12 @@ interface Applicative m => Monad (m : Type -> Type) where
 ||| define `return` and `pure` differently!
 return : Monad m => a -> m a
 return = pure
-%deprecate return "Please use `pure`, which is equivalent."
+%fragile return "`return` is provided for those coming from Haskell. Please use `pure` instead, which is equivalent."
 
-flatten : Monad m => m (m a) -> m a
-flatten = join
-%deprecate flatten "Please use `join`, which is the standard name."
+||| Similar to `foldl`, but uses a function wrapping its result in a `Monad`.
+||| Consequently, the final value is wrapped in the same `Monad`.
+foldlM : (Foldable t, Monad m) => (funcM: a -> b -> m a) -> (init: a) -> (input: t b) -> m a
+foldlM fm a0 = foldl (\ma,b => ma >>= flip fm b) (pure a0)
 
 -- Annoyingly, these need to be here, so that we can use them in other
 -- Prelude modules other than the top level.
@@ -48,4 +49,3 @@ Applicative (IO' ffi) where
 
 Monad (IO' ffi) where
     b >>= k = io_bind b k
-

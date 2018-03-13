@@ -2,7 +2,7 @@
 Module      : IRTS.Bytecode
 Description : Bytecode for a stack based VM (e.g. for generating C code with an accurate hand written GC)
 
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -23,7 +23,6 @@ module IRTS.Bytecode where
 
 import Idris.Core.TT
 import IRTS.Defunctionalise
-import IRTS.Lang
 import IRTS.Simplified
 
 import Data.Maybe

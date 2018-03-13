@@ -1,7 +1,7 @@
 {-|
 Module      : IRTS.JavaScript.PrimOp
 Description : The JavaScript primitive operations.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -16,11 +16,7 @@ module IRTS.JavaScript.PrimOp
   , jsPrimCoerce
   ) where
 
-import Data.Char
-import Data.List
 import qualified Data.Map.Strict as Map
-import Data.Text (Text)
-import qualified Data.Text as T
 import Idris.Core.TT
 import IRTS.JavaScript.AST
 import IRTS.Lang
@@ -29,8 +25,6 @@ data JsPrimTy = PTBool | PTAny deriving (Eq, Ord)
 
 type PrimF = [JsExpr] -> JsExpr
 type PrimDec = (Bool, JsPrimTy, PrimF) -- the bool indicates if bigint library is used or not
-
-deriving instance Ord PrimFn
 
 primDB :: Map.Map PrimFn PrimDec
 primDB =
@@ -119,6 +113,10 @@ primDB =
   , item (LASHR (ITFixed IT16)) False PTAny $ JsForeign "%0 >> %1"
   , item (LASHR (ITFixed IT32)) False PTAny $ JsForeign "%0 >> %1|0"
   , item (LASHR (ITFixed IT64)) True PTAny $ JsForeign "%0.shiftRight(%1)"
+  , item (LCompl (ITFixed IT8)) False PTAny $ JsForeign "~%0"
+  , item (LCompl (ITFixed IT16)) False PTAny $ JsForeign "~%0"
+  , item (LCompl (ITFixed IT32)) False PTAny $ JsForeign "~%0|0"
+  , item (LCompl (ITFixed IT64)) True PTAny $ method "not"
   , item (LEq ATFloat) False PTBool $ binop "==="
   , item (LEq (ATInt ITNative)) False PTBool $ binop "==="
   , item (LEq (ATInt ITChar)) False PTBool $ binop "==="
@@ -200,6 +198,7 @@ primDB =
   , item (LIntFloat ITNative) False PTAny $ head
   , item (LIntFloat ITBig) True PTAny $ JsForeign "%0.intValue()"
   , item (LFloatInt ITNative) False PTAny $ JsForeign "%0|0"
+  , item (LFloatInt ITBig) True PTAny $ JsForeign "new $JSRTS.jsbn.BigInteger(Math.trunc(%0)+ '')"
   , item (LIntStr ITNative) False PTAny $ JsForeign "''+%0"
   , item (LIntStr ITBig) True PTAny $ JsForeign "%0.toString()"
   , item (LStrInt ITNative) False PTAny $ JsForeign "parseInt(%0)|0"
@@ -216,6 +215,7 @@ primDB =
   , item LFASin False PTAny $ jsAppN "Math.asin"
   , item LFACos False PTAny $ jsAppN "Math.acos"
   , item LFATan False PTAny $ jsAppN "Math.atan"
+  , item LFATan2 False PTAny $ jsAppN "Math.atan2"
   , item LFSqrt False PTAny $ jsAppN "Math.sqrt"
   , item LFFloor False PTAny $ jsAppN "Math.floor"
   , item LFCeil False PTAny $ jsAppN "Math.ceil"

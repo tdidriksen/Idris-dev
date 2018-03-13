@@ -195,7 +195,7 @@ VAL bigMod(VM* vm, VAL x, VAL y) {
     VAL cl = allocate(sizeof(Closure) + sizeof(mpz_t), 0);
     idris_doneAlloc();
     bigint = (mpz_t*)(((char*)cl) + sizeof(Closure));
-    mpz_mod(*bigint, GETMPZ(GETBIG(vm,x)), GETMPZ(GETBIG(vm,y)));
+    mpz_tdiv_r(*bigint, GETMPZ(GETBIG(vm,x)), GETMPZ(GETBIG(vm,y)));
     SETTY(cl, CT_BIGINT);
     cl -> info.ptr = (void*)bigint;
     return cl;
@@ -344,7 +344,7 @@ VAL idris_bigShiftLeft(VM* vm, VAL x, VAL y) {
     if (ISINT(x) && ISINT(y)) {
         return INTOP(<<, x, y);
     } else {
-        return bigShiftLeft(vm, GETBIG(vm, x), GETBIG(vm, y));
+        return bigShiftLeft(vm, GETBIG(vm, x), y);
     }
 }
 
@@ -352,7 +352,7 @@ VAL idris_bigAShiftRight(VM* vm, VAL x, VAL y) {
     if (ISINT(x) && ISINT(y)) {
         return INTOP(>>, x, y);
     } else {
-        return bigAShiftRight(vm, GETBIG(vm, x), GETBIG(vm, y));
+        return bigAShiftRight(vm, GETBIG(vm, x), y);
     }
 }
 
@@ -360,7 +360,7 @@ VAL idris_bigLShiftRight(VM* vm, VAL x, VAL y) {
     if (ISINT(x) && ISINT(y)) {
         return INTOP(>>, x, y);
     } else {
-        return bigLShiftRight(vm, GETBIG(vm, x), GETBIG(vm, y));
+        return bigLShiftRight(vm, GETBIG(vm, x), y);
     }
 }
 
@@ -501,8 +501,8 @@ uint64_t idris_truncBigB64(const mpz_t bi) {
         return mpz_get_ui(bi);
     }
     int64_t out = mpz_get_ui(bi);
-    if (bi->_mp_size > 1 ) {
-        out |= (uint64_t)bi->_mp_d[1] << 32;
+    if (mpz_size(bi) > 1) {
+        out |= mpz_getlimbn(bi, 1) << 32;
     }
     return out;
 }

@@ -1,18 +1,18 @@
 {-|
 Module      : IRTS.CodegenC
 Description : The default code generator for Idris, generating C code.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
+{-# LANGUAGE FlexibleContexts #-}
+
 module IRTS.CodegenC (codegenC) where
 
-import Idris.AbsSyntax
 import Idris.Core.TT
 import IRTS.Bytecode
 import IRTS.CodegenCommon
 import IRTS.Defunctionalise
-import IRTS.Lang
 import IRTS.Simplified
 import IRTS.System
 
@@ -22,9 +22,7 @@ import Control.Monad
 import Data.Bits
 import Data.Char
 import Data.List (intercalate, nubBy)
-import Debug.Trace
 import Numeric
-import System.Directory
 import System.Exit
 import System.FilePath ((<.>), (</>))
 import System.IO
@@ -82,10 +80,10 @@ codegenC' defs out exec incs objs libs flags exports iface dbg
              incFlags <- getIncFlags
              envFlags <- getEnvFlags
              let stackFlag = if isWindows then ["-Wl,--stack,16777216"] else []
-             let args = [gccDbg dbg] ++
+             let args = gccDbg dbg ++
                         gccFlags iface ++
                         -- # Any flags defined here which alter the RTS API must also be added to config.mk
-                        ["-DHAS_PTHREAD", "-DIDRIS_ENABLE_STATS",
+                        ["-std=c99", "-D_POSIX_C_SOURCE=200809L", "-DHAS_PTHREAD", "-DIDRIS_ENABLE_STATS",
                          "-I."] ++ objs ++ envFlags ++
                         (if (exec == Executable) then [] else ["-c"]) ++
                         [tmpn] ++
@@ -114,9 +112,12 @@ debug _ = ""
 gccFlags i = if i then ["-fwrapv"]
                   else ["-fwrapv", "-fno-strict-overflow"]
 
-gccDbg DEBUG = "-g"
-gccDbg TRACE = "-O2"
-gccDbg _ = "-O2"
+gccDbg DEBUG = ["-g"]
+-- clang optimises sibling calls in O1, but gcc doesn't
+-- on the other hand, O1 compiles significantly faster in clang without
+-- any noticeable performance hit.
+gccDbg TRACE = ["-O1", "-foptimize-sibling-calls"]
+gccDbg _ = ["-O1", "-foptimize-sibling-calls"]
 
 cname :: Name -> String
 cname n = "_idris_" ++ concatMap cchar (showCG n)
@@ -181,9 +182,11 @@ bcc i (ASSIGNCONST l c)
     = indent i ++ creg l ++ " = " ++ mkConst c ++ ";\n"
   where
     mkConst (I i) = "MKINT(" ++ show i ++ ")"
-    mkConst (BI i) | i < (2^30) = "MKINT(" ++ show i ++ ")"
-                   | otherwise = "MKBIGC(vm,\"" ++ show i ++ "\")"
-    mkConst (Fl f) = "MKFLOAT(vm, " ++ show f ++ ")"
+    mkConst (BI i) = let maxInt = 2^30
+                     in if i >= -maxInt && i < maxInt
+                        then "MKINT(" ++ show i ++ ")"
+                        else "MKBIGC(vm,\"" ++ show i ++ "\")"
+    mkConst (Fl f) = "MKFLOAT(vm, " ++ (map toUpper $ show f) ++ ")"
     mkConst (Ch c) = "MKINT(" ++ show (fromEnum c) ++ ")"
     mkConst (Str s) = "MKSTR(vm, " ++ showCStr s ++ ")"
     mkConst (B8  x) = "idris_b8const(vm, "  ++ show x ++ "U)"
@@ -203,11 +206,7 @@ bcc i (MKCON l loc tag args)
     = indent i ++ alloc loc tag ++
       indent i ++ setArgs 0 args ++ "\n" ++
       indent i ++ creg l ++ " = " ++ creg Tmp ++ ";\n"
-
---         "MKCON(vm, " ++ creg l ++ ", " ++ show tag ++ ", " ++
---         show (length args) ++ concatMap showArg args ++ ");\n"
-  where showArg r = ", " ++ creg r
-        setArgs i [] = ""
+  where setArgs i [] = ""
         setArgs i (x : xs) = "SETARG(" ++ creg Tmp ++ ", " ++ show i ++ ", " ++ creg x ++
                              "); " ++ setArgs (i + 1) xs
         alloc Nothing tag
@@ -221,8 +220,14 @@ bcc i (PROJECT l loc a) = indent i ++ "PROJECT(vm, " ++ creg l ++ ", " ++ show l
                                       ", " ++ show a ++ ");\n"
 bcc i (PROJECTINTO r t idx)
     = indent i ++ creg r ++ " = GETARG(" ++ creg t ++ ", " ++ show idx ++ ");\n"
+bcc i (CASE True r [(_, alt)] Nothing)
+    = indent i ++ showCode i alt
+  where
+    showCode :: Int -> [BC] -> String
+    showCode i bc = "{\n" ++ concatMap (bcc (i + 1)) bc ++
+                    indent i ++ "}\n"
 bcc i (CASE True r code def)
-    | length code < 4 = showCase i def code
+    | length code < 6 && length code > 1 = showCase i def code
   where
     showCode :: Int -> [BC] -> String
     showCode i bc = "{\n" ++ concatMap (bcc (i + 1)) bc ++
@@ -303,13 +308,6 @@ bcc i (CONSTCASE r code def)
     iCase v (B64 w, bc) =
         indent i ++ "if (GETBITS64(" ++ v ++ ") == " ++ show (fromEnum w) ++ ") {\n"
            ++ concatMap (bcc (i+1)) bc ++ indent i ++ "} else\n"
-    showCase i (t, bc) = indent i ++ "case " ++ show t ++ ":\n"
-                         ++ concatMap (bcc (i+1)) bc ++
-                            indent (i + 1) ++ "break;\n"
-    showDef i Nothing = ""
-    showDef i (Just c) = indent i ++ "default:\n"
-                         ++ concatMap (bcc (i+1)) c ++
-                            indent (i + 1) ++ "break;\n"
     showDefS i Nothing = ""
     showDefS i (Just c) = concatMap (bcc (i+1)) c
 
@@ -325,6 +323,9 @@ bcc i (TOPBASE n) = indent i ++ "TOPBASE(" ++ show n ++ ");\n"
 bcc i (BASETOP n) = indent i ++ "BASETOP(" ++ show n ++ ");\n"
 bcc i STOREOLD = indent i ++ "STOREOLD;\n"
 bcc i (OP l fn args) = indent i ++ doOp (creg l ++ " = ") fn args ++ ";\n"
+bcc i (FOREIGNCALL l rty (FStr ('#':name)) [])
+      = indent i ++
+        c_irts (toFType rty) (creg l ++ " = ") name ++ ";\n"
 bcc i (FOREIGNCALL l rty (FStr fn@('&':name)) [])
       = indent i ++
         c_irts (toFType rty) (creg l ++ " = ") fn ++ ";\n"
@@ -587,6 +588,7 @@ doOp v LFSqrt [x] = v ++ flUnOp "sqrt" (creg x)
 doOp v LFFloor [x] = v ++ flUnOp "floor" (creg x)
 doOp v LFCeil [x] = v ++ flUnOp "ceil" (creg x)
 doOp v LFNegate [x] = v ++ "MKFLOAT(vm, -GETFLOAT(" ++ (creg x) ++ "))"
+doOp v LFATan2 [y, x] = v ++ "MKFLOAT(vm, atan2(GETFLOAT(" ++ creg y ++ "), GETFLOAT(" ++ creg x ++ ")))"
 
 -- String functions which don't need to know we're UTF8
 doOp v LStrConcat [l,r] = v ++ "idris_concat(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
@@ -701,29 +703,26 @@ ifaceC (ExportFun n cn ret args)
 
         argNames = zipWith (++) (repeat "arg") (map show [0..])
 
-mkBody n as t = indent 1 ++ "INITFRAME;\n" ++
-                indent 1 ++ "RESERVE(" ++ show (max (length as) 3) ++ ");\n" ++
-                push 0 as ++ call n ++ retval t
-  where push i [] = ""
-        push i ((n, t) : ts) = indent 1 ++ c_irts (toFType t)
-                                      ("TOP(" ++ show i ++ ") = ") n
-                                   ++ ";\n" ++ push (i + 1) ts
+mkBody n as_in t
+     = indent 1 ++ "INITFRAME;\n" ++
+       indent 1 ++ "RESERVE(" ++ show (max (length as) 3) ++ ");\n" ++
+       push 0 as ++ call n ++ retval t
+  where
+    as = case t of
+              FIO t -> as_in ++ [("NULL", FUnknown)] -- add world token
+              _ -> as_in
+    push i [] = ""
+    push i ((n, t) : ts) = indent 1 ++ c_irts (toFType t)
+                                  ("TOP(" ++ show i ++ ") = ") n
+                               ++ ";\n" ++ push (i + 1) ts
 
-        call _ = indent 1 ++ "STOREOLD;\n" ++
-                 indent 1 ++ "BASETOP(0);\n" ++
-                 indent 1 ++ "ADDTOP(" ++ show (length as) ++ ");\n" ++
-                 indent 1 ++ "CALL(" ++ cname n ++ ");\n"
-
-        retval (FIO t)
-           = indent 1 ++ "TOP(0) = NULL;\n" ++
-             indent 1 ++ "TOP(1) = NULL;\n" ++
-             indent 1 ++ "TOP(2) = RVAL;\n" ++
-             indent 1 ++ "STOREOLD;\n" ++
+    call _ = indent 1 ++ "STOREOLD;\n" ++
              indent 1 ++ "BASETOP(0);\n" ++
-             indent 1 ++ "ADDTOP(3);\n" ++
-             indent 1 ++ "CALL(" ++ cname (sUN "call__IO") ++ ");\n" ++
-             retval t
-        retval t = indent 1 ++ "return " ++ irts_c (toFType t) "RVAL" ++ ";\n"
+             indent 1 ++ "ADDTOP(" ++ show (length as) ++ ");\n" ++
+             indent 1 ++ "CALL(" ++ cname n ++ ");\n"
+
+    retval (FIO t) = retval t
+    retval t = indent 1 ++ "return " ++ irts_c (toFType t) "RVAL" ++ ";\n"
 
 ctype (FCon c)
   | c == sUN "C_Str" = "char*"

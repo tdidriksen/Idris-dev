@@ -1,36 +1,30 @@
 {-|
 Module      : Idris.Error
 Description : Utilities to deal with error reporting.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 
-module Idris.Error where
+module Idris.Error (getErrSpan, idrisCatch, ierror, ifail, iucheck, report,
+                    setAndReport, showErr, tclift, tcliftAt, tctry, warnDisamb) where
 
 import Idris.AbsSyntax
 import Idris.Core.Constraints
 import Idris.Core.Evaluate (ctxtAlist)
 import Idris.Core.TT
-import Idris.Core.Typecheck
 import Idris.Delaborate
 import Idris.Output
 
 import Prelude hiding (catch)
 
 import Control.Monad (when)
-import Control.Monad.State.Strict
-import Data.Char
 import qualified Data.Foldable as Foldable
 import Data.List (intercalate, isPrefixOf)
 import qualified Data.Set as S
 import qualified Data.Text as T
-import qualified Data.Traversable as Traversable
-import Data.Typeable
-import System.Console.Haskeline
-import System.Console.Haskeline.MonadException
 import System.IO.Error (ioeGetErrorString, isUserError)
 
 iucheck :: Idris ()
@@ -107,7 +101,7 @@ warnDisamb ist (PInferRef _ _ _) = return ()
 warnDisamb ist (PPatvar _ _) = return ()
 warnDisamb ist (PLam _ _ _ t b) = warnDisamb ist t >> warnDisamb ist b
 warnDisamb ist (PPi _ _ _ t b) = warnDisamb ist t >> warnDisamb ist b
-warnDisamb ist (PLet _ _ _ x t b) = warnDisamb ist x >> warnDisamb ist t >> warnDisamb ist b
+warnDisamb ist (PLet _ _ _ _ x t b) = warnDisamb ist x >> warnDisamb ist t >> warnDisamb ist b
 warnDisamb ist (PTyped x t) = warnDisamb ist x >> warnDisamb ist t
 warnDisamb ist (PApp _ t args) = warnDisamb ist t >>
                                  mapM_ (warnDisamb ist . getTm) args
@@ -136,8 +130,10 @@ warnDisamb ist (PDoBlock steps) = mapM_ wStep steps
         wStep (DoBind _ _ _ x) = warnDisamb ist x
         wStep (DoBindP _ x y cs) = warnDisamb ist x >> warnDisamb ist y >>
                                    mapM_ (\(x,y) -> warnDisamb ist x >> warnDisamb ist y) cs
-        wStep (DoLet _ _ _ x y) = warnDisamb ist x >> warnDisamb ist y
-        wStep (DoLetP _ x y) = warnDisamb ist x >> warnDisamb ist y
+        wStep (DoLet _ _ _ _ x y) = warnDisamb ist x >> warnDisamb ist y
+        wStep (DoLetP _ x y cs) = warnDisamb ist x >> warnDisamb ist y >>
+                                  mapM_ (\(x,y) -> warnDisamb ist x >> warnDisamb ist y) cs
+        wStep (DoRewrite _ h) = warnDisamb ist h
 warnDisamb ist (PIdiom _ x) = warnDisamb ist x
 warnDisamb ist (PMetavar _ _) = return ()
 warnDisamb ist (PProof tacs) = mapM_ (Foldable.mapM_ (warnDisamb ist)) tacs

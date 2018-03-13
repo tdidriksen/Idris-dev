@@ -1,22 +1,16 @@
 {-|
 Module      : Idris.DataOpts
 Description : Optimisations for Idris code i.e. Forcing, detagging and collapsing.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE FlexibleInstances, PatternGuards #-}
 
 module Idris.DataOpts(applyOpts) where
 
 import Idris.AbsSyntax
-import Idris.AbsSyntaxTree
 import Idris.Core.TT
-
-import Control.Applicative
-import Data.List
-import Data.Maybe
-import Debug.Trace
 
 class Optimisable term where
     applyOpts :: term -> Idris term
@@ -49,7 +43,7 @@ instance Optimisable Raw where
 
 -- Erase types (makes ibc smaller, and we don't need them)
 instance Optimisable (Binder (TT Name)) where
-    applyOpts (Let t v) = Let <$> return Erased <*> applyOpts v
+    applyOpts (Let r t v) = Let r <$> return Erased <*> applyOpts v
     applyOpts b = return (b { binderTy = Erased })
 
 instance Optimisable (Binder Raw) where

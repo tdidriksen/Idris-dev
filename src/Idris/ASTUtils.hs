@@ -2,7 +2,7 @@
 {-|
 Module      : Idris.ASTUtils
 Description : This implements just a few basic lens-like concepts to ease state updates. Similar to fclabels in approach, just without the extra dependency.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -48,10 +48,10 @@ module Idris.ASTUtils(
 import Idris.AbsSyntaxTree
 import Idris.Core.Evaluate
 import Idris.Core.TT
+import Idris.Options
 
 import Prelude hiding (id, (.))
 
-import Control.Applicative
 import Control.Category
 import Control.Monad.State.Class
 import Data.Maybe

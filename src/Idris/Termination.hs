@@ -1,12 +1,14 @@
 {-|
 Module      : Idris.Termination
 Description : The termination checker for Idris
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
 {-# LANGUAGE PatternGuards #-}
-module Idris.Termination where
+module Idris.Termination (buildSCG, checkAllCovering, checkDeclTotality,
+                          checkIfGuarded, checkPositive, checkSizeChange,
+                          verifyTotality) where
 
 import Idris.AbsSyntax
 import Idris.Core.CaseTree
@@ -14,10 +16,10 @@ import Idris.Core.Evaluate
 import Idris.Core.TT
 import Idris.Delaborate
 import Idris.Error
-import Idris.Output (iWarn, iputStrLn)
+import Idris.Options
+import Idris.Output (iWarn)
 
 import Control.Monad.State.Strict
-import Data.Char
 import Data.Either
 import Data.List
 import Data.Maybe
@@ -33,12 +35,11 @@ checkAllCovering fc done top n | not (n `elem` done)
                     do let msg = show top ++ " is " ++ show tot ++ " due to " ++ show n
                        putIState i { idris_totcheckfail = (fc, msg) : idris_totcheckfail i }
                        addIBC (IBCTotCheckErr fc msg)
-             [Partial _] ->
-                case lookupCtxt n (idris_callgraph i) of
-                     [cg] -> mapM_ (checkAllCovering fc (n : done) top)
-                                   (calls cg)
-                     _ -> return ()
-             x -> return () -- stop if total
+             [Partial (Other ns)] ->
+                     -- Check that none of the partial functions it relies
+                     -- on are partial due to missing cases
+                     mapM_ (checkAllCovering fc (n : done) top) ns
+             x -> return () -- stop if total, or partial due to recursion
 checkAllCovering _ _ _ _ = return ()
 
 -- | Check whether all 'Inf' arguments to the name end up guaranteed to be
@@ -77,7 +78,7 @@ checkIfGuarded n
     allGuarded names i _ = True
 
     guardedTerm names i (P _ v _) = v `elem` names || guard v i
-    guardedTerm names i (Bind n (Let t v) sc)
+    guardedTerm names i (Bind n (Let rig t v) sc)
           = guardedTerm names i v && guardedTerm names i sc
     guardedTerm names i (Bind n b sc) = False
     guardedTerm names i ap@(App _ _ _)
@@ -142,9 +143,6 @@ checkPositive mut_ns (cn, ty')
 calcTotality :: FC -> Name -> [([Name], Term, Term)] -> Idris Totality
 calcTotality fc n pats
     = do i <- getIState
-         let opts = case lookupCtxt n (idris_flags i) of
-                            [fs] -> fs
-                            _ -> []
          case mapMaybe (checkLHS i) (map (\ (_, l, r) -> l) pats) of
             (failure : _) -> return failure
             _ -> checkSizeChange n
@@ -301,7 +299,7 @@ buildSCG' :: IState -> Name -> [(Term, Term)] -> [Name] -> [SCGEntry]
 buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
   scgPat (lhs, rhs) = let lhs' = delazy lhs
                           rhs' = delazy rhs
-                          (f, pargs) = unApply (dePat lhs') in
+                          (_, pargs) = unApply (dePat lhs') in
                             findCalls [] Toplevel (dePat rhs') (patvars lhs')
                                       (zip pargs [0..])
 
@@ -367,7 +365,7 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
           notPartial _ = True
   findCalls cases guarded (App _ f a) pvs pargs
         = findCalls cases Unguarded f pvs pargs ++ findCalls cases Unguarded a pvs pargs
-  findCalls cases guarded (Bind n (Let t v) e) pvs pargs
+  findCalls cases guarded (Bind n (Let rig t v) e) pvs pargs
         = findCalls cases Unguarded t pvs pargs ++
           findCalls cases Unguarded v pvs pargs ++
           -- Substitute in the scope since this might reveal some useful
@@ -392,7 +390,7 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
   fccPat cases pvs pargs args g (lhs, rhs)
       = let lhs' = delazy lhs
             rhs' = delazy rhs
-            (f, pargs_case) = unApply (dePat lhs')
+            (_, pargs_case) = unApply (dePat lhs')
             -- pargs is a pair of a term, and the argument position that
             -- term appears in. If any of the arguments to the case block
             -- are also on the lhs, we also want those patterns to appear
@@ -430,7 +428,7 @@ buildSCG' ist topfn pats args = nub $ concatMap scgPat pats where
             [ty] -> expand 0 (normalise (tt_ctxt ist) [] ty) args
             _ -> args
      where expand i (Bind n (Pi _ _ _ _) sc) (x : xs) = x : expand (i + 1) sc xs
-           expand i (Bind n (Pi _ _ _ _) sc) [] = Just (i, Same) : expand (i + 1) sc []
+           expand i (Bind n (Pi _ _ _ _) sc) [] = Nothing : expand (i + 1) sc []
            expand i _ xs = xs
 
   mkChange n args pargs = [(n, expandToArity n (sizes args))]
@@ -544,10 +542,6 @@ checkMP ist topfn i mp = if i > 0
                                collapse paths
                      else tryPath 0 [] mp 0
   where
-    tryPath' d path mp arg
-           = let res = tryPath d path mp arg in
-                 trace (show mp ++ "\n" ++ show arg ++ " " ++ show res) res
-
     mkBig (e, d) = (e, 10000)
 
     tryPath :: Int -> [((SCGEntry, Int), Int)] -> MultiPath -> Int -> Totality

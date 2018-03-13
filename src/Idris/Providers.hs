@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Providers
 Description : Idris' 'Type Provider' implementation.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -13,8 +13,6 @@ module Idris.Providers (
   ) where
 
 import Idris.AbsSyntax
-import Idris.AbsSyntaxTree
-import Idris.Core.Evaluate
 import Idris.Core.TT
 import Idris.Error
 

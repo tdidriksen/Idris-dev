@@ -15,6 +15,17 @@ int fileError(void* h);
 // Returns a negative number if not a file (e.g. directory or device)
 int fileSize(void* h);
 
+void* idris_dirOpen(char* dname);
+void idris_dirClose(void* h);
+char* idris_nextDirEntry(void* h);
+
+// Create a directory; return 0 on success or -1 on failure
+int idris_mkdir(char* dname);
+
+// Return 0 if ok, or -1 if there was an error with the given directory
+// (like ferror)
+int idris_dirError(void *dptr);
+
 // return 0 on success
 int idris_writeStr(void*h, char* str);
 // construct a file error structure (see Prelude.File) from errno
@@ -29,8 +40,6 @@ VAL idris_getString(VM* vm, void* buffer);
 void* do_popen(const char* cmd, const char* mode);
 int fpoll(void* h);
 
-
-int idris_eqPtr(void* x, void* y);
 int isNull(void* ptr);
 void* idris_stdin();
 

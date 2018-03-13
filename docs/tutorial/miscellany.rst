@@ -86,7 +86,7 @@ number as 0), we could write:
 
 	fibonacci : {default 0 lag : Nat} -> {default 1 lead : Nat} -> (n : Nat) -> Nat
 	fibonacci {lag} Z = lag
-	fibonacci {lag} {lead} (S Z) = fibonacci {lag=lead} {lead=lag+lead} n
+	fibonacci {lag} {lead} (S n) = fibonacci {lag=lead} {lead=lag+lead} n
 
 After this definition, ``fibonacci 5`` is equivalent to ``fibonacci {lag=0} {lead=1} 5``,
 and will return the 5th fibonacci number. Note that while this works, this is not the 
@@ -365,6 +365,14 @@ is shown below :
     main : IO ()
     main = do
          putStrLn $ show $ factorial 3
+
+To compile the generated C with debugging information e.g. to use
+``gdb`` to debug segmentation faults in Idris programs, use the
+``%flag C`` pragma to include debugging symbols, as is shown below :
+
+.. code-block:: idris
+
+    %flag C "-g"
 
 JavaScript Target
 =================

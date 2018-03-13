@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Prover
 Description : Idris' theorem prover.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -11,12 +11,11 @@ module Idris.Prover (prover, showProof, showRunElab) where
 -- Hack for GHC 7.10 and earlier compat without CPP or warnings
 -- This exludes (<$>) as fmap, because wl-pprint uses it for newline
 import Prelude (Bool(..), Either(..), Eq(..), Maybe(..), Show(..), String,
-                concatMap, elem, error, flip, foldl, foldr, fst, id, init,
-                length, lines, map, not, null, repeat, reverse, tail, zip, ($),
-                (&&), (++), (.), (||))
+                concatMap, elem, error, foldl, foldr, fst, id, init, length,
+                lines, map, not, null, repeat, reverse, tail, zip, ($), (&&),
+                (++), (.), (||))
 
 import Idris.AbsSyntax
-import Idris.AbsSyntaxTree
 import Idris.Completion
 import Idris.Core.CaseTree
 import Idris.Core.Elaborate hiding (Tactic(..))
@@ -32,6 +31,7 @@ import Idris.Elab.Value
 import Idris.ElabDecls
 import Idris.Error
 import qualified Idris.IdeMode as IdeMode
+import Idris.Options
 import Idris.Output
 import Idris.Parser hiding (params)
 import Idris.TypeSearch (searchByType)
@@ -40,11 +40,9 @@ import Util.Pretty
 
 import Control.DeepSeq
 import Control.Monad.State.Strict
-import Debug.Trace
 import System.Console.Haskeline
 import System.Console.Haskeline.History
 import System.IO (Handle, hPutStrLn, stdin, stdout)
-import Text.Trifecta.Result (ErrInfo(..), Result(..))
 
 -- | Launch the proof shell
 prover :: ElabInfo -> Bool -> Bool -> Name -> Idris ()
@@ -165,7 +163,7 @@ dumpState ist inElab menv ps | (h : hs) <- holes ps = do
   iputGoal rendered
 
   where
-    (h : hs) = holes ps -- apparently the pattern guards don't give us this
+    (h : _) = holes ps -- apparently the pattern guards don't give us this
 
     ppo = ppOptionIst ist
 
@@ -182,7 +180,7 @@ dumpState ist inElab menv ps | (h : hs) <- holes ps = do
         | not all && r == txt "rewrite_rule" = prettyPs all g ((n, False):bnd) bs
     prettyPs all g bnd ((n@(MN _ _), _, _) : bs)
         | not (all || n `elem` freeEnvNames bs || n `elem` goalNames g) = prettyPs all g bnd bs
-    prettyPs all g bnd ((n, _, Let t v) : bs) =
+    prettyPs all g bnd ((n, _, Let rig t v) : bs) =
       line <> bindingOf n False <+> text "=" <+> tPretty bnd v <+> colon <+>
         align (tPretty bnd t) <> prettyPs all g ((n, False):bnd) bs
     prettyPs all g bnd ((n, _, b) : bs) =
@@ -313,15 +311,16 @@ elabloop info fn d prompt prf e prev h env
 
        -- if we're abandoning, it has to be outside the scope of the catch
        case cmd of
-         Success (Left EAbandon) -> do iPrintError ""; ifail "Abandoned"
+         Right (Left EAbandon) -> do iPrintError ""; ifail "Abandoned"
          _ -> return ()
 
        (d, prev', st, done, prf', env', res) <-
          idrisCatch
            (case cmd of
-              Failure (ErrInfo err _) ->
-                return (False, prev, e, False, prf, env, Left . Msg . show . fixColour (idris_colourRepl ist) $ err)
-              Success (Left cmd') ->
+              Left err -> do
+                msg <- fmap (Left . Msg . show) (formatMessage err)
+                return (False, prev, e, False, prf, env, msg)
+              Right (Left cmd') ->
                 case cmd' of
                   EQED -> do hs <- lifte e get_holes
                              unless (null hs) $ ifail "Incomplete proof"
@@ -346,17 +345,18 @@ elabloop info fn d prompt prf e prev h env
                                    return (d', prev, st', done, prf', env, go)
                   EDocStr d -> do (d', st', done, prf', go) <- docStr e prf d
                                   return (d', prev, st', done, prf', env, go)
-              Success (Right cmd') ->
+              Right (Right cmd') ->
                 case cmd' of
                   DoLetP  {} -> ifail "Pattern-matching let not supported here"
+                  DoRewrite  {} -> ifail "Pattern-matching do-rewrite not supported here"
                   DoBindP {} -> ifail "Pattern-matching <- not supported here"
-                  DoLet fc i ifc Placeholder expr ->
+                  DoLet fc rig i ifc Placeholder expr ->
                     do (tm, ty) <- elabVal (recinfo proverfc) ERHS (inLets ist env expr)
                        ctxt <- getContext
                        let tm' = normaliseAll ctxt [] tm
                            ty' = normaliseAll ctxt [] ty
                        return (True, LetStep:prev, e, False, prf ++ [step], (i, ty', tm' ) : env, Right (iPrintResult ""))
-                  DoLet fc i ifc ty expr ->
+                  DoLet fc rig i ifc ty expr ->
                     do (tm, ty) <- elabVal (recinfo proverfc) ERHS
                                      (PApp NoFC (PRef NoFC [] (sUN "the"))
                                                 [ pexp (inLets ist env ty)
@@ -402,7 +402,7 @@ elabloop info fn d prompt prf e prev h env
     -- the elaborator with a custom environment here to avoid the
     -- delab step.
     inLets :: IState -> [(Name, Type, Term)] -> PTerm -> PTerm
-    inLets ist lets tm = foldr (\(n, ty, v) b -> PLet NoFC n NoFC (delab ist ty) (delab ist v) b) tm (reverse lets)
+    inLets ist lets tm = foldr (\(n, ty, v) b -> PLet NoFC RigW n NoFC (delab ist ty) (delab ist v) b) tm (reverse lets)
 
 
 
@@ -430,27 +430,29 @@ ploop fn d prompt prf e h
             Nothing -> do iPrintError ""; ifail "Abandoned"
             Just input -> return (parseTactic i input, input)
          case cmd of
-            Success Abandon -> do iPrintError ""; ifail "Abandoned"
+            Right Abandon -> do iPrintError ""; ifail "Abandoned"
             _ -> return ()
          (d, st, done, prf', res) <- idrisCatch
            (case cmd of
-              Failure (ErrInfo err _) -> return (False, e, False, prf, Left . Msg . show . fixColour (idris_colourRepl i) $ err)
-              Success Undo -> do (_, st) <- elabStep e loadState
-                                 return (True, st, False, init prf, Right $ iPrintResult "")
-              Success ProofState -> return (True, e, False, prf, Right $ iPrintResult "")
-              Success ProofTerm -> do tm <- lifte e get_term
-                                      iputStrLn $ "TT: " ++ show tm ++ "\n"
-                                      return (False, e, False, prf, Right $ iPrintResult "")
-              Success Qed -> do hs <- lifte e get_holes
-                                unless (null hs) $ ifail "Incomplete proof"
-                                iputStrLn "Proof completed!"
-                                return (False, e, True, prf, Right $ iPrintResult "")
-              Success (TCheck (PRef _ _ n)) -> checkNameType e prf n
-              Success (TCheck t) -> checkType e prf t
-              Success (TEval t)  -> evalTerm e prf t
-              Success (TDocStr x) -> docStr e prf x
-              Success (TSearch t) -> search e prf t
-              Success tac ->
+              Left err -> do
+                msg <- fmap (Left . Msg . show) (formatMessage err)
+                return (False, e, False, prf, msg)
+              Right Undo -> do (_, st) <- elabStep e loadState
+                               return (True, st, False, init prf, Right $ iPrintResult "")
+              Right ProofState -> return (True, e, False, prf, Right $ iPrintResult "")
+              Right ProofTerm -> do tm <- lifte e get_term
+                                    iputStrLn $ "TT: " ++ show tm ++ "\n"
+                                    return (False, e, False, prf, Right $ iPrintResult "")
+              Right Qed -> do hs <- lifte e get_holes
+                              unless (null hs) $ ifail "Incomplete proof"
+                              iputStrLn "Proof completed!"
+                              return (False, e, True, prf, Right $ iPrintResult "")
+              Right (TCheck (PRef _ _ n)) -> checkNameType e prf n
+              Right (TCheck t) -> checkType e prf t
+              Right (TEval t)  -> evalTerm e prf t
+              Right (TDocStr x) -> docStr e prf x
+              Right (TSearch t) -> search e prf t
+              Right tac ->
                 do (_, e) <- elabStep e saveState
                    (_, st) <- elabStep e (runTac autoSolve i (Just proverFC) fn tac)
                    return (True, st, False, prf ++ [step], Right $ iPrintResult ""))
@@ -500,7 +502,6 @@ checkType e prf t = do
         putIState ist { tt_ctxt = ctxt' }
         (tm, ty) <- elabVal (recinfo proverfc) ERHS t
         let ppo = ppOptionIst ist
-            ty'     = normaliseC ctxt [] ty
             infixes = idris_infixes ist
             action = case tm of
               TType _ ->

@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Core.Elaborate
 Description : A high level language of tactic composition, for building elaborators from a high level language into the core theory.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -16,7 +16,6 @@ module Idris.Core.Elaborate (
   , module Idris.Core.ProofState
   ) where
 
-import Idris.Core.DeepSeq
 import Idris.Core.Evaluate
 import Idris.Core.ProofState
 import Idris.Core.ProofTerm (bound_in, bound_in_term, getProofTerm, mkProofTerm,
@@ -24,15 +23,9 @@ import Idris.Core.ProofTerm (bound_in, bound_in_term, getProofTerm, mkProofTerm,
 import Idris.Core.TT
 import Idris.Core.Typecheck
 import Idris.Core.Unify
-import Idris.Core.WHNF
 
-import Util.Pretty hiding (fill)
-
-import Control.DeepSeq
 import Control.Monad.State.Strict
-import Data.Char
 import Data.List
-import Debug.Trace
 
 data ElabState aux = ES (ProofState, aux) String (Maybe (ElabState aux))
   deriving Show
@@ -444,20 +437,14 @@ introTy ty n = processTactic' (IntroTy ty n)
 forall :: Name -> RigCount -> Maybe ImplicitInfo -> Raw -> Elab' aux ()
 forall n r i t = processTactic' (Forall n r i t)
 
-letbind :: Name -> Raw -> Raw -> Elab' aux ()
-letbind n t v = processTactic' (LetBind n t v)
+letbind :: Name -> RigCount -> Raw -> Raw -> Elab' aux ()
+letbind n rig t v = processTactic' (LetBind n rig t v)
 
 expandLet :: Name -> Term -> Elab' aux ()
 expandLet n v = processTactic' (ExpandLet n v)
 
 rewrite :: Raw -> Elab' aux ()
 rewrite tm = processTactic' (Rewrite tm)
-
-induction :: Raw -> Elab' aux ()
-induction tm = processTactic' (Induction tm)
-
-casetac :: Raw -> Elab' aux ()
-casetac tm = processTactic' (CaseTac tm)
 
 equiv :: Raw -> Elab' aux ()
 equiv tm = processTactic' (Equiv tm)
@@ -510,7 +497,7 @@ dotterm = do ES (p, a) s m <- get
       = union (foB b)
               (findOuter h env (instantiate (P Bound n (binderTy b)) sc))
      where foB (Guess t v) = union (findOuter h env t) (findOuter h (n:env) v)
-           foB (Let t v) = union (findOuter h env t) (findOuter h env v)
+           foB (Let _ t v) = union (findOuter h env t) (findOuter h env v)
            foB b = findOuter h env (binderTy b)
   findOuter h env (App _ f a)
       = union (findOuter h env f) (findOuter h env a)
@@ -534,10 +521,11 @@ matchProblems all = processTactic' (MatchProblems all)
 unifyProblems :: Elab' aux ()
 unifyProblems = processTactic' UnifyProblems
 
-defer :: [Name] -> Name -> Elab' aux Name
-defer ds n = do n' <- unique_hole n
-                processTactic' (Defer ds n')
-                return n'
+defer :: [Name] -> [Name] -> Name -> Elab' aux Name
+defer ds ls n
+    = do n' <- unique_hole n
+         processTactic' (Defer ds ls n')
+         return n'
 
 deferType :: Name -> Raw -> [Name] -> Elab' aux ()
 deferType n ty ns = processTactic' (DeferType n ty ns)
@@ -614,9 +602,6 @@ prepare_apply fn imps =
                         lift $ tfail $ TooManyArguments n
             | otherwise = fail $ "Too many arguments for " ++ show fn
 
-    doClaim ((i, _), n, t) = do claim n t
-                                when i (movelast n)
-
     mkMN n@(MN i _) = n
     mkMN n@(UN x) = MN 99999 x
     mkMN n@(SN s) = sMN 99999 (show s)
@@ -673,8 +658,6 @@ apply' fillt fn imps =
            | i = getNonUnify acc is as
            | otherwise = getNonUnify (t : acc) is as
 
---         getNonUnify imps args = map fst (filter (not . snd) (zip (map snd args) (map fst imps)))
-
 
 apply2 :: Raw -> [Maybe (Elab' aux ())] -> Elab' aux ()
 apply2 fn elabs =
@@ -682,7 +665,6 @@ apply2 fn elabs =
        fill (raw_apply fn (map (Var . snd) args))
        elabArgs (map snd args) elabs
        ES (p, a) s prev <- get
-       let (n, hs) = unified p
        end_unify
        solve
   where elabArgs [] [] = return $! ()
@@ -700,16 +682,10 @@ apply_elab n args =
        env <- get_env
        claims <- doClaims (normalise ctxt env ty) args []
        prep_fill n (map fst claims)
-       let eclaims = sortBy (\ (_, x) (_,y) -> priOrder x y) claims
        elabClaims [] False claims
        complete_fill
        end_unify
   where
-    priOrder Nothing Nothing = EQ
-    priOrder Nothing _ = LT
-    priOrder _ Nothing = GT
-    priOrder (Just (x, _)) (Just (y, _)) = compare x y
-
     doClaims (Bind n' (Pi _ _ t _) sc) (i : is) claims =
         do n <- unique_hole (mkMN n')
            when (null claims) (start_unify n)

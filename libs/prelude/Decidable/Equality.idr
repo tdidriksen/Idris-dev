@@ -8,17 +8,9 @@ import Prelude.Either
 import Prelude.List
 import Prelude.Nat
 import Prelude.Maybe
+import Prelude.Uninhabited
 
 %access public export
-
---------------------------------------------------------------------------------
--- Utility lemmas
---------------------------------------------------------------------------------
-
-||| The negation of equality is symmetric (follows from symmetry of equality)
-total negEqSym : {a : t} -> {b : t} -> (a = b -> Void) -> (b = a -> Void)
-negEqSym p h = p (sym h)
-
 
 --------------------------------------------------------------------------------
 -- Decidable equality
@@ -28,6 +20,20 @@ negEqSym p h = p (sym h)
 interface DecEq t where
   ||| Decide whether two elements of `t` are propositionally equal
   total decEq : (x1 : t) -> (x2 : t) -> Dec (x1 = x2)
+
+--------------------------------------------------------------------------------
+-- Utility lemmas
+--------------------------------------------------------------------------------
+
+||| The negation of equality is symmetric (follows from symmetry of equality)
+total negEqSym : {a : t} -> {b : t} -> (a = b -> Void) -> (b = a -> Void)
+negEqSym p h = p (sym h)
+
+||| Everything is decidably equal to itself
+total decEqSelfIsYes : DecEq a => {x : a} -> decEq x x = Yes Refl
+decEqSelfIsYes {x} with (decEq x x)
+  | Yes Refl = Refl
+  | No contra = absurd $ contra Refl
 
 --------------------------------------------------------------------------------
 --- Unit
@@ -163,7 +169,8 @@ implementation DecEq Int where
                      False => No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
-             postulate primitiveNotEq : x = y -> Void
+             primitiveNotEq : x = y -> Void
+             primitiveNotEq = really_believe_me (id {a = x = y})
 
 --------------------------------------------------------------------------------
 -- Char
@@ -175,7 +182,8 @@ implementation DecEq Char where
                      False => No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
-             postulate primitiveNotEq : x = y -> Void
+             primitiveNotEq : x = y -> Void
+             primitiveNotEq = really_believe_me (id {a = x = y})
 
 --------------------------------------------------------------------------------
 -- Integer
@@ -187,7 +195,8 @@ implementation DecEq Integer where
                      False => No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
-             postulate primitiveNotEq : x = y -> Void
+             primitiveNotEq : x = y -> Void
+             primitiveNotEq = really_believe_me (id {a = x = y})
 
 --------------------------------------------------------------------------------
 -- String
@@ -199,7 +208,8 @@ implementation DecEq String where
                      False => No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
-             postulate primitiveNotEq : x = y -> Void
+             primitiveNotEq : x = y -> Void
+             primitiveNotEq = really_believe_me (id {a = x = y})
 
 --------------------------------------------------------------------------------
 -- Ptr
@@ -211,7 +221,8 @@ implementation DecEq Ptr where
                      False => No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
-             postulate primitiveNotEq : x = y -> Void
+             primitiveNotEq : x = y -> Void
+             primitiveNotEq = really_believe_me (id {a = x = y})
 
 --------------------------------------------------------------------------------
 -- ManagedPtr
@@ -223,4 +234,5 @@ implementation DecEq ManagedPtr where
                      False => No primitiveNotEq
        where primitiveEq : x = y
              primitiveEq = really_believe_me (Refl {x})
-             postulate primitiveNotEq : x = y -> Void
+             primitiveNotEq : x = y -> Void
+             primitiveNotEq = really_believe_me (id {a = x = y})

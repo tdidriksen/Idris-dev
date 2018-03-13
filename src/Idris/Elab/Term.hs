@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Elab.Term
 Description : Code to elaborate terms.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -10,29 +10,25 @@ Maintainer  : The Idris Community.
 module Idris.Elab.Term where
 
 import Idris.AbsSyntax
-import Idris.AbsSyntaxTree
-import Idris.Core.CaseTree (SC, SC'(STerm), findCalls, findUsedArgs)
+import Idris.Core.CaseTree (SC'(STerm), findCalls)
 import Idris.Core.Elaborate hiding (Tactic(..))
 import Idris.Core.Evaluate
 import Idris.Core.ProofTerm (getProofTerm)
 import Idris.Core.TT
 import Idris.Core.Typecheck (check, converts, isType, recheck)
 import Idris.Core.Unify
-import Idris.Core.WHNF (whnf, whnfArgs)
-import Idris.Coverage (genClauses, recoverableCoverage, validCoverageCase)
+import Idris.Core.WHNF (whnf)
+import Idris.Coverage (genClauses, recoverableCoverage)
 import Idris.Delaborate
-import Idris.DSL
 import Idris.Elab.Quasiquote (extractUnquotes)
 import Idris.Elab.Rewrite
 import Idris.Elab.Utils
 import Idris.Error
 import Idris.ErrReverse (errReverse)
-import Idris.Output (pshow)
+import Idris.Options
 import Idris.ProofSearch
 import Idris.Reflection
 import Idris.Termination (buildSCG, checkDeclTotality, checkPositive)
-
-import qualified Util.Pretty as U
 
 import Control.Applicative ((<$>))
 import Control.Monad
@@ -40,9 +36,8 @@ import Control.Monad.State.Strict
 import Data.Foldable (for_)
 import Data.List
 import qualified Data.Map as M
-import Data.Maybe (catMaybes, fromMaybe, mapMaybe, maybeToList)
+import Data.Maybe (fromMaybe, mapMaybe, maybeToList)
 import qualified Data.Set as S
-import qualified Data.Text as T
 import Debug.Trace
 
 data ElabMode = ETyDecl | ETransLHS | ELHS | EImpossible | ERHS
@@ -84,7 +79,6 @@ build :: IState
       -> ElabD ElabResult
 build ist info emode opts fn tm
     = do elab ist info emode opts fn tm
-         let tmIn = tm
          let inf = case lookupCtxt fn (idris_tyinfodata ist) of
                         [TIPartial] -> True
                         _ -> False
@@ -162,8 +156,7 @@ buildTC :: IState -> ElabInfo -> ElabMode -> FnOpts -> Name ->
          PTerm ->
          ElabD ElabResult
 buildTC ist info emode opts fn ns tm
-    = do let tmIn = tm
-         let inf = case lookupCtxt fn (idris_tyinfodata ist) of
+    = do let inf = case lookupCtxt fn (idris_tyinfodata ist) of
                         [TIPartial] -> True
                         _ -> False
          -- set name supply to begin after highest index in tm
@@ -189,7 +182,6 @@ buildTC ist info emode opts fn ns tm
          if (log /= "")
             then trace log $ return (ElabResult tm ds (map snd is) ctxt impls highlights g_nextname)
             else return (ElabResult tm ds (map snd is) ctxt impls highlights g_nextname)
-  where pattern = emode == ELHS || emode == EImpossible
 
 -- | return whether arguments of the given constructor name can be
 -- matched on. If they're polymorphic, no, unless the type has beed
@@ -246,7 +238,6 @@ elab ist info emode opts fn tm
     = do let loglvl = opt_logLevel (idris_options ist)
          when (loglvl > 5) $ unifyLog True
          compute -- expand type synonyms, etc
-         let fc = maybe "(unknown)"
          elabE initElabCtxt (elabFC info) tm -- (in argument, guarded, in type, in qquote)
          est <- getAux
          sequence_ (get_delayed_elab est)
@@ -261,7 +252,7 @@ elab ist info emode opts fn tm
          ptm <- get_term
          when pattern $
               -- Look for Rig1 (linear) pattern bindings
-              do let pnms = findLinear ist [] ptm
+              do let pnms = findLinear Rig1 ist [] ptm
                  update_term (setLinear pnms)
   where
     pattern = emode == ELHS || emode == EImpossible
@@ -281,14 +272,6 @@ elab ist info emode opts fn tm
     isph arg = case getTm arg of
         Placeholder -> (True, priority arg)
         tm -> (False, priority arg)
-
-    toElab ina arg = case getTm arg of
-        Placeholder -> Nothing
-        v -> Just (priority arg, elabE ina (elabFC info) v)
-
-    toElab' ina arg = case getTm arg of
-        Placeholder -> Nothing
-        v -> Just (elabE ina (elabFC info) v)
 
     mkPat = do hs <- get_holes
                tm <- get_term
@@ -354,18 +337,6 @@ elab ist info emode opts fn tm
 
     notDelay t@(PApp _ (PRef _ _ (UN l)) _) | l == txt "Delay" = False
     notDelay _ = True
-
-    local f = do e <- get_env
-                 return (f `elem` map fstEnv e)
-
-    -- | Is a constant a type?
-    constType :: Const -> Bool
-    constType (AType _) = True
-    constType StrType = True
-    constType VoidType = True
-    constType _ = False
-
-    -- "guarded" means immediately under a constructor, to help find patvars
 
     elab' :: ElabCtxt  -- ^ (in an argument, guarded, in a type, in a quasiquote)
           -> Maybe FC -- ^ The closest FC in the syntax tree, if applicable
@@ -602,13 +573,6 @@ elab ist info emode opts fn tm
                          (P _ n' _, _) -> n == n'
                          _ -> False
 
-        showQuick (CantUnify _ (l, _) (r, _) _ _ _)
-            = show (l, r)
-        showQuick (ElaboratingArg _ _ _ e) = showQuick e
-        showQuick (At _ e) = showQuick e
-        showQuick (ProofSearchFail (Msg _)) = "search fail"
-        showQuick _ = "No chance"
-
     elab' ina _ (PPatvar fc n) | bindfree
         = do patvar n
              update_term liftPats
@@ -626,8 +590,6 @@ elab ist info emode opts fn tm
         = do ty <- goal
              testImplicitWarning fc n ty
              let ina = e_inarg ec
-                 guarded = e_guarded ec
-                 inty = e_intype ec
              ctxt <- get_context
              env <- get_env
 
@@ -733,7 +695,7 @@ elab ist info emode opts fn tm
                elabE ec' fc sc
                solve
                highlightSource nfc (AnnBoundName n False)
-    elab' ina _ tm@(PLet fc n nfc ty val sc)
+    elab' ina _ tm@(PLet fc rig n nfc ty val sc)
           = do attack
                ivs <- get_implementations
                tyn <- getNameFrom (sMN 0 "letty")
@@ -741,7 +703,7 @@ elab ist info emode opts fn tm
                valn <- getNameFrom (sMN 0 "letval")
                claim valn (Var tyn)
                explicit valn
-               letbind n (Var tyn) (Var valn)
+               letbind n rig (Var tyn) (Var valn)
                addPSname n
                case ty of
                    Placeholder -> return ()
@@ -768,7 +730,7 @@ elab ist info emode opts fn tm
                -- HACK: If the name leaks into its type, it may leak out of
                -- scope outside, so substitute in the outer scope.
                expandLet n (case lookupBinder n env of
-                                 Just (Let t v) -> v
+                                 Just (Let rig t v) -> v
                                  other -> error ("Value not a let binding: " ++ show other))
                solve
                highlightSource nfc (AnnBoundName n False)
@@ -779,7 +741,7 @@ elab ist info emode opts fn tm
          claim tyn RType
          valn <- getNameFrom (sMN 0 "letval")
          claim valn (Var tyn)
-         letbind n (Var tyn) (Var valn)
+         letbind n RigW (Var tyn) (Var valn)
          focus valn
          elabE (ina { e_inarg = True, e_intype = True }) (Just fc) (PApp fc r [pexp (delab ist rty)])
          env <- get_env
@@ -889,7 +851,6 @@ elab ist info emode opts fn tm
                         _ -> do mapM_ setInjective (map getTm args)
                                 -- maybe more things are solvable now
                                 unifyProblems
-                    let guarded = isConName f ctxt
 --                    trace ("args is " ++ show args) $ return ()
                     ns <- apply (Var f) (map isph args)
 --                    trace ("ns is " ++ show ns) $ return ()
@@ -999,10 +960,6 @@ elab ist info emode opts fn tm
             getDets i ds (a : as) | i `elem` ds = a : getDets (i + 1) ds as
                                   | otherwise = getDets (i + 1) ds as
 
-            tacTm (PTactics _) = True
-            tacTm (PProof _) = True
-            tacTm _ = False
-
             setInjective (PRef _ _ n) = setinj n
             setInjective (PApp _ (PRef _ _ n) _) = setinj n
             setInjective _ = return ()
@@ -1034,11 +991,13 @@ elab ist info emode opts fn tm
              -- When building the metavar application, leave out the unique
              -- names which have been used elsewhere in the term, since we
              -- won't be able to use them in the resulting application.
+             env <- get_env
              let unique_used = getUniqueUsed (tt_ctxt ist) ptm
+             let lin_used = getLinearUsed (tt_ctxt ist) ptm
              let n' = metavarName (namespace info) n
              attack
              psns <- getPSnames
-             n' <- defer unique_used n'
+             n' <- defer unique_used lin_used n'
              solve
              highlightSource nfc (AnnName n' (Just MetavarOutput) Nothing Nothing)
     elab' ina fc (PProof ts) = do compute; mapM_ (runTac True ist (elabFC info) fn) ts
@@ -1059,7 +1018,10 @@ elab ist info emode opts fn tm
              valn <- getNameFrom (sMN 0 "scval")
              scvn <- getNameFrom (sMN 0 "scvar")
              claim valn (Var tyn)
-             letbind scvn (Var tyn) (Var valn)
+             env <- get_env
+
+             let scrnames = allNamesIn scr
+             letbind scvn (letrig scrnames env) (Var tyn) (Var valn)
 
              -- Start filling in the scrutinee type, if we can work one
              -- out from the case options
@@ -1077,7 +1039,6 @@ elab ist info emode opts fn tm
              matchProblems True
              args <- get_env
              envU <- mapM (getKind args) args
-             let namesUsedInRHS = nub $ scvn : concatMap (\(_,rhs) -> allNamesIn rhs) opts
 
              -- Drop the unique arguments used in the term already
              -- and in the scrutinee (since it's
@@ -1091,13 +1052,15 @@ elab ist info emode opts fn tm
              let inOpts = (filter (/= scvn) (map fstEnv args)) \\ (concatMap (\x -> allNamesIn (snd x)) opts)
 
              let argsDropped = filter (\t -> isUnique envU t || isNotLift args t)
-                                   (nub $ allNamesIn scr ++ inApp ptm ++
+                                   (nub $ scrnames ++ inApp ptm ++
                                     inOpts)
+             let lin_used = getLinearUsed (tt_ctxt ist) ptm
 
              let args' = filter (\(n, _, _) -> n `notElem` argsDropped) args
 
+             -- trace (show lin_used ++ "\n" ++ show args ++ "\n" ++ show ptm) attack
              attack
-             cname' <- defer argsDropped (mkN (mkCaseName fc fn))
+             cname' <- defer argsDropped lin_used (mkN (mkCaseName fc fn))
              solve
 
              -- if the scrutinee is one of the 'args' in env, we should
@@ -1119,6 +1082,17 @@ elab ist info emode opts fn tm
                         xs@(_:_) -> sNS n xs
                         _ -> n
 
+              -- If any variables in the scrutinee are in the environment with
+              -- multiplicity other than RigW, let bind the scrutinee variable
+              -- with the smallest multiplicity
+              letrig ns [] = RigW
+              letrig ns env = letrig' Rig1 ns env
+
+              letrig' def ns [] = def
+              letrig' def ns ((n, r, _) : env)
+                   | n `elem` ns = letrig' (rigMult def r) ns env
+                   | otherwise = letrig' def ns env
+
               getScrType [] = Nothing
               getScrType (f : os) = maybe (getScrType os) Just (getAppType f)
 
@@ -1136,7 +1110,7 @@ elab ist info emode opts fn tm
 
               inApp (P _ n _) = [n]
               inApp (App _ f a) = inApp f ++ inApp a
-              inApp (Bind n (Let _ v) sc) = inApp v ++ inApp sc
+              inApp (Bind n (Let _ _ v) sc) = inApp v ++ inApp sc
               inApp (Bind n (Guess _ v) sc) = inApp v ++ inApp sc
               inApp (Bind n b sc) = inApp sc
               inApp _ = []
@@ -1155,12 +1129,6 @@ elab ist info emode opts fn tm
                                     UType AllTypes -> return (n, True)
                                     _ -> return (n, False)
 
-              tcName tm | (P _ n _, _) <- unApply tm
-                  = case lookupCtxt n (idris_interfaces ist) of
-                         [_] -> True
-                         _ -> False
-              tcName _ = False
-
               isNotLift env n
                  = case lookupBinder n env of
                         Just ty ->
@@ -1168,10 +1136,6 @@ elab ist info emode opts fn tm
                                   (P _ n _, _) -> n `elem` noCaseLift info
                                   _ -> False
                         _ -> False
-
-              usedIn ns (n, b)
-                 = n `elem` ns
-                     || any (\x -> x `elem` ns) (allTTNames (binderTy b))
 
     elab' ina fc (PUnifyLog t) = do unifyLog True
                                     elab' ina fc t
@@ -1217,7 +1181,7 @@ elab ist info emode opts fn tm
              -- Let-bind the result of elaborating the contained term, so that
              -- the hole doesn't disappear
              nTm <- getNameFrom (sMN 0 "quotedTerm")
-             letbind nTm (Var qTy) (Var qTm)
+             letbind nTm RigW (Var qTy) (Var qTm)
 
              -- Fill out the goal type, if relevant
              case goalt of
@@ -1344,7 +1308,7 @@ elab ist info emode opts fn tm
          -- In order to intercept the elaborated value, we need to
          -- let-bind it.
          attack
-         letbind n g (Var n')
+         letbind n RigW g (Var n')
          focus n'
          elab' ina fc tm
          env <- get_env
@@ -1373,8 +1337,10 @@ elab ist info emode opts fn tm
     delayElab pri t
        = updateAux (\e -> e { delayed_elab = delayed_elab e ++ [(pri, t)] })
 
+    -- If the variable in the environment is the scrutinee of the case,
+    -- and has multiplicity W, keep it available
     isScr :: PTerm -> (Name, RigCount, Binder Term) -> (Name, (Bool, Binder Term))
-    isScr (PRef _ _ n) (n', _, b) = (n', (n == n', b))
+    isScr (PRef _ _ n) (n', RigW, b) = (n', (n == n', b))
     isScr _ (n', _, b) = (n', (False, b))
 
     caseBlock :: FC -> Name
@@ -1386,8 +1352,8 @@ elab ist info emode opts fn tm
               map (mkClause args) opts
 
        where -- Find the variable we want as the scrutinee and mark it as
-             -- 'True'. If the scrutinee is in the environment, match on that
-             -- otherwise match on the new argument we're adding.
+             -- 'True'. If the scrutinee is available in the environment,
+             -- match on that otherwise match on the new argument we're adding.
              findScr ((n, (True, t)) : xs)
                         = (n, (True, t)) : scrName n xs
              findScr [(n, (_, t))] = [(n, (True, t))]
@@ -1775,31 +1741,13 @@ collectDeferred top casenames ctxt tm = cd [] tm
               t' <- cd ((n, b) : env) t
               return (Bind n b' t')
       where
-        cdb (Let t v)   = liftM2 Let (cd env t) (cd env v)
+        cdb (Let rig t v) = liftM2 (Let rig) (cd env t) (cd env v)
         cdb (Guess t v) = liftM2 Guess (cd env t) (cd env v)
         cdb b           = do ty' <- cd env (binderTy b)
                              return (b { binderTy = ty' })
     cd env (App s f a) = liftM2 (App s) (cd env f)
                                         (cd env a)
     cd env t = return t
-
-case_ :: Bool -> Bool -> IState -> Name -> PTerm -> ElabD ()
-case_ ind autoSolve ist fn tm = do
-  attack
-  tyn <- getNameFrom (sMN 0 "ity")
-  claim tyn RType
-  valn <- getNameFrom (sMN 0 "ival")
-  claim valn (Var tyn)
-  letn <- getNameFrom (sMN 0 "irule")
-  letbind letn (Var tyn) (Var valn)
-  focus valn
-  elab ist toplevel ERHS [] (sMN 0 "tac") tm
-  env <- get_env
-  let (Just binding) = lookupBinder letn env
-  let val = binderVal binding
-  if ind then induction (forget val)
-         else casetac (forget val)
-  when autoSolve solveAll
 
 -- | Compute the appropriate name for a top-level metavariable
 metavarName :: [String] -> Name -> Name
@@ -2169,7 +2117,7 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
            n' <- reifyTTName n
            ty' <- reifyRaw ty
            tm' <- reifyRaw tm
-           letbind n' ty' tm'
+           letbind n' RigW ty' tm'
            returnUnit
       | n == tacN "Prim__Compute"
       = do ~[] <- tacTmArgs 0 tac args; compute ; returnUnit
@@ -2324,9 +2272,10 @@ runElabAction info ist fc env tm ns = do tm' <- eval tm
            ptm <- get_term
            -- See documentation above in the elab case for PMetavar
            let unique_used = getUniqueUsed ctxt ptm
+           let lin_used = getLinearUsed ctxt ptm
            let mvn = metavarName ns n'
            attack
-           defer unique_used mvn
+           defer unique_used lin_used mvn
            solve
            returnUnit
       | n == tacN "Prim__Fixity"
@@ -2431,7 +2380,7 @@ runTac autoSolve ist perhapsFC fn tac
                    valn <- getNameFrom (sMN 0 "eqval")
                    claim valn (Var tyn)
                    letn <- getNameFrom (sMN 0 "equiv_val")
-                   letbind letn (Var tyn) (Var valn)
+                   letbind letn RigW (Var tyn) (Var valn)
                    focus tyn
                    elab ist toplevel ERHS [] (sMN 0 "tac") tm
                    focus valn
@@ -2444,15 +2393,11 @@ runTac autoSolve ist perhapsFC fn tac
                    valn <- getNameFrom (sMN 0 "rval")
                    claim valn (Var tyn)
                    letn <- getNameFrom (sMN 0 "rewrite_rule")
-                   letbind letn (Var tyn) (Var valn)
+                   letbind letn RigW (Var tyn) (Var valn)
                    focus valn
                    elab ist toplevel ERHS [] (sMN 0 "tac") tm
                    rewrite (Var letn)
                    when autoSolve solveAll
-    runT (Induction tm) -- let bind tm, similar to the others
-              = case_ True autoSolve ist fn tm
-    runT (CaseTac tm)
-              = case_ False autoSolve ist fn tm
     runT (LetTac n tm)
               = do attack
                    tyn <- getNameFrom (sMN 0 "letty")
@@ -2460,7 +2405,7 @@ runTac autoSolve ist perhapsFC fn tac
                    valn <- getNameFrom (sMN 0 "letval")
                    claim valn (Var tyn)
                    letn <- unique_hole n
-                   letbind letn (Var tyn) (Var valn)
+                   letbind letn RigW (Var tyn) (Var valn)
                    focus valn
                    elab ist toplevel ERHS [] (sMN 0 "tac") tm
                    when autoSolve solveAll
@@ -2471,7 +2416,7 @@ runTac autoSolve ist perhapsFC fn tac
                    valn <- getNameFrom (sMN 0 "letval")
                    claim valn (Var tyn)
                    letn <- unique_hole n
-                   letbind letn (Var tyn) (Var valn)
+                   letbind letn RigW (Var tyn) (Var valn)
                    focus tyn
                    elab ist toplevel ERHS [] (sMN 0 "tac") ty
                    focus valn
@@ -2497,7 +2442,7 @@ runTac autoSolve ist perhapsFC fn tac
                                script <- getNameFrom (sMN 0 "script")
                                claim script scriptTy
                                scriptvar <- getNameFrom (sMN 0 "scriptvar" )
-                               letbind scriptvar scriptTy (Var script)
+                               letbind scriptvar RigW scriptTy (Var script)
                                focus script
                                elab ist toplevel ERHS [] (sMN 0 "tac") tm
                                (script', _) <- get_type_val (Var scriptvar)
@@ -2529,7 +2474,7 @@ runTac autoSolve ist perhapsFC fn tac
              script <- getNameFrom (sMN 0 "script")
              claim script scriptTy
              scriptvar <- getNameFrom (sMN 0 "scriptvar" )
-             letbind scriptvar scriptTy (Var script)
+             letbind scriptvar RigW scriptTy (Var script)
              focus script
              ptm <- get_term
              env <- get_env
@@ -2560,7 +2505,7 @@ runTac autoSolve ist perhapsFC fn tac
                           valn <- getNameFrom (sMN 0 "letval")
                           claim valn (Var tyn)
                           letn <- getNameFrom (sMN 0 "letvar")
-                          letbind letn (Var tyn) (Var valn)
+                          letbind letn RigW (Var tyn) (Var valn)
                           focus valn
                           elab ist toplevel ERHS [] (sMN 0 "tac") v
                           (value, _) <- get_type_val (Var letn)
@@ -2574,7 +2519,7 @@ runTac autoSolve ist perhapsFC fn tac
                        valn <- getNameFrom (sMN 0 "letval")
                        claim valn (Var tyn)
                        letn <- getNameFrom (sMN 0 "letvar")
-                       letbind letn (Var tyn) (Var valn)
+                       letbind letn RigW (Var tyn) (Var valn)
                        focus valn
                        elab ist toplevel ERHS [] (sMN 0 "tac") v
                        (value, _) <- get_type_val (Var letn)
@@ -2658,9 +2603,11 @@ withErrorReflection x = idrisCatch x (\ e -> handle e >>= ierror)
                                     concat (intersperse ", " (map show handlers))
                          let reports = map (\n -> RApp (Var n) (reflectErr err)) handlers
 
-                         -- Typecheck error handlers - if this fails, then something else was wrong earlier!
+                         -- Typecheck error handlers - if this fails, most
+                         -- likely something which is needed by it has not
+                         -- been imported, so keep the original error.
                          handlers <- case mapM (check (tt_ctxt ist) []) reports of
-                                       Error e -> ierror $ ReflectionFailed "Type error while constructing reflected error" e
+                                       Error _ -> return [] -- ierror $ ReflectionFailed "Type error while constructing reflected error" e
                                        OK hs   -> return hs
 
                          -- Normalize error handler terms to produce the new messages
@@ -2713,7 +2660,6 @@ processTacticDecls info steps =
 
     RDatatypeDefnInstrs tyn tyconTy ctors ->
       do let cn (n, _, _) = n
-             cimpls (_, impls, _) = impls
              cty (_, _, t) = t
          addIBC (IBCDef tyn)
          mapM_ (addIBC . IBCDef . cn) ctors

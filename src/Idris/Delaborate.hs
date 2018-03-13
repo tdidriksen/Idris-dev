@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Delaborate
 Description : Convert core TT back into high level syntax, primarily for display purposes.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -26,10 +26,9 @@ import Prelude hiding ((<$>))
 import Control.Applicative (Alternative((<|>)))
 import Control.Monad.State
 import Data.Generics.Uniplate.Data (transform)
-import Data.List (intersperse, nub)
+import Data.List (nub)
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
-import Debug.Trace
 
 bugaddr = "https://github.com/idris-lang/Idris-dev/issues"
 
@@ -56,13 +55,13 @@ resugar ist = transform flattenDoLet . transform resugarApp
       = PConstant fc (BI i)
     resugarApp tm = tm
 
-    flattenDoLet (PLet _ ln _ ty v bdy)
+    flattenDoLet (PLet _ rc ln _ ty v bdy)
       | PDoBlock dos <- flattenDoLet bdy
-      = PDoBlock (DoLet NoFC ln NoFC ty v : dos)
+      = PDoBlock (DoLet NoFC rc ln NoFC ty v : dos)
     flattenDoLet (PDoBlock dos) =
       PDoBlock $ concatMap fixExp dos
-        where fixExp (DoExp _ (PLet _ ln _ ty v bdy)) =
-                DoLet NoFC ln NoFC ty v : fixExp (DoExp NoFC bdy)
+        where fixExp (DoExp _ (PLet _ rc ln _ ty v bdy)) =
+                DoLet NoFC rc ln NoFC ty v : fixExp (DoExp NoFC bdy)
               fixExp d = [d]
     flattenDoLet tm = tm
 
@@ -173,13 +172,13 @@ delabTy' ist imps genv tm fullname mvs docases = de genv [] imps tm
           = PPi (expl { pcount = rig }) n NoFC (de tys env [] ty)
                 (de ((n, ty) : tys) ((n,n):env) [] sc)
 
-    de tys env imps (Bind n (Let ty val) sc)
+    de tys env imps (Bind n (Let rc ty val) sc)
           | docases
           , isCaseApp sc
           , (P _ cOp _, args) <- unApply sc
           , Just caseblock    <- delabCase tys env imps val cOp args = caseblock
           | otherwise    =
-              PLet un n NoFC (de tys env [] ty)
+              PLet un rc n NoFC (de tys env [] ty)
                    (de tys env [] val) (de ((n, ty) : tys) ((n,n):env) [] sc)
     de tys env _ (Bind n (Hole ty) sc) = de ((n, ty) : tys) ((n, sUN "[__]"):env) [] sc
     de tys env _ (Bind n (Guess ty val) sc) = de ((n, ty) : tys) ((n, sUN "[__]"):env) [] sc
@@ -191,13 +190,6 @@ delabTy' ist imps genv tm fullname mvs docases = de genv [] imps tm
     de tys env _ (Inferred t) = Placeholder
     de tys env _ (TType i) = PType un
     de tys env _ (UType u) = PUniverse un u
-
-    dens x | fullname = x
-    dens ns@(NS n _) = case lookupCtxt n (idris_implicits ist) of
-                              [_] -> n -- just one thing
-                              [] -> n -- metavariables have no implicits
-                              _ -> ns
-    dens n = n
 
     deFn tys env (App _ f a) args = deFn tys env f (a:args)
     deFn tys env (P _ n _) [l,r]
@@ -354,7 +346,7 @@ pprintErr' i (CantUnify _ (x_in, xprov) (y_in, yprov) e sc s) =
              then text "Unification failure" <$> showSc i sc
              else empty
 pprintErr' i (CantConvert x_in y_in env) =
- let (x_ns, y_ns, nms) = renameMNs x_in y_in
+ let (x_ns, y_ns, _) = renameMNs x_in y_in
      (x, y) = addImplicitDiffs (delabSugared i (flagUnique x_ns))
                                (delabSugared i (flagUnique y_ns)) in
   text "Type mismatch between" <>
@@ -449,7 +441,7 @@ pprintErr' i (IncompleteTerm t)
        = getMissing (n : hs) (n : env) sc
    getMissing hs env (Bind n (Guess _ _) sc)
        = getMissing (n : hs) (n : env) sc
-   getMissing hs env (Bind n (Let t v) sc)
+   getMissing hs env (Bind n (Let rc t v) sc)
        = getMissing hs env t ++
          getMissing hs env v ++
          getMissing hs (n : env) sc
@@ -468,12 +460,6 @@ pprintErr' i (IncompleteTerm t)
    getMissing hs env (App _ f a)
        = getMissing hs env f ++ getMissing hs env a
    getMissing hs env _ = []
-pprintErr' i (NoEliminator s t)
-  = text "No " <> text s <> text " for type " <+>
-       annTm t (pprintTerm i (delabSugared i t)) <$>
-    text "Please note that 'induction' is experimental." <$>
-    text "Only types declared with '%elim' can be used." <$>
-    text "Consider writing a pattern matching definition instead."
 pprintErr' i (UniverseError fc uexp old new suspects) =
   text "Universe inconsistency." <>
   (indented . vsep) [ text "Working on:" <+> text (show uexp)

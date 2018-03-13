@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Core.TT
 Description : The core language of Idris, TT.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -22,8 +22,10 @@ TT is the core language of Idris. The language has:
    * We have a simple collection of tactics which we use to elaborate source
      programs with implicit syntax into fully explicit terms.
 -}
-{-# LANGUAGE DeriveDataTypeable, DeriveFunctor, DeriveGeneric, FlexibleContexts,
-             FunctionalDependencies, MultiParamTypeClasses, PatternGuards #-}
+{-# LANGUAGE DeriveDataTypeable, DeriveFoldable, DeriveFunctor, DeriveGeneric,
+             DeriveTraversable, FlexibleContexts, FlexibleInstances,
+             FunctionalDependencies, MultiParamTypeClasses, PatternGuards,
+             TypeSynonymInstances #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 module Idris.Core.TT(
     AppStatus(..), ArithTy(..), Binder(..), Const(..), Ctxt(..)
@@ -45,7 +47,7 @@ module Idris.Core.TT(
   , pEraseType, pmap, pprintRaw, pprintTT, pprintTTClause, prettyEnv, psubst
   , pToV, pToVs, pureTerm, raw_apply, raw_unapply, refsIn, safeForget
   , safeForgetEnv, showCG, showEnv, showEnvDbg, showSep
-  , sImplementationN, sMN, sNS, spanFC, str, subst, substNames, substTerm
+  , sImplementationN, sMN, sNS, str, subst, substNames, substTerm
   , substV, sUN, tcname, termSmallerThan, tfail, thead, tnull
   , toAlist, traceWhen, txt, unApply, uniqueBinders, uniqueName
   , uniqueNameFrom, uniqueNameSet, unList, updateDef, vToP, weakenTm
@@ -57,32 +59,26 @@ import Util.Pretty hiding (Str)
 
 -- Work around AMP without CPP
 import Prelude (Bool(..), Double, Enum(..), Eq(..), FilePath, Functor(..), Int,
-                Integer, Maybe(..), Monad(..), Num(..), Ord(..), Ordering(..),
-                Read(..), Show(..), String, div, error, flip, fst, mod, not,
-                otherwise, read, snd, ($), (&&), (.), (||))
+                Integer, Maybe(..), Monad(..), Monoid(..), Num(..), Ord(..),
+                Ordering(..), Show(..), String, div, error, fst, max, min, mod,
+                not, otherwise, read, snd, ($), (&&), (.), (||))
 
 import Control.Applicative (Alternative, Applicative(..))
 import qualified Control.Applicative as A (Alternative(..))
 import Control.DeepSeq (($!!))
 import Control.Monad.State.Strict
-import Control.Monad.Trans.Except (Except(..))
 import Data.Binary hiding (get, put)
-import qualified Data.Binary as B
 import Data.Char
 import Data.Data (Data)
 import Data.Foldable (Foldable)
 import Data.List hiding (group, insert)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
-import Data.Monoid (mconcat)
 import Data.Set (Set, fromList, insert, member)
 import qualified Data.Text as T
 import Data.Traversable (Traversable)
 import Data.Typeable (Typeable)
-import Data.Vector.Unboxed (Vector)
-import qualified Data.Vector.Unboxed as V
 import Debug.Trace
-import Foreign.Storable (sizeOf)
 import GHC.Generics (Generic)
 import Numeric (showIntAtBase)
 import Numeric.IEEE (IEEE(identicalIEEE))
@@ -91,7 +87,7 @@ data Option = TTypeInTType
             | CheckConv
   deriving Eq
 
--- | Source location. These are typically produced by the parser 'Idris.Parser.getFC'
+-- | Source location. These are typically produced by 'Idris.Parser.Stack.withExtent'
 data FC = FC { _fc_fname :: String, -- ^ Filename
                _fc_start :: (Int, Int), -- ^ Line and column numbers for the start of the location span
                _fc_end :: (Int, Int) -- ^ Line and column numbers for the end of the location span
@@ -121,29 +117,22 @@ fc_end (FC _ _ end) = end
 fc_end NoFC = (0, 0)
 fc_end (FileFC f) = (0, 0)
 
--- | Get the largest span containing the two FCs
-spanFC :: FC -> FC -> FC
-spanFC (FC f start end) (FC f' start' end')
-    | f == f' = FC f (minLocation start start') (maxLocation end end')
-    | otherwise = NoFC
-  where minLocation (l, c) (l', c') =
-          case compare l l' of
-            LT -> (l, c)
-            EQ -> (l, min c c')
-            GT -> (l', c')
-        maxLocation (l, c) (l', c') =
-          case compare l l' of
-            LT -> (l', c')
-            EQ -> (l, max c c')
-            GT -> (l, c)
-spanFC fc@(FC f _ _) (FileFC f') | f == f' = fc
+instance Monoid FC where
+  mempty = NoFC
+
+  -- | Get the largest span containing the two FCs
+  mappend (FC f start end) (FC f' start' end')
+      | f == f' = FC f (min start start') (max end end')
+      | otherwise = NoFC
+  mappend fc@(FC f _ _) (FileFC f') | f == f' = fc
+                                    | otherwise = NoFC
+  mappend (FileFC f') fc@(FC f _ _) | f == f' = fc
+                                    | otherwise = NoFC
+  mappend (FileFC f) (FileFC f') | f == f' = FileFC f
                                  | otherwise = NoFC
-spanFC (FileFC f') fc@(FC f _ _) | f == f' = fc
-                                 | otherwise = NoFC
-spanFC (FileFC f) (FileFC f') | f == f' = FileFC f
-                              | otherwise = NoFC
-spanFC NoFC fc = fc
-spanFC fc NoFC = fc
+  mappend NoFC fc = fc
+  mappend fc NoFC = fc
+
 
 -- | Determine whether the first argument is completely contained in the second
 fcIn :: FC -> FC -> Bool
@@ -228,6 +217,7 @@ data OutputAnnotation = AnnName Name (Maybe NameOutput) (Maybe String) (Maybe St
                         -- from that file.
                       | AnnQuasiquote
                       | AnnAntiquote
+                      | AnnSyntax String -- ^ type of syntax element: backslash or braces etc.
   deriving (Show, Eq, Generic)
 
 -- | Used for error reflection
@@ -283,7 +273,6 @@ data Err' t
           | CantResolveAlts [Name]
           | NoValidAlts [Name]
           | IncompleteTerm t
-          | NoEliminator String t
           | UniverseError FC UExp (Int, Int) (Int, Int) [ConstraintFC]
             -- ^ Location, bad universe, old domain, new domain, suspects
           | UniqueError Universe Name
@@ -434,13 +423,6 @@ instance Show a => Show (TC a) where
 tfail :: Err -> TC a
 tfail e = Error e
 
-failMsg :: String -> TC a
-failMsg str = Error (Msg str)
-
-trun :: FC -> TC a -> TC a
-trun fc (OK a)    = OK a
-trun fc (Error e) = Error (At fc e)
-
 discard :: Monad m => m a -> m ()
 discard f = f >> return ()
 
@@ -502,7 +484,6 @@ data SpecialName = WhereN !Int !Name !Name
                  | ParentN !Name !T.Text
                  | MethodN !Name
                  | CaseN !FC' !Name
-                 | ElimN !Name
                  | ImplementationCtorN !Name
                  | MetaN !Name !Name
   deriving (Eq, Ord, Data, Generic, Typeable)
@@ -512,9 +493,6 @@ deriving instance Binary SpecialName
 
 sImplementationN :: Name -> [String] -> SpecialName
 sImplementationN n ss = ImplementationN n (map T.pack ss)
-
-sParentN :: Name -> String -> SpecialName
-sParentN n s = ParentN n (T.pack s)
 
 instance Sized Name where
   size (UN n)     = 1
@@ -550,7 +528,6 @@ instance Show SpecialName where
     show (ParentN p c) = show p ++ "#" ++ T.unpack c
     show (CaseN fc n) = "case block in " ++ show n ++
                         if fc == FC' emptyFC then "" else " at " ++ show fc
-    show (ElimN n) = "<<" ++ show n ++ " eliminator>>"
     show (ImplementationCtorN n) = "constructor of " ++ show n
     show (MetaN parent meta) = "<<" ++ show parent ++ " " ++ show meta ++ ">>"
 
@@ -567,7 +544,6 @@ showCG (SN s) = showCG' s
         showCG' (MethodN m) = '!':showCG m
         showCG' (ParentN p c) = showCG p ++ "#" ++ show c
         showCG' (CaseN fc c) = showCG c ++ showFC' fc ++ "_case"
-        showCG' (ElimN sn) = showCG sn ++ "_elim"
         showCG' (ImplementationCtorN n) = showCG n ++ "_ictor"
         showCG' (MetaN parent meta) = showCG parent ++ "_meta_" ++ showCG meta
         showFC' (FC' NoFC) = ""
@@ -601,7 +577,8 @@ tcname _ = False
 
 implicitable (NS n _) = False
 implicitable (UN xs) | T.null xs = False
-                     | otherwise = isLower (T.head xs) || T.head xs == '_'
+                     | otherwise = isLower (T.head xs) ||
+                                   T.head xs == '_'
 implicitable (MN _ x) = not (tnull x) && thead x /= '_'
 implicitable _ = False
 
@@ -701,13 +678,6 @@ nativeTyWidth IT8 = 8
 nativeTyWidth IT16 = 16
 nativeTyWidth IT32 = 32
 nativeTyWidth IT64 = 64
-
-{-# DEPRECATED intTyWidth "Non-total function, use nativeTyWidth and appropriate casing" #-}
-intTyWidth :: IntTy -> Int
-intTyWidth (ITFixed n) = nativeTyWidth n
-intTyWidth ITNative = 8 * sizeOf (0 :: Int)
-intTyWidth ITChar = error "IRTS.Lang.intTyWidth: Characters have platform and backend dependent width"
-intTyWidth ITBig = error "IRTS.Lang.intTyWidth: Big integers have variable width"
 
 data Const = I Int | BI Integer | Fl Double | Ch Char | Str String
            | B8 Word8 | B16 Word16 | B32 Word32 | B64 Word64
@@ -865,7 +835,8 @@ data Binder b = Lam   { binderCount :: RigCount,
                 -- flag says whether it was a scoped implicit
                 -- (i.e. forall bound) in the high level Idris, but
                 -- otherwise has no relevance in TT.
-              | Let   { binderTy  :: !b,
+              | Let   { binderCount :: RigCount,
+                        binderTy  :: !b,
                         binderVal :: b {-^ value for bound variable-}}
                 -- ^ A binding that occurs in a @let@ expression
               | NLet  { binderTy  :: !b,
@@ -903,7 +874,7 @@ deriving instance Binary Binder
 instance Sized a => Sized (Binder a) where
   size (Lam _ ty) = 1 + size ty
   size (Pi _ _ ty _) = 1 + size ty
-  size (Let ty val) = 1 + size ty + size val
+  size (Let _ ty val) = 1 + size ty + size val
   size (NLet ty val) = 1 + size ty + size val
   size (Hole ty) = 1 + size ty
   size (GHole _ _ ty) = 1 + size ty
@@ -912,7 +883,7 @@ instance Sized a => Sized (Binder a) where
   size (PVTy ty) = 1 + size ty
 
 fmapMB :: Monad m => (a -> m b) -> Binder a -> m (Binder b)
-fmapMB f (Let t v)   = liftM2 Let (f t) (f v)
+fmapMB f (Let c t v)   = liftM2 (Let c) (f t) (f v)
 fmapMB f (NLet t v)  = liftM2 NLet (f t) (f v)
 fmapMB f (Guess t v) = liftM2 Guess (f t) (f v)
 fmapMB f (Lam c t)   = liftM (Lam c) (f t)
@@ -1040,7 +1011,7 @@ instance TermSize (TT Name) where
     -- "recursive => really big" if the name of the bound
     -- variable is the same as the name we're using
     -- So generate a different name in that case.
-    termsize n (Bind n' (Let t v) sc)
+    termsize n (Bind n' (Let c t v) sc)
        = let rn = if n == n' then sMN 0 "noname" else n in
              termsize rn v + termsize rn sc
     termsize n (Bind n' b sc)
@@ -1115,8 +1086,6 @@ data Datatype n = Data { d_typename :: n,
 
 -- | Data declaration options
 data DataOpt = Codata -- ^ Set if the the data-type is coinductive
-             | DefaultEliminator -- ^ Set if an eliminator should be generated for data type
-             | DefaultCaseFun -- ^ Set if a case function should be generated for data type
              | DataErrRev
     deriving (Show, Eq, Generic)
 
@@ -1159,15 +1128,6 @@ isInjective (TType x)          = True
 isInjective (Bind _ (Pi _ _ _ _) sc) = True
 isInjective (App _ f a)        = isInjective f
 isInjective _                  = False
-
--- | Count the number of instances of a de Bruijn index in a term
-vinstances :: Int -> TT n -> Int
-vinstances i (V x) | i == x = 1
-vinstances i (App _ f a) = vinstances i f + vinstances i a
-vinstances i (Bind x b sc) = instancesB b + vinstances (i + 1) sc
-  where instancesB (Let t v) = vinstances i v
-        instancesB _ = 0
-vinstances i t = 0
 
 -- | Replace the outermost (index 0) de Bruijn variable with the given term
 instantiate :: TT n -> TT n -> TT n
@@ -1292,10 +1252,10 @@ subst n v tm = fst $ subst' 0 tm
                                   if u then (Proj x' idx, u) else (t, False)
     subst' i t = (t, False)
 
-    substB' i b@(Let t v) = let (t', ut) = subst' i t
-                                (v', uv) = subst' i v in
-                                if ut || uv then (Let t' v', True)
-                                            else (b, False)
+    substB' i b@(Let c t v) = let (t', ut) = subst' i t
+                                  (v', uv) = subst' i v in
+                                  if ut || uv then (Let c t' v', True)
+                                              else (b, False)
     substB' i b@(Guess t v) = let (t', ut) = subst' i t
                                   (v', uv) = subst' i v in
                                   if ut || uv then (Guess t' v', True)
@@ -1342,7 +1302,7 @@ substTerm old new = st where
   eqAlpha as (App _ fx ax) (App _ fy ay) = eqAlpha as fx fy && eqAlpha as ax ay
   eqAlpha as x y = x == y
 
-  eqAlphaB as (Let xt xv) (Let yt yv)
+  eqAlphaB as (Let xc xt xv) (Let yc yt yv)
        = eqAlpha as xt yt && eqAlpha as xv yv
   eqAlphaB as (Guess xt xv) (Guess yt yv)
        = eqAlpha as xt yt && eqAlpha as xv yv
@@ -1355,7 +1315,7 @@ occurrences n t = execState (no' 0 t) 0
     no' i (V x) | i == x = do num <- get; put (num + 1)
     no' i (P Bound x _) | n == x = do num <- get; put (num + 1)
     no' i (Bind n b sc) = do noB' i b; no' (i+1) sc
-       where noB' i (Let t v) = do no' i t; no' i v
+       where noB' i (Let c t v) = do no' i t; no' i v
              noB' i (Guess t v) = do no' i t; no' i v
              noB' i b = no' i (binderTy b)
     no' i (App _ f a) = do no' i f; no' i a
@@ -1369,7 +1329,7 @@ noOccurrence n t = no' 0 t
     no' i (V x) = not (i == x)
     no' i (P Bound x _) = not (n == x)
     no' i (Bind n b sc) = noB' i b && no' (i+1) sc
-       where noB' i (Let t v) = no' i t && no' i v
+       where noB' i (Let c t v) = no' i t && no' i v
              noB' i (Guess t v) = no' i t && no' i v
              noB' i b = no' i (binderTy b)
     no' i (App _ f a) = no' i f && no' i a
@@ -1381,7 +1341,7 @@ freeNames :: Eq n => TT n -> [n]
 freeNames t = nub $ freeNames' t
   where
     freeNames' (P _ n _) = [n]
-    freeNames' (Bind n (Let t v) sc) = freeNames' v ++ (freeNames' sc \\ [n])
+    freeNames' (Bind n (Let c t v) sc) = freeNames' v ++ (freeNames' sc \\ [n])
                                             ++ freeNames' t
     freeNames' (Bind n b sc) = freeNames' (binderTy b) ++ (freeNames' sc \\ [n])
     freeNames' (App _ f a) = freeNames' f ++ freeNames' a
@@ -1455,8 +1415,8 @@ safeForgetEnv env (Bind n b sc)
           b' <- safeForgetEnvB env b
           sc' <- safeForgetEnv (n':env) sc
           Just $ RBind n' b' sc'
-  where safeForgetEnvB env (Let t v) = liftM2 Let (safeForgetEnv env t)
-                                                  (safeForgetEnv env v)
+  where safeForgetEnvB env (Let c t v) = liftM2 (Let c) (safeForgetEnv env t)
+                                                        (safeForgetEnv env v)
         safeForgetEnvB env (Guess t v) = liftM2 Guess (safeForgetEnv env t)
                                                       (safeForgetEnv env v)
         safeForgetEnvB env b = do ty' <- safeForgetEnv env (binderTy b)
@@ -1546,7 +1506,6 @@ nextName (SN x) = SN (nextName' x)
     nextName' (ImplementationN n ns) = ImplementationN (nextName n) ns
     nextName' (ParentN n ns) = ParentN (nextName n) ns
     nextName' (CaseN fc n) = CaseN fc (nextName n)
-    nextName' (ElimN n) = ElimN (nextName n)
     nextName' (MethodN n) = MethodN (nextName n)
     nextName' (ImplementationCtorN n) = ImplementationCtorN (nextName n)
     nextName' (MetaN parent meta) = MetaN parent (nextName meta)
@@ -1644,7 +1603,8 @@ prettyEnv env t = prettyEnv' env t False
     prettySb env n (PVar Rig1 t) = prettyB env "pat 1 " "." n t
     prettySb env n (PVar _ t) = prettyB env "pat" "." n t
     prettySb env n (PVTy t) = prettyB env "pty" "." n t
-    prettySb env n (Let t v) = prettyBv env "let" "in" n t v
+    prettySb env n (Let Rig1 t v) = prettyBv env "let 1 " "in" n t v
+    prettySb env n (Let _ t v) = prettyBv env "let" "in" n t v
     prettySb env n (NLet t v) = prettyBv env "nlet" "in" n t v
     prettySb env n (Guess t v) = prettyBv env "??" "in" n t v
 
@@ -1672,7 +1632,7 @@ showEnv' env t dbg = se 10 env t where
          = bracket p 2 $ sb env n b ++ se 10 ((n, rig, b):env) sc
     se p env (Bind n b@(Pi rig _ t k) sc)
         | noOccurrence n sc && not dbg = bracket p 2 $ se 1 env t ++ arrow rig ++ se 10 ((n,Rig0,b):env) sc
-       where arrow Rig0 = " -> "
+       where arrow Rig0 = " 0-> "
              arrow Rig1 = " -o "
              arrow RigW = " -> "
     se p env (Bind n b sc) = bracket p 2 $ sb env n b ++ se 10 ((n,Rig0,b):env) sc
@@ -1697,7 +1657,9 @@ showEnv' env t dbg = se 10 env t where
     sb env n (PVar Rig1 t) = showb env "pat 1 " ". " n t
     sb env n (PVar _ t) = showb env "pat " ". " n t
     sb env n (PVTy t) = showb env "pty " ". " n t
-    sb env n (Let t v)   = showbv env "let " " in " n t v
+    sb env n (Let Rig0 t v)   = showbv env "let 0 " " in " n t v
+    sb env n (Let Rig1 t v)   = showbv env "let 1 " " in " n t v
+    sb env n (Let _ t v)   = showbv env "let " " in " n t v
     sb env n (NLet t v)   = showbv env "nlet " " in " n t v
     sb env n (Guess t v) = showbv env "?? " " in " n t v
 
@@ -1714,7 +1676,7 @@ pureTerm (App _ f a) = pureTerm f && pureTerm a
 pureTerm (Bind n b sc) = notInterfaceName n && pureBinder b && pureTerm sc where
     pureBinder (Hole _) = False
     pureBinder (Guess _ _) = False
-    pureBinder (Let t v) = pureTerm t && pureTerm v
+    pureBinder (Let c t v) = pureTerm t && pureTerm v
     pureBinder t = pureTerm (binderTy t)
 
     notInterfaceName (MN _ c) | c == txt "__interface" = False
@@ -1738,7 +1700,7 @@ weakenEnv :: EnvTT n -> EnvTT n
 weakenEnv env = wk (length env - 1) env
   where wk i [] = []
         wk i ((n, c, b) : bs) = (n, c, weakenTmB i b) : wk (i - 1) bs
-        weakenTmB i (Let   t v) = Let (weakenTm i t) (weakenTm i v)
+        weakenTmB i (Let c t v) = Let c (weakenTm i t) (weakenTm i v)
         weakenTmB i (Guess t v) = Guess (weakenTm i t) (weakenTm i v)
         weakenTmB i t           = t { binderTy = weakenTm i (binderTy t) }
 
@@ -1749,7 +1711,7 @@ weakenTmEnv i = map (\ (n, c, b) -> (n, c, fmap (weakenTm i) b))
 refsIn :: TT Name -> [Name]
 refsIn (P _ n _) = [n]
 refsIn (Bind n b t) = nub $ nb b ++ refsIn t
-  where nb (Let   t v) = nub (refsIn t) ++ nub (refsIn v)
+  where nb (Let _ t v) = nub (refsIn t) ++ nub (refsIn v)
         nb (Guess t v) = nub (refsIn t) ++ nub (refsIn v)
         nb t = refsIn (binderTy t)
 refsIn (App s f a) = nub (refsIn f ++ refsIn a)
@@ -1759,7 +1721,7 @@ allTTNames :: Eq n => TT n -> [n]
 allTTNames = nub . allNamesIn
   where allNamesIn (P _ n _) = [n]
         allNamesIn (Bind n b t) = [n] ++ nb b ++ allNamesIn t
-          where nb (Let   t v) = allNamesIn t ++ allNamesIn v
+          where nb (Let _ t v) = allNamesIn t ++ allNamesIn v
                 nb (Guess t v) = allNamesIn t ++ allNamesIn v
                 nb t = allNamesIn (binderTy t)
         allNamesIn (App _ f a) = allNamesIn f ++ allNamesIn a
@@ -1811,7 +1773,7 @@ pprintTT bound tm = pp startPrec bound tm
         where mkArrow Rig1 = text "⇴"
               mkArrow Rig0 = text "⥛"
               mkArrow _ = text "→"
-    ppb p bound n (Let ty val) sc =
+    ppb p bound n (Let _ ty val) sc =
       bracket p startPrec . group . align $
       (group . hang 2) (annotate AnnKeyword (text "let") <+>
                         bindingOf n False <+> colon <+>
@@ -1893,8 +1855,8 @@ pprintRaw bound (RBind n b body) =
                      text "Lam" <$> pprintRaw bound ty
     ppb (Pi _ _ ty k) = enclose lparen rparen . group . align . hang 2 $
                         vsep [text "Pi", pprintRaw bound ty, pprintRaw bound k]
-    ppb (Let ty v) = enclose lparen rparen . group . align . hang 2 $
-                     vsep [text "Let", pprintRaw bound ty, pprintRaw bound v]
+    ppb (Let c ty v) = enclose lparen rparen . group . align . hang 2 $
+                       vsep [text "Let", pprintRaw bound ty, pprintRaw bound v]
     ppb (NLet ty v) = enclose lparen rparen . group . align . hang 2 $
                       vsep [text "NLet", pprintRaw bound ty, pprintRaw bound v]
     ppb (Hole ty) = enclose lparen rparen . group . align . hang 2 $

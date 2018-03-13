@@ -22,6 +22,7 @@ import Idris.Error
 import Idris.IBC
 import Idris.Info
 import Idris.ModeCommon
+import Idris.Options
 import Idris.Output
 import Idris.Parser hiding (indent)
 import Idris.REPL
@@ -46,7 +47,6 @@ import System.Exit
 import System.FilePath
 import System.IO
 import System.IO.CodePage (withCP65001)
-import Text.Trifecta.Result (ErrInfo(..), Result(..))
 
 -- | How to run Idris programs.
 runMain :: Idris () -> IO ()
@@ -156,10 +156,10 @@ idrisMain opts =
 
        mapM_ addPkgDir pkgdirs
        elabPrims
-       when (not (NoBuiltins `elem` opts)) $ do x <- loadModule "Builtins" (IBC_REPL True)
+       when (not (NoBuiltins `elem` opts)) $ do x <- loadModule "Builtins" (IBC_REPL False)
                                                 addAutoImport "Builtins"
                                                 return ()
-       when (not (NoPrelude `elem` opts)) $ do x <- loadModule "Prelude" (IBC_REPL True)
+       when (not (NoPrelude `elem` opts)) $ do x <- loadModule "Prelude" (IBC_REPL False)
                                                addAutoImport "Prelude"
                                                return ()
        when (runrepl && not idesl) initScript
@@ -195,9 +195,9 @@ idrisMain opts =
                      mapM_ (\str -> do ist <- getIState
                                        c <- colourise
                                        case parseExpr ist str of
-                                         Failure (ErrInfo err _) -> do iputStrLn $ show (fixColour c err)
-                                                                       runIO $ exitWith (ExitFailure 1)
-                                         Success e -> process "" (Eval e))
+                                         Left err -> do emitWarning err
+                                                        runIO $ exitWith (ExitFailure 1)
+                                         Right e -> process "" (Eval e))
                            exprs
                      runIO exitSuccess
 
@@ -272,12 +272,12 @@ execScript :: String -> Idris ()
 execScript expr = do i <- getIState
                      c <- colourise
                      case parseExpr i expr of
-                          Failure (ErrInfo err _) -> do iputStrLn $ show (fixColour c err)
-                                                        runIO $ exitWith (ExitFailure 1)
-                          Success term -> do ctxt <- getContext
-                                             (tm, _) <- elabVal (recinfo (fileFC "toplevel")) ERHS term
-                                             res <- execute tm
-                                             runIO $ exitSuccess
+                          Left err -> do emitWarning err
+                                         runIO $ exitWith (ExitFailure 1)
+                          Right term -> do ctxt <- getContext
+                                           (tm, _) <- elabVal (recinfo (fileFC "toplevel")) ERHS term
+                                           res <- execute tm
+                                           runIO $ exitSuccess
 
 -- | Run the initialisation script
 initScript :: Idris ()
@@ -299,12 +299,12 @@ initScript = do script <- runIO $ getIdrisInitScript
                            runInit h
           processLine i cmd input clr =
               case parseCmd i input cmd of
-                   Failure (ErrInfo err _) -> runIO $ print (fixColour clr err)
-                   Success (Right Reload) -> iPrintError "Init scripts cannot reload the file"
-                   Success (Right (Load f _)) -> iPrintError "Init scripts cannot load files"
-                   Success (Right (ModImport f)) -> iPrintError "Init scripts cannot import modules"
-                   Success (Right Edit) -> iPrintError "Init scripts cannot invoke the editor"
-                   Success (Right Proofs) -> proofs i
-                   Success (Right Quit) -> iPrintError "Init scripts cannot quit Idris"
-                   Success (Right cmd ) -> process [] cmd
-                   Success (Left err) -> runIO $ print err
+                   Left err -> emitWarning err
+                   Right (Right Reload) -> iPrintError "Init scripts cannot reload the file"
+                   Right (Right (Load f _)) -> iPrintError "Init scripts cannot load files"
+                   Right (Right (ModImport f)) -> iPrintError "Init scripts cannot import modules"
+                   Right (Right Edit) -> iPrintError "Init scripts cannot invoke the editor"
+                   Right (Right Proofs) -> proofs i
+                   Right (Right Quit) -> iPrintError "Init scripts cannot quit Idris"
+                   Right (Right cmd ) -> process [] cmd
+                   Right (Left err) -> runIO $ print err

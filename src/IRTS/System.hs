@@ -1,7 +1,7 @@
 {-|
 Module      : IRTS.System
 Description : Utilities for interacting with the System.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -25,6 +25,7 @@ import Target_idris
 #else
 import Paths_idris
 #endif
+import BuildFlags_idris
 
 import Control.Applicative ((<$>))
 import Data.List.Split
@@ -81,9 +82,14 @@ gmpLib = ["-lgmp"]
 gmpLib = []
 #endif
 
+extraLibFlags = map ("-L" ++) extraLibDirs
+
 getLibFlags = do dir <- getIdrisCRTSDir
-                 return $ ["-L" ++ dropTrailingPathSeparator dir,
-                           "-lidris_rts"] ++ extraLib ++ gmpLib ++ ["-lpthread"]
+                 return $ extraLibFlags
+                   ++ extraLib
+                   ++ ["-L" ++ dropTrailingPathSeparator dir, "-lidris_rts"]
+                   ++ gmpLib
+                   ++ ["-lpthread"]
 
 getIdrisLibDir = addTrailingPathSeparator <$> overrideIdrisSubDirWith "libs" "IDRIS_LIBRARY_PATH"
 

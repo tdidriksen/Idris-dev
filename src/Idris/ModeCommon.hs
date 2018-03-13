@@ -4,7 +4,12 @@ Description : Common utilities used by all modes.
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-module Idris.ModeCommon where
+
+{-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
+{-# OPTIONS_GHC -fwarn-unused-binds #-}
+{-# OPTIONS_GHC -fwarn-unused-imports #-}
+
+module Idris.ModeCommon (banner, defaultPort, loadInputs, warranty) where
 
 import Idris.AbsSyntax
 import Idris.Chaser
@@ -15,6 +20,7 @@ import Idris.Error
 import Idris.IBC
 import Idris.Imports
 import Idris.Info
+import Idris.Options
 import Idris.Output
 import Idris.Parser hiding (indent)
 import IRTS.Exports
@@ -24,15 +30,10 @@ import Prelude hiding (id, (.), (<$>))
 import Control.Category
 import Control.DeepSeq
 import Control.Monad
-import Control.Monad.Trans.State.Strict (get)
-import Data.List hiding (group)
-import Data.Maybe
 import Network.Socket (PortNumber)
-import System.Directory
 
 defaultPort :: PortNumber
 defaultPort = fromIntegral 4294
-
 
 loadInputs :: [FilePath] -> Maybe Int -> Idris [FilePath]
 loadInputs inputs toline -- furthest line to read in input source files
@@ -48,6 +49,8 @@ loadInputs inputs toline -- furthest line to read in input source files
                                [] -> not (NoREPL `elem` opts)
                                _ -> True
 
+           logParser 3 $ show "loadInputs loadCode" ++ show loadCode
+
            -- For each ifile list, check it and build ibcs in the same clean IState
            -- so that they don't interfere with each other when checking
 
@@ -58,13 +61,14 @@ loadInputs inputs toline -- furthest line to read in input source files
            let ninputs = zip [1..] inputs
            ifiles <- mapWhileOK (\(num, input) ->
                 do putIState ist
+                   logParser 3 $ show "loadInputs (num, input)" ++ show (num, input)
                    modTree <- buildTree
                                    (map snd (take (num-1) ninputs))
                                    importlists
                                    input
                    let ifiles = getModuleFiles modTree
-                   logParser 1 ("MODULE TREE : " ++ show modTree)
-                   logParser 1 ("RELOAD: " ++ show ifiles)
+                   logParser 2 ("MODULE TREE : " ++ show modTree)
+                   logParser 2 ("RELOAD: " ++ show ifiles)
                    when (not (all ibc ifiles) || loadCode) $
                         tryLoad False IBC_Building (filter (not . ibc) ifiles)
                    -- return the files that need rechecking
@@ -76,9 +80,18 @@ loadInputs inputs toline -- furthest line to read in input source files
            case errSpan inew of
               Nothing ->
                 do putIState $!! ist { idris_tyinfodata = tidata }
-                   ibcfiles <- mapM findNewIBC (nub (concatMap snd ifiles))
---                    logLvl 0 $ "Loading from " ++ show ibcfiles
-                   tryLoad True (IBC_REPL True) (mapMaybe id ibcfiles)
+                   logParser 3 $ "loadInputs ifiles" ++ show ifiles
+
+                   let fileToIFileType :: FilePath -> Idris IFileType
+                       fileToIFileType file = do
+                         ibcsd <- valIBCSubDir ist
+                         ids <- rankedImportDirs file
+                         findImport ids ibcsd file
+
+                   ibcfiles <- mapM fileToIFileType inputs
+                   logParser 3 $ show "loadInputs ibcfiles" ++ show ibcfiles
+
+                   tryLoad True (IBC_REPL True) ibcfiles
               _ -> return ()
            exports <- findExports
 
@@ -102,6 +115,8 @@ loadInputs inputs toline -- furthest line to read in input source files
          tryLoad keepstate phase [] = warnTotality >> return ()
          tryLoad keepstate phase (f : fs)
                  = do ist <- getIState
+                      logParser 3 $ "tryLoad (keepstate, phase, f : fs)" ++
+                        show (keepstate, phase, f : fs)
                       let maxline
                             = case toline of
                                 Nothing -> Nothing
@@ -140,21 +155,6 @@ loadInputs inputs toline -- furthest line to read in input source files
          fmatch ('.':'/':xs) ys = fmatch xs ys
          fmatch xs ('.':'/':ys) = fmatch xs ys
          fmatch xs ys = xs == ys
-
-         findNewIBC :: IFileType -> Idris (Maybe IFileType)
-         findNewIBC i@(IBC _ _) = return (Just i)
-         findNewIBC s@(IDR f) = do ist <- get
-                                   ibcsd <- valIBCSubDir ist
-                                   let ibc = ibcPathNoFallback ibcsd f
-                                   ok <- runIO $ doesFileExist ibc
-                                   if ok then return (Just (IBC ibc s))
-                                         else return Nothing
-         findNewIBC s@(LIDR f) = do ist <- get
-                                    ibcsd <- valIBCSubDir ist
-                                    let ibc = ibcPathNoFallback ibcsd f
-                                    ok <- runIO $ doesFileExist ibc
-                                    if ok then return (Just (IBC ibc s))
-                                          else return Nothing
 
          -- Like mapM, but give up when there's an error
          mapWhileOK f [] = return []

@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Primitives
 Description : Provision of primitive data types.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -9,7 +9,6 @@ Maintainer  : The Idris Community.
 
 module Idris.Primitives(primitives, Prim(..)) where
 
-import Idris.AbsSyntax
 import Idris.Core.Evaluate
 import Idris.Core.TT
 import IRTS.Lang
@@ -18,9 +17,6 @@ import Data.Bits
 import Data.Char
 import Data.Function (on)
 import Data.Int
-import qualified Data.Vector.Unboxed as V
-import Data.Word
-import Debug.Trace
 
 data Prim = Prim { p_name  :: Name,
                    p_type  :: Type,
@@ -34,10 +30,9 @@ ty :: [Const] -> Const -> Type
 ty []     x = Constant x
 ty (t:ts) x = Bind (sMN 0 "T") (Pi RigW Nothing (Constant t) (TType (UVar [] (-3)))) (ty ts x)
 
-total, partial, iopartial :: Totality
+total, partial :: Totality
 total = Total []
 partial = Partial NotCovering
-iopartial = Partial ExternalIO
 
 primitives :: [Prim]
 primitives =
@@ -153,6 +148,8 @@ primitives =
      (1, LFACos) total,
    Prim (sUN "prim__floatATan") (ty [(AType ATFloat)] (AType ATFloat)) 1 (p_floatATan)
      (1, LFATan) total,
+   Prim (sUN "prim__floatATan2") (ty [(AType ATFloat), (AType ATFloat)] (AType ATFloat)) 2 (p_floatATan2)
+     (2, LFATan2) total,
    Prim (sUN "prim__floatSqrt") (ty [(AType ATFloat)] (AType ATFloat)) 1 (p_floatSqrt)
      (1, LFSqrt) total,
    Prim (sUN "prim__floatFloor") (ty [(AType ATFloat)] (AType ATFloat)) 1 (p_floatFloor)
@@ -210,7 +207,7 @@ intArith ity =
     [ iBinOp ity "add" (bitBin ity (+)) (LPlus . ATInt) total
     , iBinOp ity "sub" (bitBin ity (-)) (LMinus . ATInt) total
     , iBinOp ity "mul" (bitBin ity (*)) (LTimes . ATInt) total
-    , iBinOp ity "udiv" (bitBin ity div) LUDiv partial
+    , iBinOp ity "udiv" (bitBin ity quot) LUDiv partial
     , iBinOp ity "sdiv" (bsdiv ity) (LSDiv . ATInt) partial
     , iBinOp ity "urem" (bitBin ity rem) LURem partial
     , iBinOp ity "srem" (bsrem ity) (LSRem . ATInt) partial
@@ -234,36 +231,6 @@ intConv ity =
     , Prim (sUN $ "prim__fromFloat" ++ intTyName ity) (ty [AType ATFloat] (AType . ATInt $ ity)) 1 (floatToInt ity)
                (1, LFloatInt ity) total
     ]
-
-bitcastPrim :: ArithTy -> ArithTy -> (ArithTy -> [Const] -> Maybe Const) -> PrimFn -> Prim
-bitcastPrim from to impl prim =
-    Prim (sUN $ "prim__bitcast" ++ aTyName from ++ "_" ++ aTyName to) (ty [AType from] (AType to)) 1 (impl to)
-         (1, prim) total
-
-concatWord8 :: (Word8, Word8) -> Word16
-concatWord8 (high, low) = fromIntegral high .|. (fromIntegral low `shiftL` 8)
-
-concatWord16 :: (Word16, Word16) -> Word32
-concatWord16 (high, low) = fromIntegral high .|. (fromIntegral low `shiftL` 16)
-
-concatWord32 :: (Word32, Word32) -> Word64
-concatWord32 (high, low) = fromIntegral high .|. (fromIntegral low `shiftL` 32)
-
-truncWord16 :: Bool -> Word16 -> Word8
-truncWord16 True x = fromIntegral (x `shiftR` 8)
-truncWord16 False x = fromIntegral x
-
-truncWord32 :: Bool -> Word32 -> Word16
-truncWord32 True x = fromIntegral (x `shiftR` 16)
-truncWord32 False x = fromIntegral x
-
-truncWord64 :: Bool -> Word64 -> Word32
-truncWord64 True x = fromIntegral (x `shiftR` 32)
-truncWord64 False x = fromIntegral x
-
-aTyName :: ArithTy -> String
-aTyName (ATInt t) = intTyName t
-aTyName ATFloat = "Float"
 
 iCmp  :: IntTy -> String -> Bool -> ([Const] -> Maybe Const) -> (IntTy -> PrimFn) -> Totality -> Prim
 iCmp ity op self impl irop totality
@@ -295,11 +262,6 @@ bfBin op [Fl x, Fl y] = let i = (if op x y then 1 else 0) in
                         Just $ I i
 bfBin _ _ = Nothing
 
-bcBin :: (Char -> Char -> Bool) -> [Const] -> Maybe Const
-bcBin op [Ch x, Ch y] = let i = (if op x y then 1 else 0) in
-                        Just $ I i
-bcBin _ _ = Nothing
-
 bsBin :: (String -> String -> Bool) -> [Const] -> Maybe Const
 bsBin op [Str x, Str y]
     = let i = (if op x y then 1 else 0) in
@@ -325,17 +287,17 @@ bsrem ITChar [Ch x, Ch y] = Just $ Ch (chr $ (ord x) `rem` (ord y))
 bsrem _ _ = Nothing
 
 bsdiv :: IntTy -> [Const] -> Maybe Const
-bsdiv ITBig [BI x, BI y] = Just . BI $ x `div` y
+bsdiv ITBig [BI x, BI y] = Just . BI $ x `quot` y
 bsdiv (ITFixed IT8) [B8 x, B8 y]
-    = Just $ B8 (fromIntegral (fromIntegral x `div` fromIntegral y :: Int8))
+    = Just $ B8 (fromIntegral (fromIntegral x `quot` fromIntegral y :: Int8))
 bsdiv (ITFixed IT16) [B16 x, B16 y]
-    = Just $ B16 (fromIntegral (fromIntegral x `div` fromIntegral y :: Int16))
+    = Just $ B16 (fromIntegral (fromIntegral x `quot` fromIntegral y :: Int16))
 bsdiv (ITFixed IT32) [B32 x, B32 y]
-    = Just $ B32 (fromIntegral (fromIntegral x `div` fromIntegral y :: Int32))
+    = Just $ B32 (fromIntegral (fromIntegral x `quot` fromIntegral y :: Int32))
 bsdiv (ITFixed IT64) [B64 x, B64 y]
-    = Just $ B64 (fromIntegral (fromIntegral x `div` fromIntegral y :: Int64))
-bsdiv ITNative [I x, I y] = Just $ I (x `div` y)
-bsdiv ITChar [Ch x, Ch y] = Just $ Ch (chr $ (ord x) `div` (ord y))
+    = Just $ B64 (fromIntegral (fromIntegral x `quot` fromIntegral y :: Int64))
+bsdiv ITNative [I x, I y] = Just $ I (x `quot` y)
+bsdiv ITChar [Ch x, Ch y] = Just $ Ch (chr $ (ord x) `quot` (ord y))
 bsdiv _ _ = Nothing
 
 bashr :: IntTy -> [Const] -> Maybe Const
@@ -501,6 +463,10 @@ p_floatATan = p_fPrim atan
 p_floatSqrt = p_fPrim sqrt
 p_floatFloor = p_fPrim (fromInteger . floor)
 p_floatCeil = p_fPrim (fromInteger . ceiling)
+
+p_floatATan2 :: [Const] -> Maybe Const
+p_floatATan2 [Fl y, Fl x] = Just $ Fl (atan2 y x)
+p_floatATan2 _ = Nothing
 
 p_strLen, p_strHead, p_strTail, p_strIndex, p_strCons, p_strRev, p_strSubstr :: [Const] -> Maybe Const
 p_strLen [Str xs] = Just $ I (length xs)

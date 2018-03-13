@@ -1,7 +1,7 @@
 {-|
 Module      : IRTS.DumpBC
 Description : Serialise Idris to its IBC format.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -9,7 +9,6 @@ module IRTS.DumpBC where
 
 import Idris.Core.TT
 import IRTS.Bytecode
-import IRTS.Lang
 import IRTS.Simplified
 
 import Data.List

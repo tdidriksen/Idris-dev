@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Transforms
 Description : A collection of transformations.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -16,10 +16,7 @@ module Idris.Transforms(
   ) where
 
 import Idris.AbsSyntax
-import Idris.Core.CaseTree
 import Idris.Core.TT
-
-import Debug.Trace
 
 transformPats :: IState -> [Either Term (Term, Term)] ->
                 [Either Term (Term, Term)]

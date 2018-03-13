@@ -8,8 +8,9 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <time.h>
+#include <dirent.h>
 
-#if defined(WIN32) || defined(__WIN32) || defined(__WIN32__)
+#ifdef _WIN32
 int win_fpoll(void* h);
 FILE *win32_u8fopen(const char *path, const char *mode);
 FILE *win32_u8popen(const char *path, const char *mode);
@@ -24,7 +25,7 @@ void putStr(char* str) {
 }
 
 void *fileOpen(char *name, char *mode) {
-#if defined(WIN32) || defined(__WIN32) || defined(__WIN32__)
+#ifdef _WIN32
     FILE *f = win32_u8fopen(name, mode);
 #else
     FILE *f = fopen(name, mode);
@@ -59,6 +60,54 @@ int fileSize(void* h) {
     }
 }
 
+typedef struct {
+    DIR* dirptr;
+    int error;
+} DirInfo;
+
+void* idris_dirOpen(char* dname) {
+    DIR *d = opendir(dname);
+    if (d == NULL) {
+        return NULL;
+    } else {
+        DirInfo* di = malloc(sizeof(DirInfo));
+        di->dirptr = d;
+
+        return (void*)di;
+    }
+}
+
+void idris_dirClose(void* h) {
+    DirInfo* di = (DirInfo*)h;
+    
+    closedir(di->dirptr);
+    free(di);
+}
+
+char* idris_nextDirEntry(void* h) {
+    DirInfo* di = (DirInfo*)h;
+    struct dirent* de = readdir(di->dirptr);
+
+    if (de == NULL) {
+        di->error = -1;
+        return NULL;
+    } else {
+        return de->d_name;
+    }
+}
+
+int idris_mkdir(char* dname) {
+#ifdef _WIN32
+    return mkdir(dname);
+#else
+    return mkdir(dname, S_IRWXU | S_IRGRP | S_IROTH);
+#endif
+}
+
+int idris_dirError(void *dptr) {
+    return ((DirInfo*)dptr)->error;
+}
+
 int idris_writeStr(void* h, char* str) {
     FILE* f = (FILE*)h;
     if (fputs(str, f) >= 0) {
@@ -70,7 +119,7 @@ int idris_writeStr(void* h, char* str) {
 
 int fpoll(void* h)
 {
-#if defined(WIN32) || defined(__WIN32) || defined(__WIN32__)
+#ifdef _WIN32
     return win_fpoll(h);
 #else
     FILE* f = (FILE*)h;
@@ -89,7 +138,7 @@ int fpoll(void* h)
 }
 
 void *do_popen(const char *cmd, const char *mode) {
-#if defined(WIN32) || defined(__WIN32) || defined(__WIN32__)
+#ifdef _WIN32
     FILE *f = win32_u8popen(cmd, mode);
 #else
     FILE *f = popen(cmd, mode);
@@ -101,10 +150,6 @@ void *do_popen(const char *cmd, const char *mode) {
 
 int isNull(void* ptr) {
     return ptr==NULL;
-}
-
-int idris_eqPtr(void* x, void* y) {
-    return x==y;
 }
 
 void* idris_stdin() {

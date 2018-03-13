@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.TypeSearch
 Description : A Hoogle for Idris.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -13,8 +13,7 @@ module Idris.TypeSearch (
   , defaultScoreFunction
   ) where
 
-import Idris.AbsSyntax (addImpl, addUsingConstraints, getIState, implicit,
-                        logLvl, putIState)
+import Idris.AbsSyntax (addUsingConstraints, getIState, implicit, putIState)
 import Idris.AbsSyntaxTree (IState(idris_docstrings, idris_interfaces, idris_outputmode, tt_ctxt),
                             Idris, InterfaceInfo, OutputMode(..), PTerm,
                             defaultSyntax, eqTy, implicitAllowed,
@@ -27,6 +26,7 @@ import Idris.Delaborate (delabTy)
 import Idris.Docstrings (noDocs, overview)
 import Idris.Elab.Type (elabType)
 import Idris.IBC
+import Idris.Imports (PkgName)
 import Idris.Output (iPrintResult, iRenderError, iRenderOutput, iRenderResult,
                      iputStrLn, prettyDocumentedIst)
 
@@ -49,16 +49,15 @@ import qualified Data.Set as S
 import qualified Data.Text as T (isPrefixOf, pack)
 import Data.Traversable (traverse)
 
-searchByType :: [String] -> PTerm -> Idris ()
+searchByType :: [PkgName] -> PTerm -> Idris ()
 searchByType pkgs pterm = do
   i <- getIState -- save original
   when (not (null pkgs)) $
-     iputStrLn $ "Searching packages: " ++ showSep ", " pkgs
+     iputStrLn $ "Searching packages: " ++ showSep ", " (map show pkgs)
 
   mapM_ loadPkgIndex pkgs
   pterm' <- addUsingConstraints syn emptyFC pterm
   pterm'' <- implicit toplevel syn name pterm'
-  let pterm'''  = addImpl [] i pterm''
   ty <- elabType toplevel syn (fst noDocs) (snd noDocs) emptyFC [] name NoFC pterm'
   let names = searchUsing searchPred i ty
   let names' = take numLimit names
@@ -155,7 +154,7 @@ usedVars :: Ord n => TT n -> Map n (TT n, Bool)
 usedVars = f True where
   f b (P Bound n t) = M.singleton n (t, b) `M.union` f b t
   f b (Bind n binder t2) = (M.delete n (f b t2) `M.union`) $ case binder of
-    Let t v ->   f b t `M.union` f b v
+    Let rig t v -> f b t `M.union` f b v
     Guess t v -> f b t `M.union` f b v
     bind -> f b (binderTy bind)
   f b (App _ t1 t2) = f b t1 `M.union` f (b && isInjective t1) t2
@@ -304,7 +303,7 @@ interfaceUnify interfaceInfo ctxt ty tyTry = do
 
 isInterfaceArg :: Ctxt InterfaceInfo -> Type -> Bool
 isInterfaceArg interfaceInfo ty = not (null (getInterfaceName clss >>= flip lookupCtxt interfaceInfo)) where
-  (clss, args) = unApply ty
+  (clss, _) = unApply ty
   getInterfaceName (P (TCon _ _) interfaceName _) = [interfaceName]
   getInterfaceName _ = []
 
@@ -357,8 +356,6 @@ matchTypesBulk istate maxScore type1 types = getAllResults startQueueOfQueues wh
     argNames2 = map fst dag2
     usedns = map fst startingHoles
     startingHoles = argNames1 ++ argNames2
-
-    startingTypes = [(retTy1, retTy2)]
 
 
   startQueueOfQueues :: Q.PQueue Score (info, Q.PQueue Score State)

@@ -1,52 +1,43 @@
 {-|
 Module      : IRTS.Compiler
 Description : Coordinates the compilation process.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE CPP, PatternGuards, TypeSynonymInstances #-}
+{-# LANGUAGE CPP, FlexibleContexts, PatternGuards, TypeSynonymInstances #-}
 
 module IRTS.Compiler(compile, generate) where
 
 import Idris.AbsSyntax
-import Idris.AbsSyntaxTree
 import Idris.ASTUtils
 import Idris.Core.CaseTree
 import Idris.Core.Evaluate
 import Idris.Core.TT
 import Idris.Erasure
 import Idris.Error
+import Idris.Options
 import Idris.Output
 import IRTS.CodegenC
 import IRTS.CodegenCommon
-import IRTS.CodegenJavaScript
 import IRTS.Defunctionalise
 import IRTS.DumpBC
 import IRTS.Exports
 import IRTS.Inliner
-import IRTS.Lang
 import IRTS.LangOpts
 import IRTS.Portable
 import IRTS.Simplified
 
 import Prelude hiding (id, (.))
 
-import Control.Applicative
 import Control.Category
 import Control.Monad.State
-import Data.IntSet (IntSet)
-import qualified Data.IntSet as IS
 import Data.List
 import qualified Data.Map as M
-import Data.Maybe
 import Data.Ord
 import qualified Data.Set as S
-import Debug.Trace
 import System.Directory
-import System.Environment
 import System.Exit
-import System.FilePath (addTrailingPathSeparator, (</>))
 import System.IO
 import System.Process
 
@@ -62,6 +53,8 @@ compile codegen f mtm = do
                              Nothing -> []
                              Just t -> freeNames t
 
+        logCodeGen 1 "Running Erasure Analysis"
+        iReport 3 "Running Erasure Analysis"
         reachableNames <- performUsageAnalysis
                               (rootNames ++ getExpNames exports)
         maindef <- case mtm of
@@ -73,7 +66,7 @@ compile codegen f mtm = do
         libs <- getLibs codegen
         flags <- getFlags codegen
         hdrs <- getHdrs codegen
-        impdirs <- allImportDirs
+        impdirs <- rankedImportDirs f
         ttDeclarations <- getDeclarations reachableNames
         defsIn <- mkDecls reachableNames
         -- if no 'main term' given, generate interface files
@@ -88,7 +81,14 @@ compile codegen f mtm = do
         let defsUniq = map (allocUnique (addAlist defsInlined emptyContext))
                            defsInlined
 
-        let (nexttag, tagged) = addTags 65536 (liftAll defsUniq)
+        logCodeGen 1 "Inlining"
+
+        dumpCases <- getDumpCases
+        case dumpCases of
+            Nothing -> return ()
+            Just f -> runIO $ writeFile f (showCaseTrees defsUniq)
+
+        let (nexttag, tagged) = addTags 65536 (liftAll defsInlined)
         let ctxtIn = addAlist tagged emptyContext
 
         logCodeGen 1 "Defunctionalising"
@@ -103,11 +103,7 @@ compile codegen f mtm = do
 
         let checked = simplifyDefs defuns (toAlist defuns)
         outty <- outputTy
-        dumpCases <- getDumpCases
         dumpDefun <- getDumpDefun
-        case dumpCases of
-            Nothing -> return ()
-            Just f -> runIO $ writeFile f (showCaseTrees defs)
         case dumpDefun of
             Nothing -> return ()
             Just f -> runIO $ writeFile f (dumpDefuns defuns)
@@ -149,7 +145,7 @@ generate codegen mainmod ir
                                         return fn
                        let cmd = "idris-codegen-" ++ cg
                            args = [input, "-o", outputFile ir] ++ compilerFlags ir
-                       exit <- rawSystem cmd args
+                       exit <- rawSystem cmd (if interfaces ir then "--interface" : args else args)
                        when (exit /= ExitSuccess) $
                             putStrLn ("FAILURE: " ++ show cmd ++ " " ++ show args)
        Bytecode -> dumpBC (simpleDecls ir) (outputFile ir)
@@ -175,9 +171,13 @@ getDeclarations used
 showCaseTrees :: [(Name, LDecl)] -> String
 showCaseTrees = showSep "\n\n" . map showCT . sortBy (comparing defnRank)
   where
-    showCT (n, LFun _ f args lexp)
-       = show n ++ " " ++ showSep " " (map show args) ++ " =\n\t"
+    showCT (n, LFun opts f args lexp)
+       = showOpts ++
+         show n ++ " " ++ showSep " " (map show args) ++ " =\n\t"
             ++ show lexp
+      where
+        showOpts | Inline `elem` opts = "%inline "
+                 | otherwise = ""
     showCT (n, LConstructor c t a) = "data " ++ show n ++ " " ++ show a
 
     defnRank :: (Name, LDecl) -> String
@@ -197,7 +197,6 @@ showCaseTrees = showSep "\n\n" . map showCT . sortBy (comparing defnRank)
     snRank (ParentN n s) = "3" ++ nameRank n ++ show s
     snRank (MethodN n) = "4" ++ nameRank n
     snRank (CaseN _ n) = "5" ++ nameRank n
-    snRank (ElimN n) = "6" ++ nameRank n
     snRank (ImplementationCtorN n) = "7" ++ nameRank n
     snRank (WithN i n) = "8" ++ nameRank n ++ show i
 
@@ -211,7 +210,7 @@ build (n, d)
               Just (ar, op) ->
                   let args = map (\x -> sMN x "op") [0..] in
                       return (n, (LFun [] n (take ar args)
-                                         (LOp op (map (LV . Glob) (take ar args)))))
+                                         (LOp op (map LV (take ar args)))))
               _ -> do def <- mkLDecl n d
                       logCodeGen 3 $ "Compiled " ++ show n ++ " =\n\t" ++ show def
                       return (n, def)
@@ -395,7 +394,7 @@ irTerm top vs env tm@(App _ f a) = do
                 -> irTerm top vs env (head argsPruned)
 
                 | otherwise  -- not newtype, plain data ctor
-                -> buildApp (LV $ Glob n) argsPruned
+                -> buildApp (LV n) argsPruned
 
             -- not saturated, underapplied
             LT  | isNewtype               -- newtype
@@ -404,11 +403,11 @@ irTerm top vs env tm@(App _ f a) = do
                     <$> irTerm top vs env (head argsPruned)
 
                 | isNewtype  -- newtype but the value is not among args yet
-                -> return . padLams $ \[vn] -> LApp False (LV $ Glob n) [LV $ Glob vn]
+                -> return . padLams $ \[vn] -> LApp False (LV n) [LV vn]
 
                 -- not a newtype, just apply to a constructor
                 | otherwise
-                -> padLams . applyToNames <$> buildApp (LV $ Glob n) argsPruned
+                -> padLams . applyToNames <$> buildApp (LV n) argsPruned
 
     -- type constructor
     (P (TCon t a) n _, args) -> return LNothing
@@ -443,7 +442,7 @@ irTerm top vs env tm@(App _ f a) = do
 
     applyToNames :: LExp -> [Name] -> LExp
     applyToNames tm [] = tm
-    applyToNames tm ns = LApp False tm $ map (LV . Glob) ns
+    applyToNames tm ns = LApp False tm $ map LV ns
 
     padLambdas :: [Int] -> Int -> Int -> ([Name] -> LExp) -> LExp
     padLambdas used startIdx endSIdx mkTerm
@@ -454,7 +453,7 @@ irTerm top vs env tm@(App _ f a) = do
 
     applyName :: Name -> IState -> [Term] -> Idris LExp
     applyName n ist args =
-        LApp False (LV $ Glob n) <$> mapM (irTerm top vs env . erase) (zip [0..] args)
+        LApp False (LV n) <$> mapM (irTerm top vs env . erase) (zip [0..] args)
       where
         erase (i, x)
             | i >= arity || i `elem` used = x
@@ -476,16 +475,16 @@ irTerm top vs env tm@(App _ f a) = do
         used = maybe [] (map fst . usedpos) $ lookupCtxtExact uName (idris_callgraph ist)
         fst4 (x,_,_,_,_,_) = x
 
-irTerm top vs env (P _ n _) = return $ LV (Glob n)
+irTerm top vs env (P _ n _) = return $ LV n
 irTerm top vs env (V i)
-    | i >= 0 && i < length env = return $ LV (Glob (env!!i))
+    | i >= 0 && i < length env = return $ LV (env!!i)
     | otherwise = ifail $ "bad de bruijn index: " ++ show i
 
 irTerm top vs env (Bind n (Lam _ _) sc) = LLam [n'] <$> irTerm top vs (n':env) sc
   where
     n' = uniqueName n env
 
-irTerm top vs env (Bind n (Let _ v) sc)
+irTerm top vs env (Bind n (Let _ _ v) sc)
     = LLet n <$> irTerm top vs env v <*> irTerm top vs (n : env) sc
 
 irTerm top vs env (Bind _ _ _) = return $ LNothing
@@ -513,7 +512,9 @@ doForeign vs env (ret : fname : world : args)
         = do let l' = toFDesc l
              r' <- irTerm (sMN 0 "__foreignCall") vs env r
              return (l', r')
-    splitArg _ = ifail "Badly formed foreign function call"
+    splitArg _ = ifail $ "Badly formed foreign function call: " ++
+                         show (ret : fname : world : args)
+
 
     toFDesc (Constant (Str str)) = FStr str
     toFDesc tm
@@ -532,7 +533,7 @@ irTree top args tree = do
 
 irSC :: Name -> Vars -> SC -> Idris LExp
 irSC top vs (STerm t) = irTerm top vs [] t
-irSC top vs (UnmatchedCase str) = return $ LError str
+irSC top vs (UnmatchedCase str) = return $ LLazyExp $ LError str
 
 irSC top vs (ProjCase tm alts) = do
     tm'   <- irTerm top vs [] tm
@@ -543,7 +544,7 @@ irSC top vs (ProjCase tm alts) = do
 irSC top vs (Case up n [ConCase (UN delay) i [_, _, n'] sc])
     | delay == txt "Delay"
     = do sc' <- irSC top vs sc -- mkForce n' n sc
-         return $ lsubst n' (LForce (LV (Glob n))) sc'
+         return $ lsubst n' (LForce (LV n)) sc'
 
 -- There are two transformations in this case:
 --
@@ -580,10 +581,10 @@ irSC top vs (Case up n [alt]) = do
     case replacement of
         Just sc -> irSC top vs sc
         _ -> do
-            alt' <- irAlt top vs (LV (Glob n)) alt
+            alt' <- irAlt top vs (LV n) alt
             return $ case namesBoundIn alt' `usedIn` subexpr alt' of
                 [] -> subexpr alt'  -- strip the unused top-most case
-                _  -> LCase up (LV (Glob n)) [alt']
+                _  -> LCase up (LV n) [alt']
   where
     namesBoundIn :: LAlt -> [Name]
     namesBoundIn (LConCase cn i ns sc) = ns
@@ -615,7 +616,7 @@ irSC top vs (Case up n alts@[ConCase cn a ns sc, DefaultCase sc']) = do
     detag <- fgetState (opt_detaggable . ist_optimisation cn)
     if detag
         then irSC top vs (Case up n [ConCase cn a ns sc])
-        else LCase up (LV (Glob n)) <$> mapM (irAlt top vs (LV (Glob n))) alts
+        else LCase up (LV n) <$> mapM (irAlt top vs (LV n)) alts
 
 irSC top vs sc@(Case up n alts) = do
     -- check that neither alternative needs the newtype optimisation,
@@ -625,7 +626,7 @@ irSC top vs sc@(Case up n alts) = do
         $ ifail ("irSC: non-trivial case-match on detaggable data: " ++ show sc)
 
     -- everything okay
-    LCase up (LV (Glob n)) <$> mapM (irAlt top vs (LV (Glob n))) alts
+    LCase up (LV n) <$> mapM (irAlt top vs (LV n)) alts
   where
     isDetaggable (ConCase cn _ _ _) = fgetState $ opt_detaggable . ist_optimisation cn
     isDetaggable  _                 = return False

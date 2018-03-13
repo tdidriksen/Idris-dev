@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Elab.Quasiquote
 Description : Code to elaborate quasiquotations.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -23,7 +23,6 @@ extract2 n c a b = do (a', ex1) <- extractUnquotes n a
 
 extractTUnquotes :: Int -> PTactic -> Elab' aux (PTactic, [(Name, PTerm)])
 extractTUnquotes n (Rewrite t) = extract1 n Rewrite t
-extractTUnquotes n (Induction t) = extract1 n Induction t
 extractTUnquotes n (LetTac name t) = extract1 n (LetTac name) t
 extractTUnquotes n (LetTacTy name t1 t2) = extract2 n (LetTacTy name) t1 t2
 extractTUnquotes n (Exact tm) = extract1 n Exact tm
@@ -70,11 +69,12 @@ extractDoUnquotes d (DoBind fc n nfc tm)
        return (DoBind fc n nfc tm', ex)
 extractDoUnquotes d (DoBindP fc t t' alts)
   = fail "Pattern-matching binds cannot be quasiquoted"
-extractDoUnquotes d (DoLet  fc n nfc v b)
+extractDoUnquotes d (DoLet  fc rc n nfc v b)
   = do (v', ex1) <- extractUnquotes d v
        (b', ex2) <- extractUnquotes d b
-       return (DoLet fc n nfc v' b', ex1 ++ ex2)
-extractDoUnquotes d (DoLetP fc t t') = fail "Pattern-matching lets cannot be quasiquoted"
+       return (DoLet fc rc n nfc v' b', ex1 ++ ex2)
+extractDoUnquotes d (DoLetP fc t t' alts) = fail "Pattern-matching lets cannot be quasiquoted"
+extractDoUnquotes d (DoRewrite fc h) = fail "Rewrites in Do block cannot be quasiquoted"
 
 
 extractUnquotes :: Int -> PTerm -> Elab' aux (PTerm, [(Name, PTerm)])
@@ -86,11 +86,11 @@ extractUnquotes n (PPi plicity name fc ty body)
   = do (ty', ex1) <- extractUnquotes n ty
        (body', ex2) <- extractUnquotes n body
        return (PPi plicity name fc ty' body', ex1 ++ ex2)
-extractUnquotes n (PLet fc name nfc ty val body)
+extractUnquotes n (PLet fc rc name nfc ty val body)
   = do (ty', ex1) <- extractUnquotes n ty
        (val', ex2) <- extractUnquotes n val
        (body', ex3) <- extractUnquotes n body
-       return (PLet fc name nfc ty' val' body', ex1 ++ ex2 ++ ex3)
+       return (PLet fc rc name nfc ty' val' body', ex1 ++ ex2 ++ ex3)
 extractUnquotes n (PTyped tm ty)
   = do (tm', ex1) <- extractUnquotes n tm
        (ty', ex2) <- extractUnquotes n ty

@@ -1,13 +1,15 @@
 {-|
 Module      : Idris.Core.Evaluate
 Description : Evaluate Idris expressions.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
+
 {-# LANGUAGE BangPatterns, DeriveGeneric, FlexibleInstances,
              MultiParamTypeClasses, PatternGuards #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
+{-# OPTIONS_GHC -fwarn-unused-imports #-}
 
 module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC,
                 normaliseAll, normaliseBlocking, toValue, quoteTerm,
@@ -28,19 +30,18 @@ module Idris.Core.Evaluate(normalise, normaliseTrace, normaliseC,
                 isCanonical, isDConName, canBeDConName, isTConName, isConName, isFnName,
                 conGuarded,
                 Value(..), Quote(..), initEval, uniqueNameCtxt, uniqueBindersCtxt, definitions,
+                visibleDefinitions,
                 isUniverse, linearCheck, linearCheckArg) where
 
 import Idris.Core.CaseTree
 import Idris.Core.TT
 
-import Control.Applicative hiding (Const)
 import Control.Monad.State
-import Data.Binary hiding (get, put)
-import qualified Data.Binary as B
 import Data.List
 import Data.Maybe (listToMaybe)
-import Debug.Trace
 import GHC.Generics (Generic)
+
+import qualified Data.Map.Strict as Map
 
 data EvalState = ES { limited :: [(Name, Int)],
                       nexthole :: Int,
@@ -65,7 +66,7 @@ data Value = VP NameType Name Value
              -- True for Bool indicates safe to reduce
            | VBind Bool Name (Binder Value) (Value -> Eval Value)
              -- For frozen let bindings when simplifying
-           | VBLet Int Name Value Value Value
+           | VBLet RigCount Int Name Value Value Value
            | VApp Value Value
            | VType UExp
            | VUType Universe
@@ -205,16 +206,6 @@ unfold ctxt env ns t
 finalEntry :: (Name, RigCount, Binder (TT Name)) -> (Name, RigCount, Binder (TT Name))
 finalEntry (n, r, b) = (n, r, fmap finalise b)
 
-bindEnv :: EnvTT n -> TT n -> TT n
-bindEnv [] tm = tm
-bindEnv ((n, r, Let t v):bs) tm = Bind n (NLet t v) (bindEnv bs tm)
-bindEnv ((n, r, b):bs)       tm = Bind n b (bindEnv bs tm)
-
-unbindEnv :: EnvTT n -> TT n -> TT n
-unbindEnv [] tm = tm
-unbindEnv (_:bs) (Bind n b sc) = unbindEnv bs sc
-unbindEnv env tm = error "Impossible case occurred: couldn't unbind env."
-
 usable :: Bool -- specialising
           -> Bool -- unfolding only
           -> Int -- Reduction depth limit (when simplifying/at REPL)
@@ -287,7 +278,7 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
                 | otherwise = cases_compiletime cd
 
     ev ntimes stk top env (P _ n ty)
-        | Just (Let t v) <- lookupBinder n genv = ev ntimes stk top env v
+        | Just (Let _ t v) <- lookupBinder n genv = ev ntimes stk top env v
     ev ntimes_in stk top env (P Ref n ty)
          = do let limit = if simpl then 100 else 10000
               (u, ntimes) <- usable spec unfold limit n ntimes_in
@@ -320,7 +311,7 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
     ev ntimes stk top env (V i)
         | i < length env && i >= 0 = return $ snd (env !! i)
         | otherwise      = return $ VV i
-    ev ntimes stk top env (Bind n (Let t v) sc)
+    ev ntimes stk top env (Bind n (Let c t v) sc)
         | (not (runtime || simpl_inline || unfold)) || occurrences n sc < 2
            = do v' <- ev ntimes stk top env v --(finalise v)
                 sc' <- ev ntimes stk top ((n, v') : env) sc
@@ -334,12 +325,12 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
                 let vd = nexthole hs
                 put (hs { nexthole = vd + 1 })
                 sc' <- ev ntimes stk top ((n, VP Bound (sMN vd "vlet") VErased) : env) sc
-                return $ VBLet vd n t' v' sc'
+                return $ VBLet c vd n t' v' sc'
     ev ntimes stk top env (Bind n (NLet t v) sc)
            = do t' <- ev ntimes stk top env (finalise t)
                 v' <- ev ntimes stk top env (finalise v)
                 sc' <- ev ntimes stk top ((n, v') : env) sc
-                return $ VBind True n (Let t' v') (\x -> return sc')
+                return $ VBind True n (Let RigW t' v') (\x -> return sc')
     ev ntimes stk top env (Bind n b sc)
            = do b' <- vbind env b
                 let n' = uniqueName n (map fstEnv genv ++ map fst env)
@@ -391,22 +382,6 @@ eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
           = evApply ntimes stk top env (a:args) f
     evApply ntimes stk top env args f
           = apply ntimes stk top env f args
-
-    reapply ntimes stk top env f@(VP Ref n ty) args
-       = let val = lookupDefAccExact n (spec || (atRepl && noFree env) || runtime) ctxt in
-         case val of
-              Just (CaseOp ci _ _ _ _ cd, acc) ->
-                 let (ns, tree) = getCases cd in
-                     do c <- evCase ntimes n (n:stk) top env ns args tree
-                        case c of
-                             (Nothing, _) -> return $ unload env (VP Ref n ty) args
-                             (Just v, rest) -> evApply ntimes stk top env rest v
-              _ -> case args of
-                        (a : as) -> return $ unload env f (a : as)
-                        [] -> return f
-    reapply ntimes stk top env (VApp f a) args
-            = reapply ntimes stk top env f (a : args)
-    reapply ntimes stk top env v args = return v
 
     apply ntimes stk top env (VBind True n (Lam _ t) sc) (a:as)
          = do a' <- sc a
@@ -599,12 +574,12 @@ instance Quote Value where
                                   b' <- quoteB b
                                   liftM (Bind n b') (quote (i+1) sc')
        where quoteB t = fmapMB (quote i) t
-    quote i (VBLet vd n t v sc)
+    quote i (VBLet c vd n t v sc)
                            = do sc' <- quote i sc
                                 t' <- quote i t
                                 v' <- quote i v
                                 let sc'' = pToV (sMN vd "vlet") (addBinder sc')
-                                return (Bind n (Let t' v') sc'')
+                                return (Bind n (Let c t' v') sc'')
     quote i (VApp f a)     = liftM2 (App MaybeHoles) (quote i f) (quote i a)
     quote i (VType u)      = return (TType u)
     quote i (VUType u)     = return (UType u)
@@ -657,7 +632,7 @@ convEq ctxt holes topx topy = ceq [] topx topy where
     ceq ps (Bind n xb xs) (Bind n' yb ys)
                              = liftM2 (&&) (ceqB ps xb yb) (ceq ((n,n'):ps) xs ys)
         where
-            ceqB ps (Let v t) (Let v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
+            ceqB ps (Let c v t) (Let c' v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps (Guess v t) (Guess v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps (Pi r i v t) (Pi r' i' v' t') = liftM2 (&&) (ceq ps v v') (ceq ps t t')
             ceqB ps b b' = ceq ps (binderTy b) (binderTy b')
@@ -739,13 +714,6 @@ convEq ctxt holes topx topy = ceq [] topx topy where
                                       return (and ok))
                                   (caseeq ((x,y):ps) xdef ydef)
                  _ -> return False
-
--- SPECIALISATION -----------------------------------------------------------
--- We need too much control to be able to do this by tweaking the main
--- evaluator
-
-spec :: Context -> Ctxt [Bool] -> Env -> TT Name -> Eval (TT Name)
-spec ctxt statics genv tm = error "spec undefined"
 
 -- CONTEXTS -----------------------------------------------------------------
 
@@ -983,8 +951,7 @@ addCasedef n ei ci@(CaseInfo inline alwaysInline tcdict)
                     ( CaseDef args_ct sc_ct _,
                      CaseDef args_rt sc_rt _) ->
                        let inl = alwaysInline -- tcdict
-                           inlc = (inl || small n args_ct sc_ct) && (not asserted)
-                           inlr = inl || small n args_rt sc_rt
+                           inlc = (inl || small n args_rt sc_rt) && (not asserted)
                            cdef = CaseDefs (args_ct, sc_ct)
                                            (args_rt, sc_rt)
                            op = (CaseOp (ci { case_inlinable = inlc })
@@ -1047,7 +1014,7 @@ simplifyCasedef n ufnames umethss ei uctxt
                        getNames under f ++ concatMap (getNames under') args
         getNames (Just under) (P _ ref _)
             = if ref `elem` inames then [under] else []
-        getNames under (Bind n (Let t v) sc)
+        getNames under (Bind n (Let c t v) sc)
             = getNames Nothing t ++
               getNames Nothing v ++
               getNames Nothing sc
@@ -1152,6 +1119,14 @@ conGuarded ctxt n tm = guarded n tm
           isConName f ctxt = any (guarded n) as
     guarded _ _ = False
 
+visibleDefinitions :: Context -> Ctxt TTDecl
+visibleDefinitions ctxt =
+  Map.filter (\m -> length m > 0) . Map.map onlyVisible . definitions $ ctxt
+  where
+    onlyVisible = Map.filter visible
+    visible (_def, _rigCount, _injectivity, accessibility, _totality, _metaInformation) =
+      accessibility `notElem` [Hidden, Private]
+
 lookupP :: Name -> Context -> [Term]
 lookupP = lookupP_all False False
 
@@ -1239,13 +1214,6 @@ linearCheckArg ctxt ty = mapM_ checkNameOK (allTTNames ty)
               Just Rig1 ->
                   tfail $ Msg $ show f ++ " can only appear in a linear binding"
               _ -> return ()
-
-    checkArgs (Bind n (Pi RigW _ ty _) sc)
-        = do mapM_ checkNameOK (allTTNames ty)
-             checkArgs (substV (P Bound n Erased) sc)
-    checkArgs (Bind n (Pi _ _ _ _) sc)
-          = checkArgs (substV (P Bound n Erased) sc)
-    checkArgs _ = return ()
 
 -- Check if a name is reducible in the type checker. Partial definitions
 -- are not reducible (so treated as a constant)

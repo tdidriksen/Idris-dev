@@ -1,12 +1,13 @@
 {-|
 Module      : Idris.AbsSyntax
 Description : Provides Idris' core data definitions and utility code.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
 
-{-# LANGUAGE DeriveFunctor, PatternGuards #-}
+{-# LANGUAGE DeriveFunctor, FlexibleContexts, PatternGuards #-}
+{-# OPTIONS_GHC -fwarn-unused-imports #-}
 
 module Idris.AbsSyntax(
     module Idris.AbsSyntax
@@ -19,6 +20,7 @@ import Idris.Core.Evaluate
 import Idris.Core.TT
 import Idris.Docstrings
 import Idris.IdeMode hiding (Opt(..))
+import Idris.Options
 import IRTS.CodegenCommon
 
 import System.Directory (canonicalizePath, doesFileExist)
@@ -28,6 +30,7 @@ import Control.Applicative
 import Control.Monad.State
 import Prelude hiding (Applicative, Foldable, Traversable, (<$>))
 
+import Data.Char
 import Data.Either
 import Data.List hiding (insert, union)
 import qualified Data.Map as M
@@ -38,7 +41,6 @@ import System.IO.Error (tryIOError)
 
 import Data.Generics.Uniplate.Data (descend, descendM)
 
-import Debug.Trace
 import Util.DynamicLinker
 import Util.Pretty
 import Util.System
@@ -57,19 +59,19 @@ getObjectFiles :: Codegen -> Idris [FilePath]
 getObjectFiles tgt = do i <- getIState; return (forCodegen tgt $ idris_objs i)
 
 addObjectFile :: Codegen -> FilePath -> Idris ()
-addObjectFile tgt f = do i <- getIState; putIState $ i { idris_objs = nub $ (tgt, f) : idris_objs i }
+addObjectFile tgt f = do i <- getIState; putIState $ i { idris_objs = nub $ idris_objs i ++ [(tgt, f)] }
 
 getLibs :: Codegen -> Idris [String]
 getLibs tgt = do i <- getIState; return (forCodegen tgt $ idris_libs i)
 
 addLib :: Codegen -> String -> Idris ()
-addLib tgt f = do i <- getIState; putIState $ i { idris_libs = nub $ (tgt, f) : idris_libs i }
+addLib tgt f = do i <- getIState; putIState $ i { idris_libs = nub $ idris_libs i ++ [(tgt, f)] }
 
 getFlags :: Codegen -> Idris [String]
 getFlags tgt = do i <- getIState; return (forCodegen tgt $ idris_cgflags i)
 
 addFlag :: Codegen -> String -> Idris ()
-addFlag tgt f = do i <- getIState; putIState $ i { idris_cgflags = nub $ (tgt, f) : idris_cgflags i }
+addFlag tgt f = do i <- getIState; putIState $ i { idris_cgflags = nub $ idris_cgflags i ++ [(tgt, f)] }
 
 addDyLib :: [String] -> Idris (Either DynamicLib String)
 addDyLib libs = do i <- getIState
@@ -141,6 +143,12 @@ addLangExt e = do i <- getIState
                   putIState $ i {
                     idris_language_extensions = e : idris_language_extensions i
                   }
+
+dropLangExt :: LanguageExt -> Idris ()
+dropLangExt e = do i <- getIState
+                   putIState $ i {
+                     idris_language_extensions = idris_language_extensions i \\ [e]
+                   }
 
 -- | Transforms are organised by the function being applied on the lhs
 -- of the transform, to make looking up appropriate transforms quicker
@@ -596,7 +604,7 @@ getHdrs :: Codegen -> Idris [String]
 getHdrs tgt = do i <- getIState; return (forCodegen tgt $ idris_hdrs i)
 
 getImported ::  Idris [(FilePath, Bool)]
-getImported = do i <- getIState; return (idris_imported i)
+getImported = idris_imported `fmap` getIState
 
 setErrSpan :: FC -> Idris ()
 setErrSpan x = do i <- getIState;
@@ -1107,6 +1115,14 @@ allImportDirs = do i <- getIState
                    let optdirs = opt_importdirs (idris_options i)
                    return ("." : reverse optdirs)
 
+-- Like allImportDirs but the dirs that are a prefix of
+-- the files path first. This makes it look in the current
+-- package first.
+rankedImportDirs :: FilePath -> Idris [FilePath]
+rankedImportDirs fp = do ids <- allImportDirs
+                         let (prefixes, rest) = partition (`isPrefixOf`fp) ids
+                         return $ prefixes ++ rest
+
 addSourceDir :: FilePath -> Idris ()
 addSourceDir fp = do i <- getIState
                      let opts = idris_options i
@@ -1275,11 +1291,11 @@ expandParams dec ps ns infs tm = en 0 tm
                = let n' = mkShadow n in -- TODO THINK SHADOWING TacImp?
                      PPi (enTacImp 0 p) n' nfc (en 0 t) (en 0 (shadow n n' s))
        | otherwise = PPi (enTacImp 0 p) n nfc (en 0 t) (en 0 s)
-    en 0 (PLet fc n nfc ty v s)
+    en 0 (PLet fc rc n nfc ty v s)
        | n `elem` (map fst ps ++ ns)
                = let n' = mkShadow n in
-                     PLet fc n' nfc (en 0 ty) (en 0 v) (en 0 (shadow n n' s))
-       | otherwise = PLet fc n nfc (en 0 ty) (en 0 v) (en 0 s)
+                     PLet fc rc n' nfc (en 0 ty) (en 0 v) (en 0 (shadow n n' s))
+       | otherwise = PLet fc rc n nfc (en 0 ty) (en 0 v) (en 0 s)
     -- FIXME: Should only do this in a type signature!
     en 0 (PDPair f hls p (PRef f' fcs n) t r)
        | n `elem` (map fst ps ++ ns) && t /= Placeholder
@@ -1468,28 +1484,7 @@ expandImplementationScope ist dec ps ns d = d
 -- * if there's a function type, next (2)
 -- * finally, everything else (3)
 getPriority :: IState -> PTerm -> Int
-getPriority i tm = 1 -- pri tm
-  where
-    pri (PRef _ _ n) =
-        case lookupP n (tt_ctxt i) of
-            ((P (DCon _ _ _) _ _):_) -> 1
-            ((P (TCon _ _) _ _):_) -> 1
-            ((P Ref _ _):_) -> 1
-            [] -> 0 -- must be locally bound, if it's not an error...
-    pri (PPi _ _ _ x y) = max 5 (max (pri x) (pri y))
-    pri (PTrue _ _) = 0
-    pri (PRewrite _ _ l r _) = max 1 (max (pri l) (pri r))
-    pri (PApp _ f as) = max 1 (max (pri f) (foldr (max . pri . getTm) 0 as))
-    pri (PAppBind _ f as) = max 1 (max (pri f) (foldr (max . pri . getTm) 0 as))
-    pri (PCase _ f as) = max 1 (max (pri f) (foldr (max . pri . snd) 0 as))
-    pri (PTyped l r) = pri l
-    pri (PPair _ _ _ l r) = max 1 (max (pri l) (pri r))
-    pri (PDPair _ _ _ l t r) = max 1 (max (pri l) (max (pri t) (pri r)))
-    pri (PAlternative _ a as) = maximum (map pri as)
-    pri (PConstant _ _) = 0
-    pri Placeholder = 1
-    pri _ = 3
-
+getPriority i tm = 1
 
 addStatics :: Name -> Term -> PTerm -> Idris ()
 addStatics n tm ptm =
@@ -1864,6 +1859,8 @@ addImpl' :: Bool -> [Name] -> [Name] -> [Name] -> IState -> PTerm -> PTerm
 addImpl' inpat env infns imp_meths ist ptm
    = ai inpat False (zip env (repeat Nothing)) [] (mkUniqueNames env [] ptm)
   where
+    allowcap = AllowCapitalizedPatternVariables `elem` opt_cmdline (idris_options ist)
+
     topname = case ptm of
                    PRef _ _ n -> n
                    PApp _ (PRef _ _ n) _ -> n
@@ -1872,9 +1869,9 @@ addImpl' inpat env infns imp_meths ist ptm
     ai :: Bool -> Bool -> [(Name, Maybe PTerm)] -> [[T.Text]] -> PTerm -> PTerm
     ai inpat qq env ds (PRef fc fcs f)
         | f `elem` infns = PInferRef fc fcs f
-        | not (f `elem` map fst env) = handleErr $ aiFn topname inpat inpat qq imp_meths ist fc f fc ds []
+        | not (f `elem` map fst env) = handleErr $ aiFn topname allowcap inpat inpat qq imp_meths ist fc f fc ds []
     ai inpat qq env ds (PHidden (PRef fc hl f))
-        | not (f `elem` map fst env) = PHidden (handleErr $ aiFn topname inpat False qq imp_meths ist fc f fc ds [])
+        | not (f `elem` map fst env) = PHidden (handleErr $ aiFn topname allowcap inpat False qq imp_meths ist fc f fc ds [])
     ai inpat qq env ds (PRewrite fc by l r g)
        = let l' = ai inpat qq env ds l
              r' = ai inpat qq env ds r
@@ -1904,7 +1901,7 @@ addImpl' inpat env infns imp_meths ist ptm
         | f `elem` infns = ai inpat qq env ds (PApp fc (PInferRef ffc hl f) as)
         | not (f `elem` map fst env)
               = let as' = map (fmap (ai inpat qq env ds)) as in
-                    handleErr $ aiFn topname inpat False qq imp_meths ist fc f ffc ds as'
+                    handleErr $ aiFn topname allowcap inpat False qq imp_meths ist fc f ffc ds as'
         | Just (Just ty) <- lookup f env =
              let as' = map (fmap (ai inpat qq env ds)) as
                  arity = getPArity ty in
@@ -1953,13 +1950,13 @@ addImpl' inpat env infns imp_meths ist ptm
              else let ty' = ai inpat qq env ds ty
                       sc' = ai inpat qq ((n, Just ty):env) ds sc in
                       PLam fc n nfc ty' sc'
-    ai inpat qq env ds (PLet fc n nfc ty val sc)
+    ai inpat qq env ds (PLet fc rc n nfc ty val sc)
       = if canBeDConName n (tt_ctxt ist)
            then ai inpat qq env ds (PCase fc val [(PRef fc [] n, sc)])
            else let ty' = ai inpat qq env ds ty
                     val' = ai inpat qq env ds val
                     sc' = ai inpat qq ((n, Just ty):env) ds sc in
-                    PLet fc n nfc ty' val' sc'
+                    PLet fc rc n nfc ty' val' sc'
     ai inpat qq env ds (PPi p n nfc ty sc)
       = let ty' = ai inpat qq env ds ty
             env' = if n `elem` imp_meths then env
@@ -1989,24 +1986,31 @@ addImpl' inpat env infns imp_meths ist ptm
 -- if in a pattern, and there are no arguments, and there's no possible
 -- names with zero explicit arguments, don't add implicits.
 
-aiFn :: Name -> Bool -> Bool -> Bool
+aiFn :: Name -> Bool -- ^ Allow capitalization of pattern variables
+     -> Bool -> Bool -> Bool
      -> [Name]
      -> IState -> FC
      -> Name -- ^ function being applied
      -> FC -> [[T.Text]]
      -> [PArg] -- ^ initial arguments (if in a pattern)
      -> Either Err PTerm
-aiFn topname inpat True qq imp_meths ist fc f ffc ds []
+aiFn topname allowcap inpat True qq imp_meths ist fc f ffc ds []
   | inpat && implicitable f && unqualified f = Right $ PPatvar ffc f
   | otherwise
      = case lookupDef f (tt_ctxt ist) of
-        [] -> Right $ PPatvar ffc f
+        [] -> if allowcap
+                then Right $ PPatvar ffc f
+                else case f of
+                       MN _ _ -> Right $ PPatvar ffc f
+                       UN xs | isDigit (T.head xs) -- for partial evaluation vars
+                                 -> Right $ PPatvar ffc f
+                       _ -> Left $ Msg $ show f ++ " is not a valid name for a pattern variable"
         alts -> let ialts = lookupCtxtName f (idris_implicits ist) in
                     -- trace (show f ++ " " ++ show (fc, any (all imp) ialts, ialts, any constructor alts)) $
                     if (not (vname f) || tcname f
                            || any (conCaf (tt_ctxt ist)) ialts)
 --                            any constructor alts || any allImp ialts))
-                        then aiFn topname inpat False qq imp_meths ist fc f ffc ds [] -- use it as a constructor
+                        then aiFn topname allowcap inpat False qq imp_meths ist fc f ffc ds [] -- use it as a constructor
                         else Right $ PPatvar ffc f
     where imp (PExp _ _ _ _) = False
           imp _ = True
@@ -2016,17 +2020,14 @@ aiFn topname inpat True qq imp_meths ist fc f ffc ds []
           unqualified (NS _ _) = False
           unqualified _ = True
 
-          constructor (TyDecl (DCon _ _ _) _) = True
-          constructor _ = False
-
           conCaf ctxt (n, cia) = (isDConName n ctxt || (qq && isTConName n ctxt)) && allImp cia
 
           vname (UN n) = True -- non qualified
           vname _ = False
 
-aiFn topname inpat expat qq imp_meths ist fc f ffc ds as
+aiFn topname allowcap inpat expat qq imp_meths ist fc f ffc ds as
     | f `elem` primNames = Right $ PApp fc (PRef ffc [ffc] f) as
-aiFn topname inpat expat qq imp_meths ist fc f ffc ds as
+aiFn topname allowcap inpat expat qq imp_meths ist fc f ffc ds as
           -- This is where namespaces get resolved by adding PAlternative
      = do let ns = lookupCtxtName f (idris_implicits ist)
           let nh = filter (\(n, _) -> notHidden n) ns
@@ -2205,12 +2206,8 @@ stripUnmatchable i (PApp fc fn args) = PApp fc fn (fmap (fmap su) args) where
        -- check will not necessarily fully resolve constructor names,
        -- and these bare names will otherwise get in the way of
        -- impossbility checking.
-       | -- Just fn <- getFn f,
-         canBeDConName fn ctxt
+       | canBeDConName fn ctxt
           = PApp fc f (fmap (fmap su) args)
-      where getFn (PRef _ _ fn) = Just fn
-            getFn (PApp _ f args) = getFn f
-            getFn _ = Nothing
     su (PApp fc f args)
           = PHidden (PApp fc f args)
     su (PAlternative ms b alts)
@@ -2266,8 +2263,6 @@ findStatics ist tm = let (ns, ss) = fs tm
             | otherwise = let (ns, ss) = fs sc in
                               (ns, ss)
         fs _ = ([], [])
-
-        inOne n ns = length (filter id (map (elem n) ns)) == 1
 
         pos ns ss (PPi p n fc t sc)
             | elem n ss = do sc' <- pos ns ss sc
@@ -2378,10 +2373,11 @@ matchClause' names i x y = checkRpts $ match (fullApp x) (fullApp y) where
     match (PLam _ _ _ t s) (PLam _ _ _ t' s') = do mt <- match' t t'
                                                    ms <- match' s s'
                                                    return (mt ++ ms)
-    match (PLet _ _ _ t ty s) (PLet _ _ _ t' ty' s') = do mt <- match' t t'
-                                                          mty <- match' ty ty'
-                                                          ms <- match' s s'
-                                                          return (mt ++ mty ++ ms)
+    match (PLet _ _ _ _ t ty s) (PLet _ _ _ _ t' ty' s')
+         = do mt <- match' t t'
+              mty <- match' ty ty'
+              ms <- match' s s'
+              return (mt ++ mty ++ ms)
     match (PHidden x) (PHidden y)
           | RightOK xs <- match x y = return xs -- to collect variables
           | otherwise = return [] -- Otherwise hidden things are unmatchable
@@ -2434,8 +2430,8 @@ substMatchesShadow nmap shs t = sm shs t where
                    PPi p x' fc (sm (x':xs) (substMatch x (PRef emptyFC [] x') t))
                                (sm (x':xs) (substMatch x (PRef emptyFC [] x') sc))
          | otherwise = PPi p x fc (sm xs t) (sm (x : xs) sc)
-    sm xs (PLet fc x xfc val t sc)
-         = PLet fc x xfc (sm xs val) (sm xs t) (sm xs sc)
+    sm xs (PLet fc rc x xfc val t sc)
+         = PLet fc rc x xfc (sm xs val) (sm xs t) (sm xs sc)
     sm xs (PApp f x as) = fullApp $ PApp f (sm xs x) (map (fmap (sm xs)) as)
     sm xs (PCase f x as) = PCase f (sm xs x) (map (pmap (sm xs)) as)
     sm xs (PIfThenElse fc c t f) = PIfThenElse fc (sm xs c) (sm xs t) (sm xs f)
@@ -2462,8 +2458,8 @@ shadow n n' t = sm 0 t where
                             | otherwise = PLam fc x xfc (sm 0 t) sc
     sm 0 (PPi p x fc t sc) | n /= x = PPi p x fc (sm 0 t) (sm 0 sc)
                          | otherwise = PPi p x fc (sm 0 t) sc
-    sm 0 (PLet fc x xfc t v sc) | n /= x = PLet fc x xfc (sm 0 t) (sm 0 v) (sm 0 sc)
-                              | otherwise = PLet fc x xfc (sm 0 t) (sm 0 v) sc
+    sm 0 (PLet fc rc x xfc t v sc) | n /= x = PLet fc rc x xfc (sm 0 t) (sm 0 v) (sm 0 sc)
+                              | otherwise = PLet fc rc x xfc (sm 0 t) (sm 0 v) sc
     sm 0 (PApp f x as) = PApp f (sm 0 x) (map (fmap (sm 0)) as)
     sm 0 (PAppBind f x as) = PAppBind f (sm 0 x) (map (fmap (sm 0)) as)
     sm 0 (PCase f x as) = PCase f (sm 0 x) (map (pmap (sm 0)) as)
@@ -2540,7 +2536,7 @@ mkUniqueNames env shadows tm
               ty' <- mkUniq 0 nmap ty
               sc'' <- mkUniq 0 nmap' sc'
               return $! PPi p n' fc ty' sc''
-  mkUniq 0 nmap (PLet fc n nfc ty val sc)
+  mkUniq 0 nmap (PLet fc rc n nfc ty val sc)
          = do env <- get
               (n', sc') <-
                     if n `S.member` env
@@ -2552,7 +2548,7 @@ mkUniqueNames env shadows tm
               let nmap' = M.insert n n' nmap
               ty' <- mkUniq 0 nmap ty; val' <- mkUniq 0 nmap val
               sc'' <- mkUniq 0 nmap' sc'
-              return $! PLet fc n' nfc ty' val' sc''
+              return $! PLet fc rc n' nfc ty' val' sc''
   mkUniq 0 nmap (PApp fc t args)
          = do t' <- mkUniq 0 nmap t
               args' <- mapM (mkUniqA 0 nmap) args
@@ -2614,126 +2610,4 @@ mkUniqueNames env shadows tm
 
   mkUniq ql nmap tm = descendM (mkUniq ql nmap) tm
 
-getFile :: Opt -> Maybe String
-getFile (Filename s) = Just s
-getFile _ = Nothing
 
-getBC :: Opt -> Maybe String
-getBC (BCAsm s) = Just s
-getBC _ = Nothing
-
-getOutput :: Opt -> Maybe String
-getOutput (Output s) = Just s
-getOutput _ = Nothing
-
-getIBCSubDir :: Opt -> Maybe String
-getIBCSubDir (IBCSubDir s) = Just s
-getIBCSubDir _ = Nothing
-
-getImportDir :: Opt -> Maybe String
-getImportDir (ImportDir s) = Just s
-getImportDir _ = Nothing
-
-getSourceDir :: Opt -> Maybe String
-getSourceDir (SourceDir s) = Just s
-getSourceDir _ = Nothing
-
-getPkgDir :: Opt -> Maybe String
-getPkgDir (Pkg s) = Just s
-getPkgDir _ = Nothing
-
-getPkg :: Opt -> Maybe (Bool, String)
-getPkg (PkgBuild s)   = Just (False, s)
-getPkg (PkgInstall s) = Just (True, s)
-getPkg _ = Nothing
-
-getPkgClean :: Opt -> Maybe String
-getPkgClean (PkgClean s) = Just s
-getPkgClean _ = Nothing
-
-getPkgREPL :: Opt -> Maybe String
-getPkgREPL (PkgREPL s) = Just s
-getPkgREPL _ = Nothing
-
-getPkgCheck :: Opt -> Maybe String
-getPkgCheck (PkgCheck s) = Just s
-getPkgCheck _              = Nothing
-
--- | Returns None if given an Opt which is not PkgMkDoc
---   Otherwise returns Just x, where x is the contents of PkgMkDoc
-getPkgMkDoc :: Opt                  -- ^ Opt to extract
-            -> Maybe (Bool, String) -- ^ Result
-getPkgMkDoc (PkgDocBuild  str)  = Just (False,str)
-getPkgMkDoc (PkgDocInstall str) = Just (True,str)
-getPkgMkDoc _              = Nothing
-
-getPkgTest :: Opt          -- ^ the option to extract
-           -> Maybe String -- ^ the package file to test
-getPkgTest (PkgTest f) = Just f
-getPkgTest _ = Nothing
-
-getCodegen :: Opt -> Maybe Codegen
-getCodegen (UseCodegen x) = Just x
-getCodegen _ = Nothing
-
-getCodegenArgs :: Opt -> Maybe String
-getCodegenArgs (CodegenArgs args) = Just args
-getCodegenArgs _ = Nothing
-
-getConsoleWidth :: Opt -> Maybe ConsoleWidth
-getConsoleWidth (UseConsoleWidth x) = Just x
-getConsoleWidth _ = Nothing
-
-getExecScript :: Opt -> Maybe String
-getExecScript (InterpretScript expr) = Just expr
-getExecScript _ = Nothing
-
-getPkgIndex :: Opt -> Maybe FilePath
-getPkgIndex (PkgIndex file) = Just file
-getPkgIndex _ = Nothing
-
-getEvalExpr :: Opt -> Maybe String
-getEvalExpr (EvalExpr expr) = Just expr
-getEvalExpr _ = Nothing
-
-getOutputTy :: Opt -> Maybe OutputType
-getOutputTy (OutputTy t) = Just t
-getOutputTy _ = Nothing
-
-getLanguageExt :: Opt -> Maybe LanguageExt
-getLanguageExt (Extension e) = Just e
-getLanguageExt _ = Nothing
-
-getTriple :: Opt -> Maybe String
-getTriple (TargetTriple x) = Just x
-getTriple _ = Nothing
-
-getCPU :: Opt -> Maybe String
-getCPU (TargetCPU x) = Just x
-getCPU _ = Nothing
-
-getOptLevel :: Opt -> Maybe Int
-getOptLevel (OptLevel x) = Just x
-getOptLevel _ = Nothing
-
-getOptimisation :: Opt -> Maybe (Bool,Optimisation)
-getOptimisation (AddOpt p)    = Just (True,  p)
-getOptimisation (RemoveOpt p) = Just (False, p)
-getOptimisation _             = Nothing
-
-getColour :: Opt -> Maybe Bool
-getColour (ColourREPL b) = Just b
-getColour _ = Nothing
-
-getClient :: Opt -> Maybe String
-getClient (Client x) = Just x
-getClient _ = Nothing
-
--- Get the first valid port
-getPort :: [Opt] -> Maybe REPLPort
-getPort []            = Nothing
-getPort (Port p : _ ) = Just p
-getPort (_      : xs) = getPort xs
-
-opt :: (Opt -> Maybe a) -> [Opt] -> [a]
-opt = mapMaybe

@@ -1,16 +1,17 @@
 {-|
 Module      : Idris.Apropos
 Description : Search loaded Idris code and named modules for things.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
+{-# LANGUAGE FlexibleInstances #-}
 module Idris.Apropos (apropos, aproposModules) where
 
 import Idris.AbsSyntax
 import Idris.Core.Evaluate (Def(..), ctxtAlist)
 import Idris.Core.TT (Binder(..), Const(..), Name(..), NameType(..), TT(..),
-                      Type, lookupCtxtExact, toAlist)
+                      toAlist)
 import Idris.Docstrings (DocTerm, Docstring, containsText)
 
 import Data.List (intersperse, nub, nubBy)
@@ -74,7 +75,7 @@ instance Apropos Def where
 instance Apropos (Binder (TT Name)) where
   isApropos str (Lam _ ty)    = str == T.pack "\\" || isApropos str ty
   isApropos str (Pi _ _ ty _) = str == T.pack "->" || isApropos str ty
-  isApropos str (Let ty val)  = str == T.pack "let" || isApropos str ty || isApropos str val
+  isApropos str (Let _ ty val)  = str == T.pack "let" || isApropos str ty || isApropos str val
   isApropos str (NLet ty val) = str == T.pack "let" || isApropos str ty || isApropos str val
   isApropos str _             = False -- these shouldn't occur in defined libraries
 
@@ -103,9 +104,3 @@ instance (Apropos a) => Apropos (Maybe a) where
 
 instance (Apropos a) => Apropos [a] where
   isApropos str xs = any (isApropos str) xs
-
-defType :: Def -> Type
-defType (Function t _) = t
-defType (TyDecl _ t) = t
-defType (Operator t _ _) = t
-defType (CaseOp _ t _ _ _ _) = t

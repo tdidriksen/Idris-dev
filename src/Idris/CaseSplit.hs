@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.CaseSplit
 Description : Module to provide case split functionality.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -17,7 +17,7 @@ Always take the "more specific" argument when there is a discrepancy, i.e.
 names over '_', patterns over names, etc.
 -}
 
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE FlexibleContexts, PatternGuards #-}
 
 module Idris.CaseSplit(
     splitOnLine, replaceSplits

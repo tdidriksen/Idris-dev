@@ -7,11 +7,12 @@ import Prelude.Bool
 %access public export
 
 -- Numerical Operator Precedence
-infixl 5 ==, /=
-infixl 6 <, <=, >, >=
-infixl 7 <<, >>
-infixl 8 +,-
-infixl 9 *,/
+infix 6 ==, /=, <, <=, >, >=
+infixl 7 <<, >> -- unused
+infixl 8 +, -
+infixl 9 *, /
+
+infixl 9 `div`, `mod`
 
 -- ------------------------------------------------------------- [ Boolean Ops ]
 intToBool : Int -> Bool
@@ -65,7 +66,7 @@ Eq Bool where
 
 
 -- ---------------------------------------------------------- [ Ordering Interface ]
-%elim data Ordering = LT | EQ | GT
+data Ordering = LT | EQ | GT
 
 Eq Ordering where
     LT == LT = True
@@ -204,22 +205,33 @@ interface Num ty => Neg ty where
     ||| The underlying of unary minus. `-5` desugars to `negate (fromInteger 5)`.
     negate : ty -> ty
     (-) : ty -> ty -> ty
-    ||| Absolute value
-    abs : ty -> ty
+
 
 Neg Integer where
     negate x = prim__subBigInt 0 x
     (-) = prim__subBigInt
-    abs x = if x < 0 then -x else x
 
 Neg Int where
     negate x = prim__subInt 0 x
     (-) = prim__subInt
-    abs x = if x < (prim__truncBigInt_Int 0) then -x else x
 
 Neg Double where
     negate x = prim__negFloat x
     (-) = prim__subFloat
+
+-- ---------------------------------------------------- [ Absolute Value Interface ]
+||| Numbers for which the absolute value is defined should implement `Abs`.
+interface Num ty => Abs ty where
+    ||| Absolute value
+    abs : ty -> ty
+
+Abs Integer where
+    abs x = if x < 0 then -x else x
+
+Abs Int where
+    abs x = if x < (prim__truncBigInt_Int 0) then -x else x
+
+Abs Double where
     abs x = if x < (prim__toFloatBigInt 0) then -x else x
 
 -- ------------------------------------------------------------

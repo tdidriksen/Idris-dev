@@ -168,7 +168,7 @@ The signature of type constructors may use dependent types
 Records
 ~~~~~~~
 
-There is a special syntax for data types with one constructors and
+There is a special syntax for data types with one constructor and
 multiple fields.
 
 .. code:: idris
@@ -219,11 +219,11 @@ This is syntactic sugar for the following, which is usually preferred:
   data Stream : Type -> Type where
     (::) a -> Inf (Stream a) -> Stream a
 
-Every occurence of the the defined type in a constructor argument will be
+Every occurence of the defined type in a constructor argument will be
 wrapped in the ``Inf`` type constructor. This has the effect of delaying the
 evaluation of the second argument when the data constructor is applied.
 An ``Inf`` argument is constructed using ``Delay`` (which Idris will insert
-implicitly) adn evaluated using ``Force`` (again inserted implicitly).
+implicitly) and evaluated using ``Force`` (again inserted implicitly).
 
 Furthermore, recursive calls under a ``Delay`` must be guarded by a constructor
 to pass the totality checker.
@@ -387,9 +387,15 @@ Totality
 ::
 
     total
-    implicit
     partial
     covering
+
+Implicit Coercion
+^^^^^^^^^^^^^^^^^
+
+::
+
+    implicit
 
 Options
 ^^^^^^^
@@ -401,7 +407,6 @@ Options
     %no_implicit
     %error_handler
     %error_reverse
-    %assert_total
     %reflection
     %specialise [<name list>]
 

@@ -1,11 +1,11 @@
 {-|
 Module      : IRTS.Portable
 Description : Serialise Idris' IR to JSON.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleInstances, OverloadedStrings, TypeSynonymInstances #-}
 module IRTS.Portable (writePortable) where
 
 import Idris.Core.CaseTree
@@ -14,12 +14,10 @@ import Idris.Core.TT
 import IRTS.Bytecode
 import IRTS.CodegenCommon
 import IRTS.Defunctionalise
-import IRTS.Lang
 import IRTS.Simplified
 
 import Data.Aeson
 import qualified Data.ByteString.Lazy as B
-import qualified Data.Text as T
 import System.IO
 
 data CodegenFile = CGFile {
@@ -186,6 +184,7 @@ instance ToJSON PrimFn where
     toJSON LFASin = object ["LFASin" .= Null]
     toJSON LFACos = object ["LFACos" .= Null]
     toJSON LFATan = object ["LFATan" .= Null]
+    toJSON LFATan2 = object ["LFATan2" .= Null]
     toJSON LFSqrt = object ["LFSqrt" .= Null]
     toJSON LFFloor = object ["LFFloor" .= Null]
     toJSON LFCeil = object ["LFCeil" .= Null]
@@ -322,7 +321,7 @@ instance (ToJSON t) => ToJSON (AppStatus t) where
 instance (ToJSON t) => ToJSON (Binder t) where
     toJSON (Lam rc bty) = object ["Lam" .= (rc, bty)]
     toJSON (Pi c i t k) = object ["Pi" .= (c, i, t, k)]
-    toJSON (Let t v) = object ["Let" .= (t, v)]
+    toJSON (Let rc t v) = object ["Let" .= (t, v)]
     toJSON (NLet t v) = object ["NLet" .= (t, v)]
     toJSON (Hole t) = object ["Hole" .= (t)]
     toJSON (GHole l ns t) = object ["GHole" .= (l, ns, t)]

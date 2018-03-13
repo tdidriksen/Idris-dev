@@ -3,6 +3,8 @@ module Idris.REPL.Commands where
 import Idris.AbsSyntaxTree
 import Idris.Colours
 import Idris.Core.TT
+import Idris.Imports
+import Idris.Options
 
 -- | REPL commands
 data Command = Quit
@@ -42,7 +44,7 @@ data Command = Quit
              | DynamicLink FilePath
              | ListDynamic
              | Pattelab PTerm
-             | Search [String] PTerm
+             | Search [PkgName] PTerm
              | CaseSplitAt Bool Int Name
              | AddClauseFrom Bool Int Name
              | AddProofClauseFrom Bool Int Name
@@ -64,11 +66,12 @@ data Command = Quit
              | ListErrorHandlers
              | SetConsoleWidth ConsoleWidth
              | SetPrinterDepth (Maybe Int)
-             | Apropos [String] String
+             | Apropos [PkgName] String
              | WhoCalls Name
              | CallsWho Name
              | Browse [String]
              | MakeDoc String -- IdrisDoc
+             | ShowVersion
              | Warranty
              | PrintDef Name
              | PPrint OutputFmt Int PTerm

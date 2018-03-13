@@ -11,7 +11,6 @@ infixr 7 ::
 ||| Vectors: Generic lists with explicit length in the type
 ||| @ len the length of the list
 ||| @ elem the type of elements
-%elim
 data Vect : (len : Nat) -> (elem : Type) -> Type where
   ||| Empty vector
   Nil  : Vect Z elem
@@ -326,9 +325,19 @@ foldl1 f (x::xs) = foldl f x xs
 -- Scans
 --------------------------------------------------------------------------------
 
+||| The scanl function is similar to foldl, but returns all the intermediate
+||| accumulator states in the form of a vector.
 scanl : (res -> elem -> res) -> res -> Vect len elem -> Vect (S len) res
 scanl f q []      = [q]
 scanl f q (x::xs) = q :: scanl f (f q x) xs
+
+||| The scanl1 function is a variant of scanl that doesn't require an explicit
+||| starting value.
+||| It assumes the first element of the vector to be the starting value and then
+||| starts the fold with the element following it.
+scanl1 : (elem -> elem -> elem) -> Vect len elem -> Vect len elem
+scanl1 f [] = []
+scanl1 f (x::xs) = scanl f x xs
 
 --------------------------------------------------------------------------------
 -- Membership tests
@@ -633,6 +642,14 @@ replaceByElem (x::xs) (There xinxs) y = x :: replaceByElem xs xinxs y
 mapElem : {xs : Vect k t} -> {f : t -> u} -> Elem x xs -> Elem (f x) (map f xs)
 mapElem Here = Here
 mapElem (There e) = There (mapElem e)
+
+||| Remove the element at the given position.
+|||
+||| @xs The vector to be removed from
+||| @p A proof that the element to be removed is in the vector
+dropElem : (xs : Vect (S k) t) -> (p : Elem x xs) -> Vect k t
+dropElem (x :: ys) Here = ys
+dropElem {k = (S k)} (x :: ys) (There later) = x :: dropElem ys later
 
 -- Some convenience functions for testing lengths
 

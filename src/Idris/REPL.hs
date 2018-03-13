@@ -5,7 +5,9 @@ License     : BSD3
 Maintainer  : The Idris Community.
 -}
 
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE FlexibleContexts, PatternGuards #-}
+-- FIXME: {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
+{-# OPTIONS_GHC -fwarn-unused-imports #-}
 
 module Idris.REPL
   ( idemodeStart
@@ -49,7 +51,6 @@ import Idris.Core.Execute (execute)
 import Idris.Core.TT
 import Idris.Core.Unify
 import Idris.Core.WHNF
-import Idris.Coverage
 import Idris.DataOpts
 import Idris.Delaborate
 import Idris.Docs
@@ -68,6 +69,7 @@ import Idris.Info
 import Idris.Inliner
 import Idris.Interactive
 import Idris.ModeCommon
+import Idris.Options
 import Idris.Output
 import Idris.Parser hiding (indent)
 import Idris.Prover
@@ -77,6 +79,7 @@ import Idris.REPL.Parser
 import Idris.Termination
 import Idris.TypeSearch (searchByType)
 import Idris.WhoCalls
+import IRTS.CodegenCommon
 import IRTS.Compiler
 import Network
 import Prelude hiding (id, (.), (<$>))
@@ -90,14 +93,11 @@ import System.FSNotify (watchDir, withManager)
 import System.FSNotify.Devel (allEvents, doAllEvents)
 import System.IO
 import System.Process
-import Text.Trifecta.Result (ErrInfo(..), Result(..))
 import Util.DynamicLinker
 import Util.Net (listenOnLocalhost, listenOnLocalhostAnyPort)
 import Util.Pretty hiding ((</>))
 import Util.System
 import Version_idris (gitHash)
-
-import Debug.Trace
 
 -- | Run the REPL
 repl :: IState -- ^ The initial state
@@ -176,9 +176,9 @@ processNetCmd :: IState -> IState -> Handle -> FilePath -> String ->
                  IO (IState, FilePath)
 processNetCmd orig i h fn cmd
     = do res <- case parseCmd i "(net)" cmd of
-                  Failure (ErrInfo err _) -> return (Left (Msg " invalid command"))
-                  Success (Right c) -> runExceptT $ evalStateT (processNet fn c) i
-                  Success (Left err) -> return (Left (Msg err))
+                  Left err -> return (Left (Msg " invalid command"))
+                  Right (Right c) -> runExceptT $ evalStateT (processNet fn c) i
+                  Right (Left err) -> return (Left (Msg err))
          case res of
               Right x -> return x
               Left err -> do hPutStrLn h (show err)
@@ -294,8 +294,8 @@ runIdeModeCommand h id orig fn mods (IdeMode.Interpret cmd) =
   do c <- colourise
      i <- getIState
      case parseCmd i "(input)" cmd of
-       Failure (ErrInfo err _) -> iPrintError $ show (fixColour False err)
-       Success (Right (Prove mode n')) ->
+       Left err -> iPrintError . show . fixColour False . parseErrorDoc $ err
+       Right (Right (Prove mode n')) ->
          idrisCatch
            (do process fn (Prove mode n')
                isetPrompt (mkPrompt mods)
@@ -314,10 +314,10 @@ runIdeModeCommand h id orig fn mods (IdeMode.Interpret cmd) =
                            IdeMode.convSExp "abandon-proof" "Abandoned" n
                        _ -> return ()
                      iRenderError $ pprintErr ist e)
-       Success (Right cmd) -> idrisCatch
+       Right (Right cmd) -> idrisCatch
                         (idemodeProcess fn cmd)
                         (\e -> getIState >>= iRenderError . flip pprintErr e)
-       Success (Left err) -> iPrintError err
+       Right (Left err) -> iPrintError err
 runIdeModeCommand h id orig fn mods (IdeMode.REPLCompletions str) =
   do (unused, compls) <- replCompletion (reverse str, "")
      let good = IdeMode.SexpList [IdeMode.SymbolAtom "ok",
@@ -352,8 +352,8 @@ runIdeModeCommand h id orig fn mods (IdeMode.TypeOf name) =
                  (Check (PRef (FC "(idemode)" (0,0) (0,0)) [] n))
 runIdeModeCommand h id orig fn mods (IdeMode.DocsFor name w) =
   case parseConst orig name of
-    Success c -> process "(idemode)" (DocStr (Right c) (howMuch w))
-    Failure _ ->
+    Right c -> process "(idemode)" (DocStr (Right c) (howMuch w))
+    Left _ ->
      case splitName name of
        Left err -> iPrintError err
        Right n -> process "(idemode)" (DocStr (Left n) (howMuch w))
@@ -402,7 +402,6 @@ runIdeModeCommand h id orig fn mods (IdeMode.Metavariables cols) =
                          | (n, (_, i, _, _, _)) <- idris_metavars ist
                          , not (n `elem` primDefs)
                          ]
-     let ppo = ppOptionIst ist
      -- splitMvs is a list of pairs of names and their split types
      let splitMvs = [ (n, (premises, concl, tm))
                     | (n, i, ty) <- mvTys ist mvs
@@ -420,14 +419,11 @@ runIdeModeCommand h id orig fn mods (IdeMode.Metavariables cols) =
      runIO . hPutStrLn h $
        IdeMode.convSExp "return" (IdeMode.SymbolAtom "ok", mvOutput) id
   where mapPair f g xs = zip (map (f . fst) xs) (map (g . snd) xs)
-        firstOfThree (x, y, z) = x
-        mapThird f xs = map (\(x, y, z) -> (x, y, f z)) xs
-
         -- | Split a function type into a pair of premises, conclusion.
         -- Each maintains both the original and delaborated versions.
         splitPi :: IState -> Int -> Type -> ([(Name, Type, PTerm)], Type, PTerm)
         splitPi ist i (Bind n (Pi _ _ t _) rest) | i > 0 =
-          let (hs, c, pc) = splitPi ist (i - 1) rest in
+          let (hs, c, _) = splitPi ist (i - 1) rest in
             ((n, t, delabTy' ist [] [] t False False True):hs,
              c, delabTy' ist [] [] c False False True)
         splitPi ist i tm = ([], tm, delabTy' ist [] [] tm False False True)
@@ -605,6 +601,7 @@ splitName s = case reverse $ splitOn "." s of
         unparen str = str
 
 idemodeProcess :: FilePath -> Command -> Idris ()
+idemodeProcess fn ShowVersion = process fn ShowVersion
 idemodeProcess fn Warranty = process fn Warranty
 idemodeProcess fn Help = process fn Help
 idemodeProcess fn (RunShellCommand cmd) =
@@ -728,13 +725,11 @@ processInput cmd orig inputs efile
          let opts = idris_options i
          let quiet = opt_quiet opts
          let fn = fromMaybe "" (listToMaybe inputs)
-         c <- colourise
          case parseCmd i "(input)" cmd of
-            Failure (ErrInfo err _) ->   do iputStrLn $ show (fixColour c err)
-                                            return (Just inputs)
-            Success (Right Reload) ->
+            Left err -> Just inputs <$ emitWarning err
+            Right (Right Reload) ->
                 reload orig inputs
-            Success (Right Watch) ->
+            Right (Right Watch) ->
                 if null inputs then
                   do iputStrLn "No loaded files to watch."
                      return (Just inputs)
@@ -742,7 +737,7 @@ processInput cmd orig inputs efile
                   do iputStrLn efile
                      iputStrLn $ "Watching for .idr changes in " ++ show inputs ++ ", press enter to cancel."
                      watch orig inputs
-            Success (Right (Load f toline)) ->
+            Right (Right (Load f toline)) ->
                 -- The $!! here prevents a space leak on reloading.
                 -- This isn't a solution - but it's a temporary stopgap.
                 -- See issue #2386
@@ -752,22 +747,20 @@ processInput cmd orig inputs efile
                    clearErr
                    mod <- loadInputs [f] toline
                    return (Just mod)
-            Success (Right (ModImport f)) ->
+            Right (Right (ModImport f)) ->
                 do clearErr
                    fmod <- loadModule f (IBC_REPL True)
                    return (Just (inputs ++ maybe [] (:[]) fmod))
-            Success (Right Edit) -> do -- takeMVar stvar
+            Right (Right Edit) -> do -- takeMVar stvar
                                edit efile orig
                                return (Just inputs)
-            Success (Right Proofs) -> do proofs orig
-                                         return (Just inputs)
-            Success (Right Quit) -> do when (not quiet) (iputStrLn "Bye bye")
-                                       return Nothing
-            Success (Right cmd ) -> do idrisCatch (process fn cmd)
-                                          (\e -> do msg <- showErr e ; iputStrLn msg)
-                                       return (Just inputs)
-            Success (Left err) -> do runIO $ putStrLn err
+            Right (Right Proofs) -> Just inputs <$ proofs orig
+            Right (Right Quit) -> Nothing <$ when (not quiet) (iputStrLn "Bye bye")
+            Right (Right cmd ) -> do idrisCatch (process fn cmd)
+                                            (\e -> do msg <- showErr e ; iputStrLn msg)
                                      return (Just inputs)
+            Right (Left err) -> do runIO $ putStrLn err
+                                   return (Just inputs)
 
 resolveProof :: Name -> Idris Name
 resolveProof n'
@@ -835,6 +828,7 @@ insertScript prf (x : xs) = x : insertScript prf xs
 
 process :: FilePath -> Command -> Idris ()
 process fn Help = iPrintResult displayHelp
+process fn ShowVersion = iPrintResult getIdrisVersion
 process fn Warranty = iPrintResult warranty
 process fn (RunShellCommand cmd) = runIO $ system cmd >> return ()
 process fn (ChangeDirectory f)
@@ -980,7 +974,7 @@ process fn (Check (PRef _ _ n))
    = do ctxt <- getContext
         ist <- getIState
         let ppo = ppOptionIst ist
-        case lookupNames n ctxt of
+        case lookupVisibleNames n ctxt of
           ts@(t:_) ->
             case lookup t (idris_metavars ist) of
                 Just (_, i, _, _, _) -> iRenderResult . fmap (fancifyAnnots ist True) $
@@ -988,17 +982,21 @@ process fn (Check (PRef _ _ n))
                 Nothing -> iPrintFunTypes [] n (map (\n -> (n, pprintDelabTy ist n)) ts)
           [] -> iPrintError $ "No such variable " ++ show n
   where
+    lookupVisibleNames :: Name -> Context -> [Name]
+    lookupVisibleNames n ctxt = map fst $ lookupCtxtName n (visibleDefinitions ctxt)
+
     showMetavarInfo ppo ist n i
          = case lookupTy n (tt_ctxt ist) of
                 (ty:_) -> let ty' = normaliseC (tt_ctxt ist) [] ty in
                               putTy ppo ist i [] (delab ist (errReverse ist ty'))
     putTy :: PPOption -> IState -> Int -> [(Name, Bool)] -> PTerm -> Doc OutputAnnotation
     putTy ppo ist 0 bnd sc = putGoal ppo ist bnd sc
-    putTy ppo ist i bnd (PPi _ n _ t sc)
+    putTy ppo ist i bnd (PPi p n _ t sc)
                = let current = case n of
                                    MN _ _ -> text ""
                                    UN nm | ('_':'_':_) <- str nm -> text ""
-                                   _ -> text "  " <>
+                                   _ -> countOf (pcount p)
+                                            (LinearTypes `elem` idris_language_extensions ist) <+>
                                         bindingOf n False
                                             <+> colon
                                             <+> align (tPretty bnd ist t)
@@ -1011,6 +1009,11 @@ process fn (Check (PRef _ _ n))
                  annotate (AnnName n Nothing Nothing Nothing) (text $ show n) <+> colon <+>
                  align (tPretty bnd ist g)
 
+    -- Only display count if linear types extension is enabled
+    countOf Rig0 True = text "0"
+    countOf Rig1 True = text "1"
+    countOf _ _ = text " "
+
     tPretty bnd ist t = pprintPTerm (ppOptionIst ist) bnd [] (idris_infixes ist) t
 
 
@@ -1018,8 +1021,7 @@ process fn (Check t)
    = do (tm, ty) <- elabREPL (recinfo (fileFC "toplevel")) ERHS t
         ctxt <- getContext
         ist <- getIState
-        let ppo = ppOptionIst ist
-            ty' = if opt_evaltypes (idris_options ist)
+        let ty' = if opt_evaltypes (idris_options ist)
                      then normaliseC ctxt [] ty
                      else ty
         case tm of
@@ -1124,7 +1126,6 @@ process fn (DebugInfo n)
         when (not (null imps)) $ iputStrLn (show imps)
         let d = lookupDefAcc n False (tt_ctxt i)
         when (not (null d)) $ iputStrLn $ "Definition: " ++ (show (head d))
-        let cg = lookupCtxtName n (idris_callgraph i)
         i <- getIState
         let cg' = lookupCtxtName n (idris_callgraph i)
         sc <- checkSizeChange n
@@ -1263,8 +1264,17 @@ process fn (Execute tm)
                            ir <- compile t tmpn (Just m)
                            runIO $ generate t (fst (head (idris_imported ist))) ir
                            case idris_outputmode ist of
-                             RawOutput h -> do runIO $ rawSystem progName []
-                                               return ()
+                             RawOutput h ->
+                               do res <- runIO $ rawSystem progName []
+                                  case res of
+                                    ExitSuccess -> return ()
+                                    ExitFailure err ->
+                                      ifail $ "Compiled program " ++
+                                              if err < 0
+                                              then "was killed by signal " ++
+                                                   show (0 - err)
+                                              else "terminated with exit code " ++
+                                                   show err
                              IdeMode n h -> runIO . hPutStrLn h $
                                              IdeMode.convSExp "run-program" tmpn n)
                        (\e -> getIState >>= iRenderError . flip pprintErr e)
@@ -1283,7 +1293,8 @@ process fn (Compile codegen f)
                                return (Just m')
                        ir <- compile codegen f m
                        i <- getIState
-                       runIO $ generate codegen (fst (head (idris_imported i))) ir
+                       let ir' = ir {interfaces = iface}
+                       runIO $ generate codegen (fst (head (idris_imported i))) ir'
   where fc = fileFC "main"
 process fn (LogLvl i) = setLogLevel i
 process fn (LogCategory cs) = setLogCats cs
@@ -1368,7 +1379,7 @@ process fn (SetPrinterDepth d) = setDepth d
 process fn (Apropos pkgs a) =
   do orig <- getIState
      when (not (null pkgs)) $
-       iputStrLn $ "Searching packages: " ++ showSep ", " pkgs
+       iputStrLn $ "Searching packages: " ++ showSep ", " (map show pkgs)
      mapM_ loadPkgIndex pkgs
      ist <- getIState
      let mods = aproposModules ist (T.pack a)
@@ -1424,7 +1435,7 @@ process fn (Browse ns) =
 process fn (MakeDoc s) =
   do     istate        <- getIState
          let names      = words s
-             parse n    | Success x <- runparser (fmap fst name) istate fn n = Right x
+             parse n    | Right x <- runparser name istate fn n = Right x
              parse n    = Left n
              (bad, nss) = partitionEithers $ map parse names
          cd            <- runIO getCurrentDirectory
@@ -1454,12 +1465,6 @@ process fn (TransformInfo n)
                     ts' = showTrans i ts in
                     ppTm lhs <+> text " ==> " <+> ppTm rhs : ts'
 
---               iRenderOutput (pretty lhs)
---                    iputStrLn "  ==>  "
---                    iPrintTermWithType (pprintDelab i rhs)
---                    iputStrLn "---------------"
---                    showTrans i ts
-
 process fn (PPrint fmt width (PRef _ _ n))
    = do outs <- pprintDef False n
         iPrintResult =<< renderExternal fmt width (vsep outs)
@@ -1467,11 +1472,19 @@ process fn (PPrint fmt width (PRef _ _ n))
 
 process fn (PPrint fmt width t)
    = do (tm, ty) <- elabVal (recinfo (fileFC "toplevel")) ERHS t
-        ctxt <- getContext
         ist <- getIState
-        let ppo = ppOptionIst ist
-            ty' = normaliseC ctxt [] ty
         iPrintResult =<< renderExternal fmt width (pprintDelab ist tm)
+
+
+process fn Quit = iPrintError "Command ':quit' is currently unsupported"
+process fn Reload = iPrintError "Command ':reload' is currently unsupported"
+process fn Watch = iPrintError "Command ':watch' is currently unsupported"
+process fn (Load _ _) = iPrintError "Command ':load' is currently unsupported"
+process fn Edit = iPrintError "Command ':edit' is currently unsupported"
+process fn Proofs = iPrintError "Command ':proofs' is currently unsupported"
+process fn (Verbosity _)
+   = iPrintError "Command ':verbosity' is currently unsupported"
+
 
 showTotal :: Totality -> IState -> Doc OutputAnnotation
 showTotal t@(Partial (Other ns)) i

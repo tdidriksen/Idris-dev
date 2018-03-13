@@ -21,13 +21,18 @@ import IO
 data File : Type where
   FHandle : (p : Ptr) -> File
 
+||| A directory handle
+data Directory : Type where
+  DHandle : (p : Ptr) -> Directory
+
 -- Usage hints for erasure analysis
 %used FHandle p
+%used DHandle p
 
 ||| An error from a file operation
 -- This is built in idris_mkFileError() in rts/idris_stdfgn.c. Make sure
 -- the values correspond!
-               
+
 data FileError = GenericFileError Int -- errno
                | FileReadError
                | FileWriteError
@@ -102,10 +107,6 @@ validFile (FHandle h) = do x <- nullPtr h
 ||| Modes for opening files
 data Mode = Read | WriteTruncate | Append | ReadWrite | ReadWriteTruncate | ReadAppend
 
-Write : Mode
-Write = WriteTruncate
-%deprecate Write "Please use WriteTruncate instead."
-
 modeStr : Mode -> String
 modeStr Read              = "r"
 modeStr WriteTruncate     = "w"
@@ -142,12 +143,12 @@ do_getFileSize h = foreign FFI_C "fileSize" (Ptr -> IO Int) h
 
 ||| Return the size of a File
 ||| Returns an error if the File is not an ordinary file (e.g. a directory)
-||| Also note that this currently returns an Int, which may overflow if the 
+||| Also note that this currently returns an Int, which may overflow if the
 ||| file is very big
 export
 fileSize : File -> IO (Either FileError Int)
 fileSize (FHandle h) = do s <- do_getFileSize h
-                          if (s < 0) 
+                          if (s < 0)
                              then do err <- getFileError
                                      pure (Left err)
                              else pure (Right s)
@@ -187,21 +188,16 @@ export
 pclose : File -> IO ()
 pclose (FHandle h) = foreign FFI_C "pclose" (Ptr -> IO ()) h
 
--- mkForeign (FFun "idris_readStr" [FPtr, FPtr] (FAny String))
---                        prim__vm h
-
-export
-fread : File -> IO (Either FileError String)
-fread (FHandle h) = do str <- do_fread h
-                       if !(ferror (FHandle h))
-                          then pure (Left FileReadError)
-                          else pure (Right str)
 
 ||| Read a line from a file
 ||| @h a file handle which must be open for reading
 export
 fGetLine : (h : File) -> IO (Either FileError String)
-fGetLine = fread
+fGetLine (FHandle h) = do
+  str <- do_fread h
+  if !(ferror (FHandle h))
+    then pure (Left FileReadError)
+    else pure (Right str)
 
 ||| Read up to a number of characters from a file
 ||| @h a file handle which must be open for reading
@@ -212,7 +208,6 @@ fGetChars (FHandle h) len = do str <- do_freadChars h len
                                   then pure (Left FileReadError)
                                   else pure (Right str)
 
-%deprecate fread "Use fGetLine instead"
 
 private
 do_fwrite : Ptr -> String -> IO (Either FileError ())
@@ -225,10 +220,6 @@ do_fwrite h s = do res <- prim_fwrite h s
                                          pure (Left err)
                       else pure (Right ())
 
-export
-fwrite : File -> String -> IO (Either FileError ())
-fwrite (FHandle h) s = do_fwrite h s
-
 ||| Write a line to a file
 ||| @h a file handle which must be open for writing
 ||| @str the line to write to the file
@@ -240,8 +231,6 @@ export
 fPutStrLn : File -> String -> IO (Either FileError ())
 fPutStrLn (FHandle h) s = do_fwrite h (s ++ "\n")
 
-%deprecate fwrite "Use fPutStr instead"
-
 private
 do_feof : Ptr -> IO Int
 do_feof h = foreign FFI_C "fileEOF" (Ptr -> IO Int) h
@@ -251,13 +240,6 @@ export
 fEOF : File -> IO Bool
 fEOF (FHandle h) = do eof <- do_feof h
                       pure (not (eof == 0))
-
-||| Check if a file handle has reached the end
-export
-feof : File -> IO Bool
-feof = fEOF
-
-%deprecate feof "Use fEOF instead"
 
 export
 fpoll : File -> IO Bool
@@ -303,3 +285,46 @@ writeFile fn contents = do
      Right () <- fPutStr h contents        | Left err => pure (Left err)
      closeFile h
      pure (Right ())
+
+
+export
+dirOpen : (d : String) -> IO (Either FileError Directory)
+dirOpen d
+    = do dptr <- foreign FFI_C "idris_dirOpen" (String -> IO Ptr) d
+         if !(nullPtr dptr)
+            then do err <- getFileError
+                    pure (Left err)
+            else pure (Right (DHandle dptr))
+
+export
+dirClose : Directory -> IO ()
+dirClose (DHandle d) = foreign FFI_C "idris_dirClose" (Ptr -> IO ()) d
+
+export
+dirError : Directory -> IO Bool
+dirError (DHandle d)
+    = do err <- foreign FFI_C "idris_dirError" (Ptr -> IO Int) d
+         pure (not (err == 0))
+
+export
+dirEntry : Directory -> IO (Either FileError String)
+dirEntry (DHandle d)
+    = do fn <- foreign FFI_C "idris_nextDirEntry" (Ptr -> IO String) d
+         if !(dirError (DHandle d))
+            then pure (Left FileReadError)
+            else pure (Right fn)
+
+export
+createDir : String -> IO (Either FileError ())
+createDir d
+    = do ok <- foreign FFI_C "idris_mkdir" (String -> IO Int) d
+         if (ok == 0)
+            then pure (Right ())
+            else do err <- getFileError
+                    pure (Left err)
+
+export
+changeDir : String -> IO Bool
+changeDir dir 
+    = do ok <- foreign FFI_C "chdir" (String -> IO Int) dir
+         pure (ok == 0)

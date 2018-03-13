@@ -2,20 +2,16 @@ module Main where
 
 import System.Exit (ExitCode(..), exitSuccess, exitWith)
 
-import Control.Monad (unless, when, (>=>))
-import Data.Foldable (foldrM)
-import Data.Maybe (fromMaybe)
+import Control.Monad (unless, when)
 
 import Idris.AbsSyntax
 import Idris.CmdOptions
 import Idris.Error
 import Idris.Info.Show
 import Idris.Main
+import Idris.Options
 import Idris.Package
 
-import Util.System (setupBundledCC)
-
-import System.Exit (ExitCode(..), exitWith)
 import Util.System (setupBundledCC)
 
 processShowOptions :: [Opt] -> Idris ()

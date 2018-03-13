@@ -3,10 +3,19 @@ module Main
 import System
 
 alu : String
+alu = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGG"
+   ++ "TCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGG"
+   ++ "CGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGC"
+   ++ "GGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
+
+{- The following string literal syntax doesn't work anymore. Until fixed we shall concat the strings.
 alu = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGG\
     \TCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGG\
     \CGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGC\
     \GGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
+
+-}
+
 
 iub : List (Char, Double)
 iub = [('a',0.27),('c',0.12),('g',0.12),('t',0.27),('B',0.02)
@@ -38,10 +47,6 @@ replicate : Int -> Char -> String
 replicate 0 c = ""
 replicate n c = singleton c <+> replicate (n-1) c
 
-scanl : (f : acc -> a -> acc) -> acc -> List a -> List acc
-scanl f q ls = q :: (case ls of
-                        []    => []
-                        x::xs => scanl f (f q x) xs)
 
 accum : (Char,Double) -> (Char,Double) -> (Char,Double)
 accum (_,p) (c,q) = (c,p+q)

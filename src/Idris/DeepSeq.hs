@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.DeepSeq
 Description : NFData instances for Idris' types
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -18,30 +18,16 @@ import Idris.Core.DeepSeq
 import Idris.Core.TT
 import Idris.Docstrings
 import qualified Idris.Docstrings as D
+import Idris.Options
 import IRTS.CodegenCommon (OutputType(..))
 import IRTS.Lang (PrimFn(..))
 
 import Util.DynamicLinker
 
-import qualified Cheapskate.Types as CT
 import Control.DeepSeq
 import Network.Socket (PortNumber)
 
 -- These types don't have Generic instances
-instance NFData CT.Options where
-  rnf (CT.Options x1 x2 x3 x4) = rnf x1 `seq` rnf x2 `seq` rnf x3 `seq` rnf x4 `seq` ()
-
-instance NFData CT.ListType where
-  rnf (CT.Bullet c) = rnf c `seq` ()
-  rnf (CT.Numbered nw i) = rnf nw `seq` rnf i `seq` ()
-
-instance NFData CT.CodeAttr where
-  rnf (CT.CodeAttr a b) = rnf a `seq` rnf b `seq` ()
-
-instance NFData CT.NumWrapper where
-  rnf CT.PeriodFollowing = ()
-  rnf CT.ParenFollowing = ()
-
 instance NFData DynamicLib where
     rnf (Lib x _) = rnf x `seq` ()
 
@@ -89,6 +75,7 @@ instance NFData Directive
 instance (NFData t) => NFData (PDecl' t)
 instance NFData t => NFData (ProvideWhat' t)
 instance NFData PunInfo
+instance NFData Path
 instance (NFData t) => NFData (PClause' t)
 instance (NFData t) => NFData (PData' t)
 instance NFData PTerm

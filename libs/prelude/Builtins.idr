@@ -3,10 +3,11 @@
 %access public export
 %default total
 %language UniquenessTypes
+%language LinearTypes
 
 ||| The canonical single-element type, also known as the trivially
 ||| true proposition.
-%elim data Unit =
+data Unit =
   ||| The trivial constructor for `()`.
   MkUnit
 
@@ -14,11 +15,11 @@ namespace Builtins
   ||| The non-dependent pair type, also known as conjunction.
   ||| @A the type of the left elements in the pair
   ||| @B the type of the right elements in the pair
-  %elim data Pair : (A : Type) -> (B : Type) -> Type where
+  data Pair : (A : Type) -> (B : Type) -> Type where
      ||| A pair of elements
      ||| @a the left element of the pair
      ||| @b the right element of the pair
-     MkPair : {A, B : Type} -> (a : A) -> (b : B) -> Pair A B
+     MkPair : {A, B : Type} -> (1 a : A) -> (1 b : B) -> Pair A B
 
   -- Usage hints for erasure analysis
   %used MkPair a
@@ -50,18 +51,10 @@ namespace Builtins
   data DPair : (a : Type) -> (P : a -> Type) -> Type where
       MkDPair : .{P : a -> Type} -> (x : a) -> (pf : P x) -> DPair a P
 
-  Sigma : (a : Type) -> (P : a -> Type) -> Type
-  Sigma wit prf = DPair wit prf
-  %deprecate Sigma "This name is being deprecated in favour of `DPair`."
-
-  MkSigma : .{P : a -> Type} -> (x : a) -> (prf : P x) -> DPair a P
-  MkSigma wit prf = MkDPair wit prf
-  %deprecate MkSigma "This constructor is being deprecated in favour of `MkDPair`."
-
 ||| The empty type, also known as the trivially false proposition.
 |||
 ||| Use `void` or `absurd` to prove anything if you have a variable of type `Void` in scope.
-%elim data Void : Type where
+data Void : Type where
 
 ||| The eliminator for the `Void` type.
 void : Void -> a
@@ -96,7 +89,7 @@ replace Refl prf = prf
 ||| in the other direction, which puts it in a form usable by the `rewrite`
 ||| tactic and term.
 rewrite__impl : (P : a -> Type) -> x = y -> P y -> P x
-rewrite__impl P Refl prf = prf
+rewrite__impl p Refl prf = prf
 
 ||| Symmetry of propositional equality
 sym : {left:a} -> {right:b} -> left = right -> right = left
@@ -129,14 +122,14 @@ data Delayed : DelayReason -> Type -> Type where
 Force : {t, a : _} -> Delayed t a -> a
 Force (Delay x) = x
 
-||| Lazily evaluated values. 
+||| Lazily evaluated values.
 ||| At run time, the delayed value will only be computed when required by
 ||| a case split.
 %error_reverse
 Lazy : Type -> Type
 Lazy t = Delayed LazyValue t
 
-||| Possibly infinite data. 
+||| Possibly infinite data.
 ||| A value which may be infinite is accepted by the totality checker if
 ||| it appears under a data constructor. At run time, the delayed value will
 ||| only be computed when required by a case split.
@@ -186,21 +179,15 @@ idris_crash : (msg : String) -> a
 
 ||| Subvert the type checker. This function is abstract, so it will not reduce in
 ||| the type checker. Use it with care - it can result in segfaults or worse!
-export 
+export
 believe_me : a -> b
 believe_me x = assert_total (prim__believe_me _ _ x)
 
 ||| Subvert the type checker. This function *will*  reduce in the type checker.
 ||| Use it with extreme care - it can result in segfaults or worse!
-public export 
+public export
 really_believe_me : a -> b
 really_believe_me x = assert_total (prim__believe_me _ _ x)
-
-||| Deprecated alias for `Double`, for the purpose of backwards
-||| compatibility. Idris does not support 32 bit floats at present.
-Float : Type
-Float = Double
-%deprecate Float
 
 -- Pointers as external primitive; there's no literals for these, so no
 -- need for them to be part of the compiler.

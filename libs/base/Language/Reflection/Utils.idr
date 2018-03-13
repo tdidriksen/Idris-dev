@@ -91,7 +91,6 @@ mutual
     showPrec d (ParentN n s) = showCon d "ParentN" $ showArg n ++ showArg s
     showPrec d (MethodN n) = showCon d "MethodN" $ showArg n
     showPrec d (CaseN fc n) = showCon d "CaseN" $ showArg fc ++ showArg n
-    showPrec d (ElimN n) = showCon d "ElimN" $ showArg n
     showPrec d (ImplementationCtorN n) = showCon d "ImplementationCtorN" $ showArg n
     showPrec d (MetaN parent meta) = showCon d "MetaN" $ showArg parent ++ showArg meta
 
@@ -116,7 +115,6 @@ mutual
     (ParentN n s)           == (ParentN n' s')          = n == n' && s == s'
     (MethodN n)             == (MethodN n')             = n == n'
     (CaseN fc n)            == (CaseN fc' n')           = fc == fc' && n == n'
-    (ElimN n)               == (ElimN n')               = n == n'
     (ImplementationCtorN n) == (ImplementationCtorN n') = n == n'
     (MetaN parent meta)     == (MetaN parent' meta')    = parent == parent' && meta == meta'
     _                       == _                        = False
@@ -308,7 +306,7 @@ implementation Show Raw where
           my_show d (RApp tm tm') = assert_total $ showCon d "RApp" $ " " ++ my_show App tm ++ " " ++ my_show App tm'
           my_show d RType = "RType"
           my_show d (RConstant c) = assert_total $ showCon d "RConstant" $ showArg c
-          my_show d (RUType u) = "RUType" 
+          my_show d (RUType u) = "RUType"
 
 
 implementation Show Err where
@@ -336,7 +334,6 @@ implementation Show Err where
   showPrec d (CantResolveAlts xs) = showCon d "CantResolveAlts" $ showArg xs
   showPrec d (NoValidAlts xs) = showCon d "NoValidAlts" $ showArg xs
   showPrec d (IncompleteTerm tm) = showCon d "IncompleteTerm" $ showArg tm
-  showPrec d (NoEliminator s tm) = showCon d "NoEliminator" $ showArg s ++ showArg tm
   showPrec d UniverseError = "UniverseError"
   showPrec d ProgramLineComment = "ProgramLineComment"
   showPrec d (Inaccessible n) = showCon d "Inaccessible" $ showArg n
@@ -387,3 +384,10 @@ implementation Show tm => Show (FunClause tm) where
       showCon d "MkFunClause" $ showArg lhs ++ showArg rhs
   showPrec d (MkImpossibleClause lhs) =
       showCon d "MkImpossibleClause" $ showArg lhs
+
+implementation Functor FunClause where
+  map f (MkFunClause lhs rhs) = MkFunClause (f lhs) (f rhs)
+  map f (MkImpossibleClause lhs) = MkImpossibleClause (f lhs)
+
+implementation Functor FunDefn where
+  map f (DefineFun n clauses) = DefineFun n (map (map f) clauses)

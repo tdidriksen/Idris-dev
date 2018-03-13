@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Package
 Description : Functionality for working with Idris packages.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -10,9 +10,10 @@ module Idris.Package where
 
 import System.Directory
 import System.Directory (copyFile, createDirectoryIfMissing)
+import System.Environment
 import System.Exit
 import System.FilePath (addExtension, addTrailingPathSeparator, dropExtension,
-                        hasExtension, normalise, takeDirectory, takeExtension,
+                        hasExtension, takeDirectory, takeExtension,
                         takeFileName, (</>))
 import System.IO
 import System.Process
@@ -23,10 +24,8 @@ import Control.Monad
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State.Strict (execStateT)
 import Data.Either (partitionEithers)
-import Data.Either (partitionEithers)
 import Data.List
 import Data.List.Split (splitOn)
-import Data.Maybe (fromMaybe)
 
 import Idris.AbsSyntax
 import Idris.Core.TT
@@ -35,10 +34,9 @@ import Idris.IBC
 import Idris.IdrisDoc
 import Idris.Imports
 import Idris.Main (idris, idrisMain)
-import Idris.Output (pshow)
+import Idris.Options
 import Idris.Output
 import Idris.Parser (loadModule)
-import Idris.REPL
 
 import Idris.Package.Common
 import Idris.Package.Parser
@@ -204,7 +202,7 @@ documentPkg copts (install,fp) = do
   pkgdesc        <- parseDesc fp
   cd             <- getCurrentDirectory
   let pkgDir      = cd </> takeDirectory fp
-      outputDir   = cd </> pkgname pkgdesc ++ "_doc"
+      outputDir   = cd </> unPkgName (pkgname pkgdesc) ++ "_doc"
       popts       = NoREPL : Verbose 1 : idris_opts pkgdesc
       mods        = modules pkgdesc
       fs          = map (foldl1' (</>) . splitOn "." . showCG) mods
@@ -231,10 +229,10 @@ documentPkg copts (install,fp) = do
           exitWith (ExitFailure 1)
         Right ist -> do
           iDocDir   <- getIdrisDocDir
-          pkgDocDir <- makeAbsolute (iDocDir </> pkgname pkgdesc)
+          pkgDocDir <- makeAbsolute (iDocDir </> unPkgName (pkgname pkgdesc))
           let out_dir = if install then pkgDocDir else outputDir
           when install $ do
-              putStrLn $ unwords ["Attempting to install IdrisDocs for", pkgname pkgdesc, "in:", out_dir]
+              putStrLn $ unwords ["Attempting to install IdrisDocs for", show $ pkgname pkgdesc, "in:", out_dir]
 
           docRes <- generateDocs ist mods out_dir
           case docRes of
@@ -336,10 +334,8 @@ auditPackage True  ipkg = do
     getIdrisFiles :: FilePath -> IO [FilePath]
     getIdrisFiles dir = do
       contents <- getDirectoryContents dir
-      let contents' = filter (\fname -> fname /= "." && fname /= "..") contents
 
       -- [ NOTE ] Directory >= 1.2.5.0 introduced `listDirectory` but later versions of directory appear to be causing problems with ghc 7.10.3 and cabal 1.22 in travis. Let's reintroduce the old ranges for directory to be sure.
-
 
       files <- forM contents (findRest dir)
       return $ filter (isIdrisFile) (concat files)
@@ -361,7 +357,7 @@ buildMods opts ns = do let f = map (toPath . showCG) ns
     where
       toPath n = foldl1' (</>) $ splitOn "." n
 
-testLib :: Bool -> String -> String -> IO Bool
+testLib :: Bool -> PkgName -> String -> IO Bool
 testLib warn p f
     = do d <- getIdrisCRTSDir
          gcc <- getCC
@@ -372,7 +368,7 @@ testLib warn p f
          case e of
             ExitSuccess -> return True
             _ -> do if warn
-                       then do putStrLn $ "Not building " ++ p ++
+                       then do putStrLn $ "Not building " ++ show p ++
                                           " due to missing library " ++ f
                                return False
                        else fail $ "Missing library " ++ f
@@ -380,7 +376,7 @@ testLib warn p f
 rmIBC :: Name -> IO ()
 rmIBC m = rmFile $ toIBCFile m
 
-rmIdx :: String -> IO ()
+rmIdx :: PkgName -> IO ()
 rmIdx p = do let f = pkgIndex p
              ex <- doesFileExist f
              when ex $ rmFile f
@@ -394,10 +390,10 @@ rmExe p = do
 toIBCFile (UN n) = str n ++ ".ibc"
 toIBCFile (NS n ns) = foldl1' (</>) (reverse (toIBCFile n : map str ns))
 
-installIBC :: String -> String -> Name -> IO ()
+installIBC :: String -> PkgName -> Name -> IO ()
 installIBC dest p m = do
     let f = toIBCFile m
-    let destdir = dest </> p </> getDest m
+    let destdir = dest </> unPkgName p </> getDest m
     putStrLn $ "Installing " ++ f ++ " to " ++ destdir
     createDirectoryIfMissing True destdir
     copyFile f (destdir </> takeFileName f)
@@ -406,18 +402,18 @@ installIBC dest p m = do
     getDest (UN n) = ""
     getDest (NS n ns) = foldl1' (</>) (reverse (getDest n : map str ns))
 
-installIdx :: String -> String -> IO ()
+installIdx :: String -> PkgName -> IO ()
 installIdx dest p = do
   let f = pkgIndex p
-  let destdir = dest </> p
+  let destdir = dest </> unPkgName p
   putStrLn $ "Installing " ++ f ++ " to " ++ destdir
   createDirectoryIfMissing True destdir
   copyFile f (destdir </> takeFileName f)
   return ()
 
-installObj :: String -> String -> String -> IO ()
+installObj :: String -> PkgName -> String -> IO ()
 installObj dest p o = do
-  let destdir = addTrailingPathSeparator (dest </> p)
+  let destdir = addTrailingPathSeparator (dest </> unPkgName p)
   putStrLn $ "Installing " ++ o ++ " to " ++ destdir
   createDirectoryIfMissing True destdir
   copyFile o (destdir </> takeFileName o)
@@ -442,17 +438,28 @@ inPkgDir pkgdesc action =
      return res
 
 -- ------------------------------------------------------- [ Makefile Commands ]
+-- | Invoke a Makefile's target with an enriched system environment
+makeTarget :: Maybe String -> Maybe String -> IO ()
+makeTarget _ Nothing = return ()
+makeTarget mtgt (Just s) = do incFlags <- intercalate " " <$> getIncFlags
+                              libFlags <- intercalate " " <$> getLibFlags
+                              newEnv <- (++ [("IDRIS_INCLUDES", incFlags),
+                                             ("IDRIS_LDFLAGS", libFlags)]) <$> getEnvironment
+                              let cmdLine = case mtgt of
+                                              Nothing -> "make -f " ++ s
+                                              Just tgt -> "make -f " ++ s ++ " " ++ tgt
+                              (_, _, _, r) <- createProcess (shell cmdLine) { env = Just newEnv }
+                              waitForProcess r
+                              return ()
+
+
 -- | Invoke a Makefile's default target.
 make :: Maybe String -> IO ()
-make Nothing = return ()
-make (Just s) = do rawSystem "make" ["-f", s]
-                   return ()
+make = makeTarget Nothing
 
 -- | Invoke a Makefile's clean target.
 clean :: Maybe String -> IO ()
-clean Nothing = return ()
-clean (Just s) = do rawSystem "make" ["-f", s, "clean"]
-                    return ()
+clean = makeTarget (Just "clean")
 
 -- | Merge an option list representing the command line options into
 -- those specified for a package description.

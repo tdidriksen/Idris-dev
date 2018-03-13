@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.Core.CaseTree
 Description : Module to define and interact with case trees.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 
@@ -18,8 +18,9 @@ allows casing on arbitrary terms, here we choose to maintain the distinction
 in order to allow for better optimisation opportunities.
 
 -}
-{-# LANGUAGE DeriveFunctor, DeriveGeneric, PatternGuards, TypeSynonymInstances
-             #-}
+
+{-# LANGUAGE DeriveFunctor, DeriveGeneric, FlexibleContexts, FlexibleInstances,
+             PatternGuards, TypeSynonymInstances #-}
 
 module Idris.Core.CaseTree (
     CaseDef(..), SC, SC'(..), CaseAlt, CaseAlt'(..), ErasureInfo
@@ -30,14 +31,11 @@ module Idris.Core.CaseTree (
 
 import Idris.Core.TT
 
-import Control.Applicative hiding (Const)
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.List hiding (partition)
 import qualified Data.List (partition)
-import Data.Maybe
 import qualified Data.Set as S
-import Debug.Trace
 import GHC.Generics (Generic)
 
 data CaseDef = CaseDef [Name] !SC [Term]
@@ -124,7 +122,7 @@ instance TermSize CaseAlt where
 small :: Name -> [Name] -> SC -> Bool
 small n args t = let as = findAllUsedArgs t args in
                      length as == length (nub as) &&
-                     termsize n t < 10
+                     termsize n t < 20
 
 namesUsed :: SC -> [Name]
 namesUsed sc = nub $ nu' [] sc where
@@ -143,7 +141,7 @@ namesUsed sc = nub $ nu' [] sc where
                      | otherwise = [n]
     nut ps (App _ f a) = nut ps f ++ nut ps a
     nut ps (Proj t _) = nut ps t
-    nut ps (Bind n (Let t v) sc) = nut ps v ++ nut (n:ps) sc
+    nut ps (Bind n (Let _ t v) sc) = nut ps v ++ nut (n:ps) sc
     nut ps (Bind n b sc) = nut (n:ps) sc
     nut ps _ = []
 
@@ -178,7 +176,7 @@ findCalls' ignoreasserts sc topargs = S.toList $ nu' topargs sc where
                                    (S.unions $ map (nut ps) args)
         | (P (TCon _ _) n _, _) <- unApply fn = S.empty
         | otherwise = S.union (nut ps f) (nut ps a)
-    nut ps (Bind n (Let t v) sc) = S.union (nut ps v) (nut (n:ps) sc)
+    nut ps (Bind n (Let _ t v) sc) = S.union (nut ps v) (nut (n:ps) sc)
     nut ps (Proj t _) = nut ps t
     nut ps (Bind n b sc) = nut (n:ps) sc
     nut ps _ = S.empty
@@ -190,7 +188,7 @@ findCalls' ignoreasserts sc topargs = S.toList $ nu' topargs sc where
 
 directUse :: TT Name -> [Name]
 directUse (P _ n _) = [n]
-directUse (Bind n (Let t v) sc) = nub $ directUse v ++ (directUse sc \\ [n])
+directUse (Bind n (Let _ t v) sc) = nub $ directUse v ++ (directUse sc \\ [n])
                                         ++ directUse t
 directUse (Bind n b sc) = nub $ directUse (binderTy b) ++ (directUse sc \\ [n])
 directUse fn@(App _ f a)
@@ -270,7 +268,6 @@ simpleCase tc defcase reflect phase fc inacc argtys cs erInfo
                  = return $ CaseDef [] (UnmatchedCase (show fc ++ ":No pattern clauses")) []
  sc' tc defcase phase fc cs
       = let proj       = phase == RunTime
-            vnames     = fstT (head cs)
             pats       = map (\ (avs, l, r) ->
                                    (avs, toPats reflect tc l, (l, r))) cs
             chkPats    = mapM chkAccessible pats in
@@ -282,15 +279,13 @@ simpleCase tc defcase reflect phase fc inacc argtys cs erInfo
                         (tree, st) = runCaseBuilder erInfo
                                          (match ns' ps' defcase)
                                          ([], numargs, [])
-                        t          = CaseDef ns (prune proj (depatt ns' tree)) (fstT st) in
+                        sc         = removeUnreachable (prune proj (depatt ns' tree))
+                        t          = CaseDef ns sc (fstT st) in
                         if proj then return (stripLambdas t)
                                 else return t
                 Error err -> Error (At fc err)
     where args = map (\i -> sMN i "e") [0..]
-          defaultCase True = STerm Erased
-          defaultCase False = UnmatchedCase "Error"
           fstT (x, _, _) = x
-          lstT (_, _, x) = x
 
           -- Check that all pattern variables are reachable by a case split
           -- Otherwise, they won't make sense on the RHS.
@@ -304,48 +299,6 @@ simpleCase tc defcase reflect phase fc inacc argtys cs erInfo
           acc (PCon _ _ _ ps : xs) n = acc (ps ++ xs) n
           acc (PSuc p : xs) n = acc (p : xs) n
           acc (_ : xs) n = acc xs n
-
--- For each 'Case', make sure every choice is in the same type family,
--- as directed by the variable type (i.e. there is no implicit type casing
--- going on).
-
-checkSameTypes :: [(Name, Type)] -> SC -> Bool
-checkSameTypes tys (Case _ n alts)
-        = case lookup n tys of
-               Just t -> and (map (checkAlts t) alts)
-               _ -> and (map ((checkSameTypes tys).getSC) alts)
-  where
-    checkAlts t (ConCase n _ _ sc) = isType n t && checkSameTypes tys sc
-    checkAlts (Constant t) (ConstCase c sc) = isConstType c t && checkSameTypes tys sc
-    checkAlts _ (ConstCase c sc) = False
-    checkAlts _ _ = True
-
-    getSC (ConCase _ _ _ sc) = sc
-    getSC (FnCase _ _ sc) = sc
-    getSC (ConstCase _ sc) = sc
-    getSC (SucCase _ sc) = sc
-    getSC (DefaultCase sc) = sc
-checkSameTypes _ _ = True
-
--- FIXME: All we're actually doing here is checking that we haven't arrived
--- at a specific constructor for a polymorphic argument. I *think* this
--- is sufficient, but if it turns out not to be, fix it!
---
--- Issue #1718 on the issue tracker: https://github.com/idris-lang/Idris-dev/issues/1718
-isType n t | (P (TCon _ _) _ _, _) <- unApply t = True
-isType n t | (P Ref _ _, _) <- unApply t = True
-isType n t = False
-
-isConstType (I _) (AType (ATInt ITNative)) = True
-isConstType (BI _) (AType (ATInt ITBig)) = True
-isConstType (Fl _) (AType ATFloat) = True
-isConstType (Ch _) (AType (ATInt ITChar)) = True
-isConstType (Str _) StrType = True
-isConstType (B8 _) (AType (ATInt _)) = True
-isConstType (B16 _) (AType (ATInt _)) = True
-isConstType (B32 _) (AType (ATInt _)) = True
-isConstType (B64 _) (AType (ATInt _)) = True
-isConstType _ _ = False
 
 data Pat = PCon Bool Name Int [Pat]
          | PConst Const
@@ -401,12 +354,6 @@ toPat reflect tc = map $ toPat' []
         = PReflected n $ map (toPat' []) args
 
     toPat' _ t = PAny
-
-    fixedN IT8 = "Bits8"
-    fixedN IT16 = "Bits16"
-    fixedN IT32 = "Bits32"
-    fixedN IT64 = "Bits64"
-
 
 data Partition = Cons [Clause]
                | Vars [Clause]
@@ -665,9 +612,6 @@ argsToAlt inacc rs@((r, m) : rest) = do
       where
         (acc, inacc) = partitionAcc r
 
-    uniq i (UN n) = MN i n
-    uniq i n = n
-
 getVar :: String -> CaseBuilder Name
 getVar b = do (t, v, ntys) <- get; put (t, v+1, ntys); return (sMN v b)
 
@@ -822,6 +766,56 @@ prune proj (Case up n alts) = case alts' of
 
 prune _ t = t
 
+-- Remove any branches we can't reach because of variables we've already
+-- tested
+removeUnreachable :: SC -> SC
+removeUnreachable sc = ru [] sc
+  where
+    -- keep a mapping from variable names, to the constructor tag we've
+    -- already checked it as in this branch
+    ru :: [(Name, Int)] -> SC -> SC
+    ru checked (Case t n alts)
+        = let alts' = map (ruAlt checked n) (dropImpossible (lookup n checked) alts) in
+              Case t n alts'
+    ru checked t = t
+
+    dropImpossible Nothing alts = alts
+    dropImpossible (Just t) [] = []
+    dropImpossible (Just t) (ConCase con tag args sc : rest)
+        | t == tag = [ConCase con tag args sc] -- must be this case
+        | otherwise = dropImpossible (Just t) rest -- can't be this case
+    dropImpossible (Just t) (c : rest)
+        = c : dropImpossible (Just t) rest
+
+    ruAlt :: [(Name, Int)] -> Name -> CaseAlt -> CaseAlt
+    ruAlt checked var (ConCase con tag args sc)
+        = let checked' = dropChecked args (updateChecked var tag checked)
+              sc' = ru checked' sc in
+              ConCase con tag args sc'
+    ruAlt checked var (FnCase n args sc)
+        = let checked' = dropChecked [var] checked
+              sc' = ru checked' sc in
+              FnCase n args sc'
+    ruAlt checked var (ConstCase c sc)
+        = let checked' = dropChecked [var] checked
+              sc' = ru checked' sc in
+              ConstCase c sc'
+    ruAlt checked var (SucCase n sc)
+        = let checked' = dropChecked [var] checked
+              sc' = ru checked' sc in
+              SucCase n sc'
+    ruAlt checked var (DefaultCase sc)
+        = let checked' = dropChecked [var] checked
+              sc' = ru checked' sc in
+              DefaultCase sc'
+
+    updateChecked :: Name -> Int -> [(Name, Int)] -> [(Name, Int)]
+    updateChecked n i checked
+        = (n, i) : filter (\x -> fst x /= n) checked
+
+    dropChecked :: [Name] -> [(Name, Int)] -> [(Name, Int)]
+    dropChecked ns checked = filter (\x -> fst x `notElem` ns) checked
+
 stripLambdas :: CaseDef -> CaseDef
 stripLambdas (CaseDef ns (STerm (Bind x (Lam _ _) sc)) tm)
     = stripLambdas (CaseDef (ns ++ [x]) (STerm (instantiate (P Bound x Erased) sc)) tm)
@@ -871,5 +865,3 @@ mkForce = mkForceSC
         = SucCase sn (mkForceSC n arg rhs)
     mkForceAlt n arg (DefaultCase rhs)
         = DefaultCase (mkForceSC n arg rhs)
-
-    forceTm n arg t = subst n arg t

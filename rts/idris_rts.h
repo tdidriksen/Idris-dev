@@ -9,7 +9,7 @@
 #include <pthread.h>
 #endif
 #include <stdint.h>
-#if (__linux__ || __APPLE__ || __FreeBSD__ || __DragonFly__)
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__DragonFly__)
 #include <signal.h>
 #endif
 
@@ -25,17 +25,27 @@
 
 // Closures
 typedef enum {
-    CT_CON, CT_INT, CT_BIGINT, CT_FLOAT, CT_STRING, CT_STROFFSET,
-    CT_BITS8, CT_BITS16, CT_BITS32, CT_BITS64, CT_UNIT, CT_PTR, CT_FWD,
-    CT_MANAGEDPTR, CT_RAWDATA, CT_CDATA
+    CT_CON, CT_ARRAY, CT_INT, CT_BIGINT, CT_FLOAT, CT_STRING, CT_STROFFSET,
+    CT_BITS8, CT_BITS16, CT_BITS32, CT_BITS64, CT_UNIT, CT_PTR, CT_REF,
+    CT_FWD, CT_MANAGEDPTR, CT_RAWDATA, CT_CDATA
 } ClosureType;
 
 typedef struct Closure *VAL;
 
+// A constructor, consisting of a tag, an arity (16 bits each of the
+// tag_arity field) and arguments
 typedef struct {
     uint32_t tag_arity;
     VAL args[];
 } con;
+
+// An array; similar to a constructor but with a length, and contents
+// initialised to NULL (high level Idris programs are responsible for
+// initialising them properly)
+typedef struct {
+    uint32_t length;
+    VAL content[];
+} array;
 
 typedef struct {
     VAL str;
@@ -62,6 +72,7 @@ typedef struct Closure {
     uint32_t ty;
     union {
         con c;
+        array arr;
         int i;
         double f;
         String str;
@@ -183,9 +194,6 @@ typedef void(*func)(VM*, VAL*);
 #define TOP(x) (*(vm->valstack_top + (x)))
 #define REG1 (vm->reg1)
 
-// align pointer
-#define ALIGN(__p, __alignment) ((__p + __alignment - 1) & ~(__alignment - 1))
-
 // Retrieving values
 #define GETSTR(x) (ISSTR(x) ? (((VAL)(x))->info.str.str) : GETSTROFF(x))
 #define GETSTRLEN(x) (ISSTR(x) ? (((VAL)(x))->info.str.len) : GETSTROFFLEN(x))
@@ -206,14 +214,9 @@ typedef void(*func)(VM*, VAL*);
 #define CTAG(x) (((x)->info.c.tag_arity) >> 8)
 #define CARITY(x) ((x)->info.c.tag_arity & 0x000000ff)
 
-// Use top 16 bits for saying which heap value is in
-// Bottom 16 bits for closure type
 
-#define GETTY(x) ((x)->ty & 0x0000ffff)
-#define SETTY(x,t) (x)->ty = (((x)->ty & 0xffff0000) | (t))
-
-#define GETHEAP(x) ((x)->ty >> 16)
-#define SETHEAP(x,y) (x)->ty = (((x)->ty & 0x0000ffff) | ((y) << 16))
+#define GETTY(x) ((x)->ty)
+#define SETTY(x,t) ((x)->ty = t)
 
 // Integers, floats and operators
 
@@ -242,7 +245,7 @@ typedef intptr_t i_int;
 #endif
 
 #define INITFRAME TRACE\
-                  VAL* myoldbase
+                  __attribute__((unused)) VAL* myoldbase
 
 #define REBASE vm->valstack_base = oldbase
 #define RESERVE(x) if (vm->valstack_top+(x) > vm->stack_max) { stackOverflow(); } \
@@ -316,6 +319,11 @@ void idris_free(void* ptr, size_t size);
   cl->info.c.tag_arity = ((t) << 8) | (a);
 
 #define NULL_CON(x) nullary_cons[x]
+
+#define allocArray(cl, vm, len, o) \
+  cl = allocate(sizeof(Closure) + sizeof(VAL)*len, o); \
+  SETTY(cl, CT_ARRAY); \
+  cl->info.arr.length = len;
 
 int idris_errno(void);
 char* idris_showerror(int err);
@@ -406,6 +414,17 @@ VAL idris_strIndex(VM* vm, VAL str, VAL i);
 VAL idris_strRev(VM* vm, VAL str);
 VAL idris_substr(VM* vm, VAL offset, VAL length, VAL str);
 
+// Support for IORefs
+VAL idris_newRefLock(VAL x, int outerlock);
+VAL idris_newRef(VAL x);
+void idris_writeRef(VAL ref, VAL x);
+VAL idris_readRef(VAL ref);
+
+// Support for IOArrays
+VAL idris_newArray(VM* vm, int size, VAL def);
+void idris_arraySet(VAL arr, int index, VAL newval);
+VAL idris_arrayGet(VAL arr, int index);
+
 // system infox
 // used indices:
 //   0 returns backend
@@ -422,6 +441,10 @@ const char *idris_getArg(int i);
 
 // disable stdin/stdout buffering
 void idris_disableBuffering(void);
+
+#ifndef SEL4
+int idris_usleep(int usec);
+#endif // SEL4
 
 // Handle stack overflow.
 // Just reports an error and exits.

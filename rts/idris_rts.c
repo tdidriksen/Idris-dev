@@ -114,7 +114,7 @@ void init_threaddata(VM *vm) {
 }
 
 void init_signals(void) {
-#if (__linux__ || __APPLE__ || __FreeBSD__ || __DragonFly__)
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__DragonFly__)
     signal(SIGPIPE, SIG_IGN);
 #endif
 }
@@ -460,6 +460,11 @@ void dumpVal(VAL v) {
     case CT_STRING:
         printf("STR[%s]", v->info.str.str);
         break;
+    case CT_STROFFSET:
+        printf("OFFSET[");
+        dumpVal((VAL)(v->info.str_offset->str));
+        printf("]");
+        break;
     case CT_FWD:
         printf("CT_FWD ");
         dumpVal((VAL)(v->info.ptr));
@@ -591,15 +596,16 @@ VAL idris_castStrFloat(VM* vm, VAL i) {
 VAL idris_concat(VM* vm, VAL l, VAL r) {
     char *rs = GETSTR(r);
     char *ls = GETSTR(l);
-    // dumpVal(l);
-    // printf("\n");
-    Closure* cl = allocate(sizeof(Closure) + GETSTRLEN(l) + GETSTRLEN(r) + 1, 0);
+    int llen = GETSTRLEN(l);
+    int rlen = GETSTRLEN(r);
+
+    Closure* cl = allocate(sizeof(Closure) + llen + rlen + 1, 0);
     SETTY(cl, CT_STRING);
     cl->info.str.str = (char*)cl + sizeof(Closure);
     strcpy(cl->info.str.str, ls);
     strcat(cl->info.str.str, rs);
 
-    cl->info.str.len = GETSTRLEN(l) + GETSTRLEN(r);
+    cl->info.str.len = llen + rlen;
     return cl;
 }
 
@@ -708,7 +714,7 @@ VAL idris_strCons(VM* vm, VAL x, VAL xs) {
     int xval = GETINT(x);
     int xlen = GETSTRLEN(xs);
 
-    if ((xval & 0x80) == 0) { // ASCII char
+    if (xval < 0x80) { // ASCII char
         Closure* cl = allocate(sizeof(Closure) +
                                xlen + 2, 0);
         SETTY(cl, CT_STRING);
@@ -768,6 +774,44 @@ VAL idris_strRev(VM* vm, VAL str) {
     cl->info.str.len = xlen;
     idris_utf8_rev(xstr, cl->info.str.str);
     return cl;
+}
+
+VAL idris_newRefLock(VAL x, int outerlock) {
+    Closure* cl = allocate(sizeof(Closure), outerlock);
+    SETTY(cl, CT_REF);
+    cl->info.ptr = (void*)x;
+    return cl;
+}
+
+VAL idris_newRef(VAL x) {
+    return idris_newRefLock(x, 0);
+}
+
+void idris_writeRef(VAL ref, VAL x) {
+    ref->info.ptr = (void*)x;
+    SETTY(ref, CT_REF);
+}
+
+VAL idris_readRef(VAL ref) {
+    return (VAL)(ref->info.ptr);
+}
+
+VAL idris_newArray(VM* vm, int size, VAL def) {
+    Closure* cl;
+    int i;
+    allocArray(cl, vm, size, 0);
+    for(i=0; i<size; ++i) {
+	cl->info.arr.content[i] = def;
+    }
+    return cl;
+}
+
+void idris_arraySet(VAL arr, int index, VAL newval) {
+     arr->info.arr.content[index] = newval;
+}
+
+VAL idris_arrayGet(VAL arr, int index) {
+     return arr->info.arr.content[index];
 }
 
 VAL idris_systemInfo(VM* vm, VAL index) {
@@ -851,7 +895,7 @@ void* idris_stopThread(VM* vm) {
 // VM is assumed to be a different vm from the one x lives on
 
 VAL doCopyTo(VM* vm, VAL x) {
-    int i, ar;
+    int i, ar, len;
     VAL* argptr;
     Closure* cl;
     if (x==NULL || ISINT(x)) {
@@ -871,6 +915,16 @@ VAL doCopyTo(VM* vm, VAL x) {
                 argptr++;
             }
         }
+        break;
+    case CT_ARRAY:
+        len = x->info.arr.length;
+	allocArray(cl, vm, len, 1);
+
+	argptr = (VAL*)(cl->info.arr.content);
+	for(i = 0; i < len; ++i) {
+	    *argptr = doCopyTo(vm, *((VAL*)(x->info.arr.content)+i)); // recursive version
+	    argptr++;
+	}
         break;
     case CT_FLOAT:
         cl = MKFLOATc(vm, x->info.f);
@@ -1170,6 +1224,16 @@ void idris_disableBuffering(void) {
   setvbuf(stdin, NULL, _IONBF, 0);
   setvbuf(stdout, NULL, _IONBF, 0);
 }
+
+#ifndef SEL4
+int idris_usleep(int usec) {
+    struct timespec t;
+    t.tv_sec = usec / 1000000;
+    t.tv_nsec = (usec % 1000000) * 1000;
+
+    return nanosleep(&t, NULL);
+}
+#endif // SEL4
 
 void stackOverflow(void) {
   fprintf(stderr, "Stack overflow");

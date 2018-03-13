@@ -1,7 +1,7 @@
 {-|
 Module      : IRTS.JavaScript.Name
 Description : The JavaScript name mangler.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -20,12 +20,9 @@ module IRTS.JavaScript.Name
   ) where
 
 import Data.Char
-import Data.List
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Idris.Core.TT
-import IRTS.JavaScript.AST
 
 jsEscape :: String -> String
 jsEscape = concatMap jschar

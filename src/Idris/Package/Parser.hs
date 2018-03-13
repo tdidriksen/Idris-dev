@@ -1,62 +1,35 @@
 {-|
 Module      : Idris.Package.Parser
 Description : `iPKG` file parser and package description information.
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
-{-# LANGUAGE CPP, ConstraintKinds #-}
-#if !(MIN_VERSION_base(4,8,0))
-{-# LANGUAGE OverlappingInstances #-}
-#endif
+{-# LANGUAGE FlexibleContexts #-}
 module Idris.Package.Parser where
 
-import Idris.AbsSyntaxTree
 import Idris.CmdOptions
-import Idris.Core.TT
+import Idris.Imports
+import Idris.Options (Opt)
 import Idris.Package.Common
-import Idris.Parser.Helpers hiding (stringLiteral)
-import Idris.REPL
-
-import Util.System
+import Idris.Parser (moduleName)
+import Idris.Parser.Helpers (Parser, Parsing, eol, iName, identifier, isEol,
+                             lchar, packageName, parseErrorDoc, reserved,
+                             runparser, someSpace, stringLiteral)
 
 import Control.Applicative
 import Control.Monad.State.Strict
 import Data.List (union)
-import Data.Maybe (fromJust, isNothing)
+import qualified Options.Applicative as Opts
 import System.Directory (doesFileExist)
 import System.Exit
 import System.FilePath (isValid, takeExtension, takeFileName)
+import Text.Megaparsec ((<?>))
+import qualified Text.Megaparsec as P
+import qualified Text.Megaparsec.Char as P
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
-import Text.Trifecta hiding (char, charLiteral, natural, span, string, symbol,
-                      whiteSpace)
 
-type PParser = StateT PkgDesc IdrisInnerParser
-
-instance HasLastTokenSpan PParser where
-  getLastTokenSpan = return Nothing
-
-#if MIN_VERSION_base(4,9,0)
-instance {-# OVERLAPPING #-} DeltaParsing PParser where
-  line = lift line
-  {-# INLINE line #-}
-  position = lift position
-  {-# INLINE position #-}
-  slicedWith f (StateT m) = StateT $ \s -> slicedWith (\(a,s') b -> (f a b, s')) $ m s
-  {-# INLINE slicedWith #-}
-  rend = lift rend
-  {-# INLINE rend #-}
-  restOfLine = lift restOfLine
-  {-# INLINE restOfLine #-}
-#endif
-
-#if MIN_VERSION_base(4,8,0)
-instance {-# OVERLAPPING #-} TokenParsing PParser where
-#else
-instance TokenParsing PParser where
-#endif
-  someSpace = many (simpleWhiteSpace <|> singleLineComment <|> multiLineComment) *> pure ()
-
+type PParser = Parser PkgDesc
 
 parseDesc :: FilePath -> IO PkgDesc
 parseDesc fp = do
@@ -68,8 +41,8 @@ parseDesc fp = do
       then do
         p <- readFile fp
         case runparser pPkg defaultPkg fp p of
-          Failure (ErrInfo err _) -> fail (show $ PP.plain err)
-          Success x -> return x
+          Left err -> fail (show $ PP.plain $ parseErrorDoc err)
+          Right x -> return x
       else do
         putStrLn $ unwords [ "The presented iPKG file does not exist:", show fp]
         exitWith (ExitFailure 1)
@@ -77,30 +50,30 @@ parseDesc fp = do
 pPkg :: PParser PkgDesc
 pPkg = do
     reserved "package"
-    p <- filename
-    st <- get
-    put (st { pkgname = p })
+    p <- pPkgName
+    someSpace
+    modify $ \st -> st { pkgname = p }
     some pClause
     st <- get
-    eof
+    P.eof
     return st
 
+pPkgName :: PParser PkgName
+pPkgName = (either fail pure . pkgName =<< packageName) <?> "PkgName"
 
 -- | Parses a filename.
 -- |
 -- | Treated for now as an identifier or a double-quoted string.
-filename :: (MonadicParsing m, HasLastTokenSpan m) => m String
+filename :: Parsing m => m String
 filename = (do
-    filename <- token $
-        -- Treat a double-quoted string as a filename to support spaces.
-        -- This also moves away from tying filenames to identifiers, so
-        -- it will also accept hyphens
-        -- (https://github.com/idris-lang/Idris-dev/issues/2721)
-        stringLiteral
-        <|>
-        -- Through at least version 0.9.19.1, IPKG executable values were
-        -- possibly namespaced identifiers, like foo.bar.baz.
-        show <$> fst <$> iName []
+                -- Treat a double-quoted string as a filename to support spaces.
+                -- This also moves away from tying filenames to identifiers, so
+                -- it will also accept hyphens
+                -- (https://github.com/idris-lang/Idris-dev/issues/2721)
+    filename <- stringLiteral
+                -- Through at least version 0.9.19.1, IPKG executable values were
+                -- possibly namespaced identifiers, like foo.bar.baz.
+            <|> show <$> iName []
     case filenameErrorMessage filename of
       Just errorMessage -> fail errorMessage
       Nothing -> return filename)
@@ -128,126 +101,44 @@ filename = (do
                     checkThat (path == takeFileName path)
                         "filename must contain no directory component"
 
+textUntilEol :: Parsing m => m String
+textUntilEol = many (P.satisfy (not . isEol)) <* eol <* someSpace
+
+clause          :: String -> PParser a -> (PkgDesc -> a -> PkgDesc) -> PParser ()
+clause name p f = do value <- reserved name *> lchar '=' *> p <* someSpace
+                     modify $ \st -> f st value
+
+commaSep   :: Parsing m => m a -> m [a]
+commaSep p = P.sepBy1 p (lchar ',')
+
+pOptions :: PParser [Opt]
+pOptions = do
+  str <- stringLiteral
+  case execArgParserPure (words str) of
+    Opts.Success a -> return a
+    Opts.Failure e -> fail $ fst $ Opts.renderFailure e ""
+    _              -> fail "Unexpected error"
 
 pClause :: PParser ()
-pClause = do reserved "executable"; lchar '=';
-             exec <- filename
-             st <- get
-             put (st { execout = Just exec })
-
-      <|> do reserved "main"; lchar '=';
-             main <- fst <$> iName []
-             st <- get
-             put (st { idris_main = Just main })
-
-      <|> do reserved "sourcedir"; lchar '=';
-             src <- fst <$> identifier
-             st <- get
-             put (st { sourcedir = src })
-
-      <|> do reserved "opts"; lchar '=';
-             opts <- stringLiteral
-             st <- get
-             let args = pureArgParser (words opts)
-             put (st { idris_opts = args ++ idris_opts st })
-
-      <|> do reserved "pkgs"; lchar '=';
-             ps <- sepBy1 (fst <$> identifier) (lchar ',')
-             st <- get
-             let pkgs = pureArgParser $ concatMap (\x -> ["-p", x]) ps
-
-             put (st { pkgdeps    = ps `union` (pkgdeps st)
-                     , idris_opts = pkgs ++ idris_opts st})
-
-      <|> do reserved "modules"; lchar '=';
-             ms <- sepBy1 (fst <$> iName []) (lchar ',')
-             st <- get
-             put (st { modules = modules st ++ ms })
-
-      <|> do reserved "libs"; lchar '=';
-             ls <- sepBy1 (fst <$> identifier) (lchar ',')
-             st <- get
-             put (st { libdeps = libdeps st ++ ls })
-
-      <|> do reserved "objs"; lchar '=';
-             ls <- sepBy1 (fst <$> identifier) (lchar ',')
-             st <- get
-             put (st { objs = objs st ++ ls })
-
-      <|> do reserved "makefile"; lchar '=';
-             mk <- fst <$> iName []
-             st <- get
-             put (st { makefile = Just (show mk) })
-
-      <|> do reserved "tests"; lchar '=';
-             ts <- sepBy1 (fst <$> iName []) (lchar ',')
-             st <- get
-             put st { idris_tests = idris_tests st ++ ts }
-
-      <|> do reserved "version"
-             lchar '='
-             vStr <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put st {pkgversion = Just vStr}
-
-      <|> do reserved "readme"
-             lchar '='
-             rme <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put (st { pkgreadme = Just rme })
-
-      <|> do reserved "license"
-             lchar '='
-             lStr <- many (satisfy (not . isEol))
-             eol
-             st <- get
-             put st {pkglicense = Just lStr}
-
-      <|> do reserved "homepage"
-             lchar '='
-             www <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put st {pkghomepage = Just www}
-
-      <|> do reserved "sourceloc"
-             lchar '='
-             srcpage <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put st {pkgsourceloc = Just srcpage}
-
-      <|> do reserved "bugtracker"
-             lchar '='
-             src <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put st {pkgbugtracker = Just src}
-
-      <|> do reserved "brief"
-             lchar '='
-             brief <- stringLiteral
-             st <- get
-             someSpace
-             put st {pkgbrief = Just brief}
-
-      <|> do reserved "author"; lchar '=';
-             author <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put st {pkgauthor = Just author}
-
-      <|> do reserved "maintainer"; lchar '=';
-             maintainer <- many (satisfy (not . isEol))
-             eol
-             someSpace
-             st <- get
-             put st {pkgmaintainer = Just maintainer}
+pClause = clause "executable" filename (\st v -> st { execout = Just v })
+      <|> clause "main" (iName []) (\st v -> st { idris_main = Just v })
+      <|> clause "sourcedir" identifier (\st v -> st { sourcedir = v })
+      <|> clause "opts" pOptions (\st v -> st { idris_opts = v ++ idris_opts st })
+      <|> clause "pkgs" (commaSep (pPkgName <* someSpace)) (\st ps ->
+             let pkgs = pureArgParser $ concatMap (\x -> ["-p", show x]) ps
+             in st { pkgdeps    = ps `union` pkgdeps st
+                   , idris_opts = pkgs ++ idris_opts st })
+      <|> clause "modules" (commaSep moduleName) (\st v -> st { modules = modules st ++ v })
+      <|> clause "libs" (commaSep identifier) (\st v -> st { libdeps = libdeps st ++ v })
+      <|> clause "objs" (commaSep identifier) (\st v -> st { objs = objs st ++ v })
+      <|> clause "makefile" (iName []) (\st v -> st { makefile = Just (show v) })
+      <|> clause "tests" (commaSep (iName [])) (\st v -> st { idris_tests = idris_tests st ++ v })
+      <|> clause "version" textUntilEol (\st v -> st { pkgversion = Just v })
+      <|> clause "readme" textUntilEol (\st v -> st { pkgreadme = Just v })
+      <|> clause "license" textUntilEol (\st v -> st { pkglicense = Just v })
+      <|> clause "homepage" textUntilEol (\st v -> st { pkghomepage = Just v })
+      <|> clause "sourceloc" textUntilEol (\st v -> st { pkgsourceloc = Just v })
+      <|> clause "bugtracker" textUntilEol (\st v -> st { pkgbugtracker = Just v })
+      <|> clause "brief" stringLiteral (\st v -> st { pkgbrief = Just v })
+      <|> clause "author" textUntilEol (\st v -> st { pkgauthor = Just v })
+      <|> clause "maintainer" textUntilEol (\st v -> st { pkgmaintainer = Just v })

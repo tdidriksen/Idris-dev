@@ -1,7 +1,7 @@
 {-|
 Module      : Idris.ProofSearch
 Description : Searches current context for proofs'
-Copyright   :
+
 License     : BSD3
 Maintainer  : The Idris Community.
 -}
@@ -16,21 +16,17 @@ module Idris.ProofSearch(
   ) where
 
 import Idris.AbsSyntax
-import Idris.Core.CaseTree
 import Idris.Core.Elaborate hiding (Tactic(..))
 import Idris.Core.Evaluate
 import Idris.Core.TT
-import Idris.Core.Typecheck
 import Idris.Core.Unify
 import Idris.Delaborate
-import Idris.Error
 
 import Control.Applicative ((<$>))
 import Control.Monad
 import Control.Monad.State.Strict
 import Data.List
 import qualified Data.Set as S
-import Debug.Trace
 
 -- Pass in a term elaborator to avoid a cyclic dependency with ElabTerm
 
@@ -52,7 +48,6 @@ trivialHoles psnames ok elab ist
         tryAll ((x, _, b):xs)
            = do -- if type of x has any holes in it, move on
                 hs <- get_holes
-                let badhs = hs -- filter (flip notElem holesOK) hs
                 g <- goal
                 -- anywhere but the top is okay for a hole, if holesOK set
                 if -- all (\n -> not (n `elem` badhs)) (freeNames (binderTy b))
@@ -88,7 +83,6 @@ trivialTCs ok elab ist
         tryAll ((x, _, b):xs)
            = do -- if type of x has any holes in it, move on
                 hs <- get_holes
-                let badhs = hs -- filter (flip notElem holesOK) hs
                 g <- goal
                 env <- get_env
                 -- anywhere but the top is okay for a hole, if holesOK set
@@ -145,7 +139,7 @@ proofSearch False fromProver ambigok deferonfail depth elab _ nroot psnames [fn]
   where
     -- if nothing worked, make a new metavariable
     tryAllFns [] | fromProver = cantSolveGoal
-    tryAllFns [] = do attack; defer [] nroot; solve
+    tryAllFns [] = do attack; defer [] [] nroot; solve
     tryAllFns (f : fs) = try' (tryFn f) (tryAllFns fs) True
 
     tryFn (f, args) = do let imps = map isImp args
@@ -161,7 +155,7 @@ proofSearch False fromProver ambigok deferonfail depth elab _ nroot psnames [fn]
                          if fromProver then cantSolveGoal
                            else do
                              mapM_ (\ h -> do focus h
-                                              attack; defer [] nroot; solve)
+                                              attack; defer [] [] nroot; solve)
                                  (hs' \\ hs)
 --                                  (filter (\ (x, y) -> not x) (zip (map fst imps) args))
                              solve
@@ -233,9 +227,6 @@ proofSearch rec fromProver ambigok deferonfail maxDepth elab fn nroot psnames hi
        | (P _ fn _, args@(_:_)) <- unApply fa = fn `notElem` hs
     notHole _ _ = True
 
-    inHS hs (P _ n _) = n `elem` hs
-    isHS _ _ = False
-
     toUN t@(P nt (MN i n) ty)
        | ('_':xs) <- str n = t
        | otherwise = P nt (UN n) ty
@@ -251,7 +242,7 @@ proofSearch rec fromProver ambigok deferonfail maxDepth elab fn nroot psnames hi
     -- that's no use)
     psRec :: Bool -> Int -> [Name] -> S.Set Type -> ElabD ()
     psRec _ 0 locs tys | fromProver = cantSolveGoal
-    psRec rec 0 locs tys = do attack; defer [] nroot; solve --fail "Maximum depth reached"
+    psRec rec 0 locs tys = do attack; defer [] [] nroot; solve --fail "Maximum depth reached"
     psRec False d locs tys = tryCons d locs tys hints
     psRec True d locs tys
                  = do compute
@@ -267,7 +258,7 @@ proofSearch rec fromProver ambigok deferonfail maxDepth elab fn nroot psnames hi
              -- if all else fails, make a new metavariable
                          (if fromProver
                              then fail "cantSolveGoal"
-                             else do attack; defer [] nroot; solve) True) True
+                             else do attack; defer [] [] nroot; solve) True) True
 
     -- get recursive function name. Only user given names make sense.
     getFn d (Just f) | d < maxDepth-1 && usersname f = [f]
@@ -444,12 +435,6 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
     isMeta ns (P _ n _) = n `elem` ns
     isMeta _ _ = False
 
-    notHole hs (P _ n _, c)
-       | (P _ cn _, _) <- unApply (getRetTy c),
-         n `elem` hs && isConName cn (tt_ctxt ist) = False
-       | Constant _ <- c = not (n `elem` hs)
-    notHole _ _ = True
-
     numinterface = sNS (sUN "Num") ["Interfaces","Prelude"]
 
     addDefault t num@(P _ nc _) [P Bound a _] | nc == numinterface && defaultOn
@@ -487,7 +472,6 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
        | otherwise
            = do lams <- introImps
                 t <- goal
-                let (tc, ttypes) = trace (show t) $ unApply (getRetTy t)
 --                 if (all boundVar ttypes) then resolveTC (depth - 1) fn impls ist
 --                   else do
                    -- if there's a hole in the goal, don't even try
@@ -505,7 +489,7 @@ resTC' tcs defaultOn openOK topholes depth topg fn elab ist
 --                 traceWhen (all boundVar ttypes) ("Progress: " ++ show t ++ " with " ++ show n) $
                 mapM_ (\ (_,n) -> do focus n
                                      t' <- goal
-                                     let (tc', ttype) = unApply (getRetTy t')
+                                     let (tc', _) = unApply (getRetTy t')
                                      let got = fst (unApply (getRetTy t))
                                      let depth' = if tc' `elem` tcs
                                                      then depth - 1 else depth
