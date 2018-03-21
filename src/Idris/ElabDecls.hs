@@ -309,7 +309,6 @@ elabDecl' what info (PCopatterns fc syn clauses)
          -- Collect coclauses
          -- Copattern clause elaboration: Unnest and generate auxiliary functions
          ds <- collectDecls Nothing [] clauses
-         logLvl 0 $ "Decls: " ++ show ds
          let (tydecls, cs) =
                partition (\d -> case d of
                            PTy _ _ _ _ _ _ _ _ -> True
@@ -319,8 +318,7 @@ elabDecl' what info (PCopatterns fc syn clauses)
       where
        collectDecls :: Maybe Name -> [PClause] -> [PDecl] -> Idris [PDecl]
        collectDecls targetName cs ((PClauses pfc opts pn (c@(PCoClause fc n lhs rhs wheres path) : clauses)) : ds) =
-         do logLvl 0 $ "Encountered CoClause: " ++ show n
-            c' <- extractPath c
+         do c' <- extractPath c
             let clause = expandNSClause syn c'
             case (targetName, clauseName clause) of
              (Just tn, Just cn) -> if tn == cn
@@ -333,15 +331,13 @@ elabDecl' what info (PCopatterns fc syn clauses)
          return [PClauses fc opts tn (reverse cs)]
        collectDecls targetName cs (PClauses fc opts pn [] : ds) = collectDecls targetName cs ds
        collectDecls targetName cs (PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn ds : ds') =
-         do logLvl 0 $ "Encountered implementation: " ++ show n
-            implementationDecls <- collectDecls Nothing [] ds
+         do implementationDecls <- collectDecls Nothing [] ds
             rest <- collectDecls targetName cs ds'
             return $ (implementationWithNewDecls implementationDecls): rest
          where
            implementationWithNewDecls :: [PDecl] -> PDecl
            implementationWithNewDecls newDecls = PImplementation doc parDocs syn fc con pars ac fnopts n fc' ts ns t exn newDecls
-       collectDecls targetName cs (d : ds) = do logLvl 0 $ "Encountered decl: " ++ show d
-                                                ds' <- collectDecls targetName cs ds
+       collectDecls targetName cs (d : ds) = do ds' <- collectDecls targetName cs ds
                                                 return $ d : ds'
        collectDecls _          _  [] = return []
 
@@ -356,16 +352,11 @@ elabDecl' what info (PCopatterns fc syn clauses)
 
        extractPath :: PClause -> Idris PClause
        extractPath c@(PCoClause fc n lhs@(PApp _ (PRef _ _ n') (lhsArg : _)) rhs wheres path) | n == n' =
-         do logLvl 0 $ "Path for name " ++ show n ++ ": " ++ show path
-            projection <- findProjection n
+         do projection <- findProjection n
             i <- getIState
-            logLvl 0 $ "(getTm lhsArg): " ++ show (getTm lhsArg)
             case (projection, nextNameUnderProjection (getTm lhsArg)) of
-             (Just p, Just (nextFn, nextLhs)) -> 
-               do logLvl 0 $ "Found projection(s) " ++ show p ++ " for lhs: " ++ show lhs ++ " . Next lhs is: " ++ show nextLhs
-                  extractPath (PCoClause fc nextFn nextLhs rhs wheres (p:path))
-             (p, nn) -> do logLvl 0 $ "nextNameUnderProjection? " ++ (show p) ++ " -- " ++ (show nn)
-                           return c
+             (Just p, Just (nextFn, nextLhs)) -> extractPath (PCoClause fc nextFn nextLhs rhs wheres (p:path))
+             (p, nn) -> return c
        extractPath c = return c
 
        nextNameUnderProjection :: PTerm -> Maybe (Name, PTerm)
@@ -384,20 +375,12 @@ elabDecl' what info (PCopatterns fc syn clauses)
        findProjection n_in = 
          do let n = nsroot n_in
             ctxt <- getIState
-            logLvl 0 $ "Trying to find projection for name " ++ show n
             let recordCtxt = toAlist $ idris_records ctxt
-            logLvl 0 $ "Records: " ++ show recordCtxt
             let matchingRecords = map (\(rn, ri) -> fmap (\pn -> (pn, rn, ri)) (find (\m -> n == nsroot m) $ record_projections ri)) recordCtxt
             case catMaybes matchingRecords of
               [(pn, recordName, recordInfo)] ->
-                do logLvl 0 $ "Found projection: " ++ show pn
-                   return $ Just(Path (pn, recordName, recordInfo))
-              r:rs ->
-                do logLvl 0 $ "Found multiple projections"
-                   logLvl 0 $ show $ map (\(pn, rn, _) -> show (pn, rn)) (r:rs)
-                   return $ Just (Ambiguous (r:rs))
-              _ -> 
-                do logLvl 0 $ "No projection found"
-                   return Nothing
+                return $ Just(Path (pn, recordName, recordInfo))
+              r:rs -> return $ Just (Ambiguous (r:rs))
+              _ -> return Nothing
 
 elabDecl' _ _ _ = return () -- skipped this time

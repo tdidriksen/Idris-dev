@@ -697,8 +697,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
                         probs <- get_probs
                         inj <- get_inj
                         return (res, probs, inj))
-        logLvl 0 $ "lhs: " ++ show lhs
-        logLvl 0 $ "lhs': " ++ show lhs'
+
         setContext ctxt'
         processTacticDecls info newDecls
         sendHighlighting highlights
@@ -707,7 +706,6 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         when inf $ addTyInfConstraints fc (map (\(x,y,_,_,_,_,_) -> (x,y)) probs)
 
         let lhs_tm = orderPats (getInferTerm lhs')
-        logLvl 0 $ "lhs_tm: " ++ show lhs_tm
         let lhs_ty = getInferType lhs'
         let static_names = getStaticNames i lhs_tm
 
@@ -763,8 +761,7 @@ elabClause info opts (cnum, PClause fc fname lhs_in_as withs rhs_in_as wherebloc
         -- Elaborate those with a type *before* RHS, those without *after*
         let (wbefore, wafter) = sepBlocks wb
 
-        logElab 0 $ "Wherex: " ++ foldr (\x acc -> show x ++ "\n" ++ acc) "" whereblock
-        logElab 0 $ "Where block:\n " ++ show wbefore ++ "\n" ++ show wafter
+        logElab 5 $ "Where block:\n " ++ show wbefore ++ "\n" ++ show wafter
         mapM_ (rec_elabDecl info EAll winfo) wbefore
         -- Now build the RHS, using the type of the LHS as the goal.
         i <- getIState -- new implicits from where block
@@ -1287,7 +1284,6 @@ mkCopatternTyDecl :: ElabWhat -> ElabInfo -> Name -> Type -> Idris ()
 mkCopatternTyDecl what info pfn piElhsTy =
   do i <- getIState
      let tyDecl = PTy emptyDocstring [] defaultSyntax NoFC [] pfn NoFC (delab i piElhsTy)
-     logLvl 0 $ "tyDecl: " ++ show tyDecl
      (rec_elabDecl info) what info tyDecl
 
 copatternType :: ElabInfo -> Name -> [(Name, Name, RecordInfo)] -> Idris Type
@@ -1297,11 +1293,8 @@ copatternType info fn path =
                      Just pargs -> map (\(p,i) -> p { getTm = PRef NoFC [] (piHack (pname p) i) }) (zip pargs [0..])
                      Nothing -> []
      let ap = applyCoPath (PApp NoFC (PRef NoFC [] fn) fnPArgs) path
-     logLvl 0 $ "ap: " ++ show ap
      (_, elhsTy) <- elabVal info ELHS ap
-     logLvl 0 $ "elhsTy: " ++ show elhsTy
      piElhsTy <- pVTyToPi fnPArgs elhsTy []
-     logLvl 0 $ "piElhsTy: " ++ show piElhsTy
      return piElhsTy
   where
     -- piHack is needed because UN is used for implicitly bound pi arguments in the parser (__pi_arg)
@@ -1311,18 +1304,15 @@ copatternType info fn path =
 
 elabCoClauses' :: ElabWhat -> ElabInfo -> Name -> Name -> [DisAmbCoClause] -> [PClause] -> Idris ()
 elabCoClauses' what info fn pfn ((CoClause fc cn lhs rhs wheres path@[_]):cs) acc =
-  do logLvl 0 $ "lhs-one: " ++ show lhs
-     piElhsTy <- copatternType info fn path
+  do piElhsTy <- copatternType info fn path
 
      ctxt <- getContext
      unless (isJust $ lookupTyNameExact pfn ctxt) $ mkCopatternTyDecl what info pfn piElhsTy
 
      let clause = PClause NoFC pfn (substMatch fn (PRef NoFC [] pfn) lhs) [] rhs wheres
-     logLvl 0 $ "clause': " ++ show clause
      elabCoClauses' what info fn pfn cs ([clause] ++ acc)
 elabCoClauses' what info fn pfn cs@(CoClause fc cn lhs rhs wheres path@(p:path'):_) acc =
-  do logLvl 0 $ "lhs-morethanone: " ++ show lhs
-     piElhsTy <- copatternType info fn [p]
+  do piElhsTy <- copatternType info fn [p]
 
      ctxt <- getContext
      unless (isJust $ lookupTyNameExact pfn ctxt) $ mkCopatternTyDecl what info pfn piElhsTy
@@ -1337,7 +1327,6 @@ elabCoClauses' what info fn pfn cs@(CoClause fc cn lhs rhs wheres path@(p:path')
    lhsSubstClause c = c
 elabCoClauses' what info fn pfn [] acc =
   do let cs = PClauses NoFC [] pfn acc
-     logLvl 0 $ "clauses': " ++ show cs
      (rec_elabDecl info) what info cs
 
 
@@ -1348,9 +1337,7 @@ elabCoClausesDecl what info d@(PClauses fc opts fn cs)
   | all (\c -> case c of
           PCoClause _ _ _ _ _ (_:_) -> False
           _ -> True) cs
-    = do logLvl 0 $ show d ++ ": Not a coclause"
-         let d' = PClauses fc opts fn (map toPClause cs)
-         logLvl 0 $ "d': " ++ show d'
+    = do let d' = PClauses fc opts fn (map toPClause cs)
          rec_elabDecl info what info d'
   where
     toPClause :: PClause -> PClause
@@ -1360,13 +1347,11 @@ elabCoClausesDecl what info (PClauses fc opts fn cs) =
   do cs' <- elabCoClauses what info fc opts fn cs
      rec_elabDecl info what info $ PClauses fc opts fn cs'
 elabCoClausesDecl what info d =
-  do logLvl 0 $ "No copatterns here: " ++ show d
-     rec_elabDecl info what info d -- No copatterns here
+  rec_elabDecl info what info d -- No copatterns here
 
 elabCoClauses :: ElabWhat -> ElabInfo -> FC -> FnOpts -> Name -> [PClause] -> Idris [PClause]
 elabCoClauses what info fc opts fn cs'@(c:_) =
   do ctxt <- getContext
-     logLvl 0 $ "CoElaborating: " ++ show fn
      -- Build LHS
      fTy <- case lookupTyNameExact fn ctxt of
               Just (_, ty) -> return ty
@@ -1375,10 +1360,8 @@ elabCoClauses what info fc opts fn cs'@(c:_) =
      pargs <- case lookupCtxtExact fn (idris_implicits i) of
                Just pargs' -> return $ map (\p -> p { getTm = PRef NoFC [] (pname p) }) pargs'
                Nothing     -> ifail "Function does not exist :/"
-     logLvl 0 $ "imps: " ++ show pargs
-     logLvl 0 $ "fTy: " ++ show fTy
+
      let lhs = PApp NoFC (PRef NoFC [] fn) pargs -- Rewrite with idris_implicits?
-     logLvl 0 $ "lhs: " ++ show lhs
 
      fRetTyName <- retTyName (getRetTy fTy)
      cs <- mapM (disambiguatePath fRetTyName) cs'
@@ -1387,22 +1370,18 @@ elabCoClauses what info fc opts fn cs'@(c:_) =
      constructorName <- case coClauseConstructor ((extractPath . head) cs) of
                           Just n -> return n
                           Nothing -> ifail "Coclause for a non-record type definition"
-     logLvl 0 $ "constructorName: " ++ show constructorName
 
      let groupedClauses = groupBy (\cl cl' -> eqPaths (extractPath cl) (extractPath cl')) cs
-     logLvl 0 $ "groupedClauses: " ++ show groupedClauses
 
      auxNames <-
        forM groupedClauses (\gcs ->
          do auxn <- auxName fn
-            logLvl 0 $ "auxn: " ++ show auxn
             elabCoClauses' what info fn auxn gcs []
             return auxn
        )
 
      let rhs = PApp NoFC (PRef NoFC [] constructorName) (map (\n -> pexp $ PApp NoFC (PRef NoFC [] n) pargs) auxNames)
      let clause = PClause NoFC fn lhs [] rhs []
-     logLvl 0 $ "clause: " ++ show clause
 
      return [clause]
   where
@@ -1428,7 +1407,6 @@ elabCoClauses what info fc opts fn cs'@(c:_) =
 
     extractPath :: DisAmbCoClause -> [(Name, Name, RecordInfo)]
     extractPath (CoClause _ _ _ _ _ path) = path
-    extractPath _ = []
 
     auxName :: Name -> Idris Name
     auxName n =
